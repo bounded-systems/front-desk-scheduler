@@ -70,10 +70,30 @@ async function main() {
   }
 
   // --- WRITE PATH (approved 2026-07-25) ---
-  // Only NON-Done items need scoring (Done items are never eligible), and target
-  // anything missing EITHER field (so partial writes from a prior run get healed).
-  const targets = scoped.filter((i) => i.status !== "Done" && (i.effort === 0 || i.value === 0));
-  console.log(`\n--apply: writing Effort/Value to ${targets.length} non-Done items missing inputs${repo ? ` in ${repo}` : " ORG-WIDE"}.`);
+  // Default: NON-Done items missing EITHER field (partial writes get healed).
+  // --done: backfill Done items instead (historical value-density data), in
+  // --batch N slices so it trickles inside the API budget instead of spiking.
+  const doneMode = argv.includes("--done");
+  const batch = argv.includes("--batch") ? Number(argv[argv.indexOf("--batch") + 1]) : 150;
+  const missing = (i: BoardItem) => i.effort === 0 || i.value === 0;
+  const all = scoped.filter((i) => (doneMode ? i.status === "Done" : i.status !== "Done") && missing(i));
+  const targets = doneMode ? all.slice(0, batch) : all;
+
+  // Fail-closed API-budget gate (same Budget model that gates agent labor):
+  // ~2 mutations/item at ~1.6 pts each; refuse when it would push past at-risk.
+  const { fetchGraphqlLimit, apiCapacity } = await import("../src/mirror.ts");
+  const live = await fetchGraphqlLimit();
+  const estCost = Math.ceil(targets.length * 3.5);
+  const cap = apiCapacity(live);
+  if (cap.remainingPoints - estCost < 1000) {
+    console.error(
+      `GATED: ~${estCost} pts needed, ${cap.remainingPoints} remaining (floor 1000). Resets ${live.resetAt}.`,
+    );
+    process.exit(3);
+  }
+  console.log(
+    `\n--apply: writing Effort/Value to ${targets.length}${doneMode ? ` of ${all.length} Done` : " non-Done"} items missing inputs${repo ? ` in ${repo}` : " ORG-WIDE"} (est ~${estCost} pts of ${cap.remainingPoints}).`,
+  );
   if (!repo) {
     console.log("(no --repo → org-wide. If you meant the prx canary, re-run with --repo prx.)");
   }
