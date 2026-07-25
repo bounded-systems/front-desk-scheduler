@@ -33,6 +33,8 @@ machinery, verified.
 ## What's here
 
 ```
+src/board.ts        the live-board seam: reads Front Desk via gh, maps items → PriorityInput (read-only)
+scripts/whats-next.ts  the Concierge interaction — "what should I pick up?" over the live board
 src/policy.ts       vendored PURE policy (prioritize/score/budgetGate) — provenance: gh-project-room
 src/contract.ts     the scheduler state machine (WorkItem, Agent, Budget, World) over machine-schema's pattern
 src/invariants.ts   the spec: S1..L2 as a catalog + assertInvariants(world) → InvariantReport
@@ -58,6 +60,15 @@ npm run tlc:racy                 # → Error: Invariant MutualExclusion is viola
 npm run tlc:overspend            # → Error: Invariant NoOverspend is violated (budget TOCTOU)
 npm run tlc:atomic               # → No error found; safety + Liveness hold over all 205 states
 #   reproducible: `nix develop` (flake.nix provides node 24 + tlc), or `nix run .#tlc-atomic`
+
+# The interaction — ask the live board what to pick up (needs `gh auth` + read:project):
+npm run whats-next -- --top 12                 # ranked ready queue across the org + budget verdict
+npm run whats-next -- --repo prx --budget rolling-5h
 ```
+
+> Today the queue is honest about being degenerate: `Effort`/`Value`/`Depends on`
+> are unpopulated on the real board (0/1251), so scoring runs its fallback and the
+> ranking is near-FIFO. `whats-next` says so. Populate those fields and the same
+> command returns a meaningful WSJF-style queue — no code change.
 
 Source-available under **PolyForm Noncommercial 1.0.0** (matching gh-project-room).
