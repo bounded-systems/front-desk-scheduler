@@ -18,6 +18,7 @@ export const DEFAULT_PROJECT = 2;
 
 /** One raw item as `gh project item-list --format json` returns it. */
 export interface RawBoardItem {
+  readonly id?: string; // the project-item id (PVTI_…), needed to write fields
   readonly content?: { readonly number?: number; readonly type?: string };
   readonly title?: string;
   readonly repository?: string;
@@ -30,6 +31,7 @@ export interface RawBoardItem {
 }
 
 export interface BoardItem {
+  readonly id: string; // project-item id (PVTI_…)
   readonly number: number;
   readonly title: string;
   readonly repository: string;
@@ -70,8 +72,9 @@ export function parseDependsOn(text: string | undefined): number[] {
 
 export function normalize(raw: RawBoardItem): BoardItem | null {
   const number = raw.content?.number;
-  if (typeof number !== "number") return null;
+  if (typeof number !== "number" || !raw.id) return null;
   return {
+    id: raw.id,
     number,
     title: raw.title ?? `#${number}`,
     repository: (raw.repository ?? "").replace(/.*\//, ""),
@@ -131,4 +134,45 @@ export async function fetchBoardItems(
   ], { maxBuffer: 64 * 1024 * 1024 });
   const parsed = JSON.parse(stdout) as { items?: RawBoardItem[] };
   return (parsed.items ?? []).map(normalize).filter((x): x is BoardItem => x !== null);
+}
+
+// --- WRITE PATH (only reached behind an explicit --apply) ---
+
+export interface ProjectMeta {
+  readonly projectId: string;
+  readonly fieldId: Record<string, string>; // field name → PVTF_… id
+}
+
+/** Resolve the project node id and the custom-field ids needed to write. */
+export async function fetchProjectMeta(org = DEFAULT_ORG, project = DEFAULT_PROJECT): Promise<ProjectMeta> {
+  const view = JSON.parse(
+    (await pexecFile("gh", ["project", "view", String(project), "--owner", org, "--format", "json"])).stdout,
+  ) as { id?: string };
+  const fields = JSON.parse(
+    (await pexecFile("gh", ["project", "field-list", String(project), "--owner", org, "--format", "json"], {
+      maxBuffer: 8 * 1024 * 1024,
+    })).stdout,
+  ) as { fields?: { id: string; name: string }[] };
+  const fieldId: Record<string, string> = {};
+  for (const f of fields.fields ?? []) fieldId[f.name] = f.id;
+  if (!view.id) throw new Error("could not resolve project id");
+  return { projectId: view.id, fieldId };
+}
+
+/** Write a single number custom field on one item. */
+export async function setNumberField(
+  meta: ProjectMeta,
+  itemId: string,
+  fieldName: string,
+  value: number,
+): Promise<void> {
+  const fieldId = meta.fieldId[fieldName];
+  if (!fieldId) throw new Error(`unknown field "${fieldName}"`);
+  await pexecFile("gh", [
+    "project", "item-edit",
+    "--id", itemId,
+    "--project-id", meta.projectId,
+    "--field-id", fieldId,
+    "--number", String(value),
+  ]);
 }

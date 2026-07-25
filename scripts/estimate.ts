@@ -9,7 +9,13 @@
  *   node scripts/estimate.ts --apply        # (gated) writes Effort/Value to the board
  */
 
-import { fetchBoardItems, toPriorityInputs, type BoardItem } from "../src/board.ts";
+import {
+  fetchBoardItems,
+  fetchProjectMeta,
+  setNumberField,
+  toPriorityInputs,
+  type BoardItem,
+} from "../src/board.ts";
 import { estimate } from "../src/estimate.ts";
 import { prioritize, ROLLING_5H_BUDGET, ORG_BUDGETS, type PriorityInput } from "../src/policy.ts";
 
@@ -62,11 +68,36 @@ async function main() {
     return;
   }
 
-  // --- GUARDED WRITE PATH ---
-  console.log("\n--apply given: this WOULD write Effort/Value to the live board.");
-  console.log("Refusing to write from this script until the write path is explicitly enabled.");
-  console.log("(Board writes are org-wide and outward; wire gh project item-edit here only with sign-off.)");
-  process.exit(2);
+  // --- WRITE PATH (approved 2026-07-25; only touches items with EMPTY effort+value) ---
+  const targets = scoped.filter((i) => i.effort === 0 && i.value === 0);
+  console.log(`\n--apply: writing Effort/Value to ${targets.length} items with empty inputs${repo ? ` in ${repo}` : " ORG-WIDE"}.`);
+  if (!repo) {
+    console.log("(no --repo → org-wide. If you meant the prx canary, re-run with --repo prx.)");
+  }
+
+  const meta = await fetchProjectMeta();
+  if (!meta.fieldId["Effort"] || !meta.fieldId["Value"]) {
+    console.error("Effort/Value fields not found on the board; aborting.");
+    process.exit(1);
+  }
+
+  let done = 0;
+  let failed = 0;
+  for (const item of targets) {
+    const e = estimate(item.kind, item.title);
+    try {
+      await setNumberField(meta, item.id, "Effort", e.effort);
+      await setNumberField(meta, item.id, "Value", e.value);
+      done++;
+      if (done % 20 === 0 || done === targets.length) {
+        console.log(`  …${done}/${targets.length}`);
+      }
+    } catch (err) {
+      failed++;
+      console.error(`  ✗ #${item.number}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  console.log(`\nwrote ${done} items (${failed} failed). Re-run whats-next to see the live re-ranked queue.`);
 }
 
 main().catch((err) => {

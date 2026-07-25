@@ -20,7 +20,7 @@ test("statusToState maps Front Desk Status to bead state", () => {
 });
 
 test("normalize tolerates missing custom fields (the live-board reality)", () => {
-  const item = normalize({ content: { number: 21 }, title: "x", repository: "org/prx", status: "Todo" });
+  const item = normalize({ id: "PVTI_x", content: { number: 21 }, title: "x", repository: "org/prx", status: "Todo" });
   assert.ok(item);
   assert.equal(item.number, 21);
   assert.equal(item.repository, "prx");
@@ -32,9 +32,9 @@ test("normalize tolerates missing custom fields (the live-board reality)", () =>
 
 test("toPriorityInputs derives openBlockers and unblocks from the Depends-on graph", () => {
   const items = [
-    normalize({ content: { number: 1 }, status: "Done", repository: "o/r" })!,
-    normalize({ content: { number: 2 }, status: "Todo", repository: "o/r", "depends on": "#1, #3" })!,
-    normalize({ content: { number: 3 }, status: "Todo", repository: "o/r" })!,
+    normalize({ id: "PVTI_x", content: { number: 1 }, status: "Done", repository: "o/r" })!,
+    normalize({ id: "PVTI_x", content: { number: 2 }, status: "Todo", repository: "o/r", "depends on": "#1, #3" })!,
+    normalize({ id: "PVTI_x", content: { number: 3 }, status: "Todo", repository: "o/r" })!,
   ];
   const inputs = toPriorityInputs(items);
   const byNum = new Map(inputs.map((i) => [i.number, i]));
