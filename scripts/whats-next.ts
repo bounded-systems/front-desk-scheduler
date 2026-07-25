@@ -46,7 +46,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const budget = ORG_BUDGETS.get(args.budget) ?? ROLLING_5H_BUDGET;
 
-  const board = await fetchBoardItems();
+  // Reads prefer a fresh cache (≤15 min) — the item-list query is the pricey call.
+  const board = await fetchBoardItems(undefined, undefined, undefined, 15);
   const scoped = args.repo ? board.filter((i) => i.repository === args.repo) : board;
   const inputs = toPriorityInputs(scoped);
 

@@ -40,7 +40,8 @@ async function main() {
   const budget = ORG_BUDGETS.get(argv.includes("--budget") ? argv[argv.indexOf("--budget") + 1] : ROLLING_5H_BUDGET.id) ?? ROLLING_5H_BUDGET;
   const remaining = budget.capacityPoints;
 
-  const board = await fetchBoardItems();
+  // Read from cache (item ids are stable); only the writes below spend live budget.
+  const board = await fetchBoardItems(undefined, undefined, undefined, 30);
   const scoped = repo ? board.filter((i) => i.repository === repo) : board;
 
   const before = rank(toPriorityInputs(scoped), remaining);

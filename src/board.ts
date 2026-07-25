@@ -8,10 +8,14 @@
  */
 
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import type { BeadKind, BeadState, PriorityInput } from "./policy.ts";
 
 const pexecFile = promisify(execFile);
+
+/** Where a live fetch is cached, so repeated reads don't re-spend GraphQL. */
+const CACHE_PATH = new URL("../.tools/board-cache.json", import.meta.url).pathname;
 
 export const DEFAULT_ORG = "bounded-systems";
 export const DEFAULT_PROJECT = 2;
@@ -115,25 +119,33 @@ export function toPriorityInputs(items: readonly BoardItem[]): PriorityInput[] {
   });
 }
 
-/** Fetch the live board via `gh`. Requires `gh auth` with `read:project`. */
+function parseItems(stdout: string): BoardItem[] {
+  const parsed = JSON.parse(stdout) as { items?: RawBoardItem[] };
+  return (parsed.items ?? []).map(normalize).filter((x): x is BoardItem => x !== null);
+}
+
+/**
+ * Fetch the live board via `gh` (requires `gh auth` with `read:project`).
+ * A successful fetch is cached to `.tools/board-cache.json`. Pass
+ * `cacheMinutes` to reuse a fresh cache instead of re-spending GraphQL — the
+ * item-list query is the expensive call, so reads should prefer the cache.
+ */
 export async function fetchBoardItems(
   org = DEFAULT_ORG,
   project = DEFAULT_PROJECT,
   limit = 2000,
+  cacheMinutes = 0,
 ): Promise<BoardItem[]> {
+  if (cacheMinutes > 0 && existsSync(CACHE_PATH)) {
+    const ageMin = (Date.now() - statSync(CACHE_PATH).mtimeMs) / 60_000;
+    if (ageMin < cacheMinutes) return parseItems(readFileSync(CACHE_PATH, "utf8"));
+  }
   const { stdout } = await pexecFile("gh", [
-    "project",
-    "item-list",
-    String(project),
-    "--owner",
-    org,
-    "--format",
-    "json",
-    "--limit",
-    String(limit),
+    "project", "item-list", String(project),
+    "--owner", org, "--format", "json", "--limit", String(limit),
   ], { maxBuffer: 64 * 1024 * 1024 });
-  const parsed = JSON.parse(stdout) as { items?: RawBoardItem[] };
-  return (parsed.items ?? []).map(normalize).filter((x): x is BoardItem => x !== null);
+  try { writeFileSync(CACHE_PATH, stdout); } catch { /* cache is best-effort */ }
+  return parseItems(stdout);
 }
 
 // --- WRITE PATH (only reached behind an explicit --apply) ---
