@@ -1,0 +1,23 @@
+{
+  "name": "@bounded-systems/front-desk-scheduler",
+  "version": "0.0.0",
+  "description": "A formal model of Front Desk (org project #2) as a concurrent scheduler: reuses gh-project-room's pure policy, adds the concurrency mechanism, and reproduces/proves its race conditions (DST sim + TLA+).",
+  "type": "module",
+  "sideEffects": false,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "sim": "node scripts/demo.ts",
+    "tlc:racy": "tlc specs/tla/scheduler.tla -config specs/tla/scheduler-racy.cfg",
+    "tlc:atomic": "tlc specs/tla/scheduler.tla -config specs/tla/scheduler-atomic.cfg"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+# TLA+ tooling artifacts
+specs/tla/states/
+specs/tla/*.toolbox/
+*.tla.old
+MC*.tla
+MC*.cfg
+
+node_modules/
+package-lock.json
