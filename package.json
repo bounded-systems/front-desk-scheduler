@@ -11,8 +11,9 @@
   "scripts": {
     "test": "node --test test/",
     "sim": "node scripts/demo.ts",
-    "tlc:racy": "tlc specs/tla/scheduler.tla -config specs/tla/scheduler-racy.cfg",
-    "tlc:atomic": "tlc specs/tla/scheduler.tla -config specs/tla/scheduler-atomic.cfg"
+    "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
+    "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
+    "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg"
   },
   "exports": {
     ".": "./src/index.ts"

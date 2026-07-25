@@ -10,3 +10,9 @@ MC*.cfg
 
 node_modules/
 package-lock.json
+
+# TLC tooling
+.tools/
+specs/tla/states/
+specs/tla/*_TTrace_*.tla
+specs/tla/*_TTrace_*.bin

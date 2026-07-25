@@ -51,9 +51,13 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 ```sh
 node --test test/sim.test.ts     # the 5 invariant tests (needs Node >= 23.6 for native TS)
 node scripts/demo.ts             # prints the reproduced racy traces vs the safe run
-# TLA+ (needs the TLA+ tools / TLC on PATH):
-npm run tlc:racy                 # expect: counterexample to MutualExclusion or NoOverspend
-npm run tlc:atomic               # expect: all invariants + Liveness pass
+
+# TLA+ / TLC — two ways, no Nix required:
+#   light:  brew install openjdk   (keg-only JRE, no sudo); scripts/tlc.sh auto-fetches tla2tools.jar
+npm run tlc:racy                 # → Error: Invariant MutualExclusion is violated (double-claim)
+npm run tlc:overspend            # → Error: Invariant NoOverspend is violated (budget TOCTOU)
+npm run tlc:atomic               # → No error found; safety + Liveness hold over all 205 states
+#   reproducible: `nix develop` (flake.nix provides node 24 + tlc), or `nix run .#tlc-atomic`
 ```
 
 Source-available under **PolyForm Noncommercial 1.0.0** (matching gh-project-room).

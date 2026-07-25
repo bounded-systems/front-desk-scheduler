@@ -79,6 +79,21 @@ Under **safe** ops the same scenario denies the second spend at commit time
 Both describe the *same* double-claim / overspend interleaving — the cross-check
 that the model and the proof are talking about the same system.
 
+### Confirmed TLC output
+
+Run with TLC 2.19 (`java -cp tla2tools.jar tlc2.TLC`):
+
+- **`scheduler-racy.cfg`** → `Error: Invariant MutualExclusion is violated.` The
+  trace: `a1` and `a2` both `Pick i1`, then both `Claim` → `owners(i1) = {a1, a2}`.
+  The *same* interleaving the DST sim's seed-1 racy run prints.
+- **`scheduler-overspend.cfg`** (checks only `NoOverspend`, so the S2 race is
+  surfaced rather than S1) → `Error: Invariant NoOverspend is violated.` The trace:
+  `a1→i1`, `a2→i2` (distinct items), both gate at `consumed=0`, then
+  `consumed: 0 → 4 → 8` > cap 6.
+- **`scheduler-atomic.cfg`** → `Model checking completed. No error has been found.`
+  205 distinct states; safety **and** liveness `<>AllDone` hold across every
+  interleaving.
+
 > Note on budget sizing across the two TLA+ configs: racy needs `Cap < |Agents|·Effort`
 > to exhibit overspend; the atomic/liveness config needs `Cap ≥ |Items|·Effort` so all
 > work is affordable (otherwise not-all-done is *correct*, not a liveness bug). Hence
