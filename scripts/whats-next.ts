@@ -9,7 +9,8 @@
  *                              [--repo <name>] [--top N] [--json]
  */
 
-import { fetchBoardItems, toPriorityInputs } from "../src/board.ts";
+import { fetchBoardItems, toPriorityInputs, type BoardItem } from "../src/board.ts";
+import { mirrorMeta, readMirrorItems } from "../src/mirror.ts";
 import {
   budgetGate,
   isEligible,
@@ -46,8 +47,18 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const budget = ORG_BUDGETS.get(args.budget) ?? ROLLING_5H_BUDGET;
 
-  // Reads prefer a fresh cache (≤15 min) — the item-list query is the pricey call.
-  const board = await fetchBoardItems(undefined, undefined, undefined, 15);
+  // Read plane: prefer the Dolt mirror (pinned commit, zero API cost, no GitHub
+  // credential needed). Fall back to a cached/live gh fetch if the mirror is empty.
+  let board: BoardItem[];
+  let source: string;
+  const meta = await mirrorMeta().catch(() => null);
+  if (meta) {
+    board = await readMirrorItems();
+    source = `mirror@${meta.commit} (synced ${meta.syncedAt})`;
+  } else {
+    board = await fetchBoardItems(undefined, undefined, undefined, 15);
+    source = "github (no mirror yet — run scripts/sync.ts)";
+  }
   const scoped = args.repo ? board.filter((i) => i.repository === args.repo) : board;
   const inputs = toPriorityInputs(scoped);
 
@@ -68,6 +79,7 @@ async function main() {
   }
 
   console.log(`Front Desk — whats-next   budget=${budget.id} (cap ${budget.capacityPoints}, consumed ${args.consumed}, remaining ${remaining})`);
+  console.log(`source: ${source}`);
   console.log(`ready: ${eligible.length} eligible${args.repo ? ` in ${args.repo}` : " across the org"}\n`);
 
   const rows = eligible.slice(0, args.top);

@@ -23,3 +23,6 @@ specs/lean/build/
 
 # Rust build artifacts
 specs/rust/target/
+
+# Dolt mirror (a database, versioned by Dolt itself — not by git)
+mirror/
