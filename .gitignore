@@ -20,3 +20,6 @@ specs/tla/*_TTrace_*.bin
 # Lean build artifacts
 specs/lean/.lake/
 specs/lean/build/
+
+# Rust build artifacts
+specs/rust/target/

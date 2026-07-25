@@ -44,7 +44,7 @@ src/sim.ts          deterministic-simulation engine (seeded PRNG, decide/commit 
 test/sim.test.ts    reproduces S1, S2, lost-wakeup; proves safe ops hold across 1000 seeds; catches L1
 specs/tla/          the same protocol in TLA+ — racy config finds a counterexample, atomic config passes
 specs/lean/         Lean 4 proof of budgetGate soundness + the TOCTOU (✅ builds, Lean 4.32.1)
-specs/rust/         (planned) Rust + loom implementation-level interleaving harness
+specs/rust/         Rust + loom: real atomics, exhaustive interleavings (✅ 3 tests, loom 0.7)
 docs/model.md       the invariant catalog, the race taxonomy, and how each projection checks it
 ```
 

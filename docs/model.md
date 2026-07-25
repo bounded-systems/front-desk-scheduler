@@ -120,7 +120,15 @@ just sampled/enumerated ones. Verified with Lean 4.32.1 (`omega`, no mathlib):
   The same S2 bug as the `scheduler-overspend.cfg` TLC trace and the sim's seed —
   now at the algebra layer. **Three projections, one bug.**
 
-## Later projections (planned)
+## The fourth projection — Rust + loom (implementation)
 
-- **`specs/rust/`** — Rust + `loom` exploring real thread interleavings of the
-  implementation, for when the Concierge's hot path becomes a Rust daemon.
+`specs/rust/` implements the claim/spend core in real atomics and lets `loom`
+explore every thread interleaving. `safe_claim_is_mutually_exclusive` and
+`safe_reserve_never_overspends` pass; `racy_spend_can_overspend` (`#[should_panic]`)
+confirms loom **finds** the overspend in the stale-gated `fetch_add`. Same S2 bug,
+now at four altitudes: **sim seed → TLC trace → Lean proof → loom interleaving.**
+
+> A note the modeling itself earned: the first `spend_racy` used `store(c+add)`,
+> so two stale writers both wrote 4 (a lost update), not 8 — loom's `should_panic`
+> test failed, catching that the *model of the bug* was wrong. The faithful racy
+> spend gates then `fetch_add`. The tool checking the model also debugged it.

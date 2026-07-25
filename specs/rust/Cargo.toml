@@ -1,0 +1,17 @@
+[package]
+name = "fds-scheduler-loom"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Implementation-layer projection: loom exhaustively checks the scheduler's claim/spend atomics for the same races the TLA+ spec proves absent."
+
+# loom is only needed for the model-checked build (RUSTFLAGS="--cfg loom").
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[profile.release]
+opt-level = 2
+
+# `loom` is a custom cfg set via RUSTFLAGS="--cfg loom"; tell rustc it's expected.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }
