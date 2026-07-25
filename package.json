@@ -9,7 +9,7 @@
     "node": ">=23.6"
   },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/*.test.ts",
     "sim": "node scripts/demo.ts",
     "whats-next": "node scripts/whats-next.ts",
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
