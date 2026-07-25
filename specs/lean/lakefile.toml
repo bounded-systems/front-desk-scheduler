@@ -1,0 +1,7 @@
+name = "FrontDesk"
+defaultTargets = ["FrontDesk"]
+
+# Pure-core proof: no mathlib dependency, builds from the toolchain alone.
+[[lean_lib]]
+name = "FrontDesk"
+srcDir = "."

@@ -108,9 +108,19 @@ degenerating to near-FIFO. That's the starvation case (L2) in the field, and the
 reason the Concierge needs its inputs populated before it can schedule anything
 worth scheduling.
 
+## The third projection — Lean (algebra)
+
+`specs/lean/FrontDesk.lean` proves the policy properties for **all** inputs, not
+just sampled/enumerated ones. Verified with Lean 4.32.1 (`omega`, no mathlib):
+
+- **`gate_sound`** — `0 < capacity ∧ gate = allow ⟹ consumed + add < capacity`.
+  A single gate-then-spend can never overspend.
+- **`racy_gate_unsound`** — proves the TOCTOU: `gate` sound per-agent does *not*
+  make two spends against the same snapshot sound (witness cap 6, two 4s → 8 > 6).
+  The same S2 bug as the `scheduler-overspend.cfg` TLC trace and the sim's seed —
+  now at the algebra layer. **Three projections, one bug.**
+
 ## Later projections (planned)
 
-- **`specs/lean/`** — Lean 4 proof that `budgetGate` is *sound* (never admits when
-  `consumed + spend > cap`), where "expensive to be wrong" = real compute spend.
 - **`specs/rust/`** — Rust + `loom` exploring real thread interleavings of the
   implementation, for when the Concierge's hot path becomes a Rust daemon.
