@@ -105,36 +105,153 @@ function sqlEscape(s: string): string {
  * number-keyed REPLACE silently deduplicates. Rows gone from the board are removed.
  */
 export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
-  // Chunked: one giant multi-row statement blows Linux's argv limit (E2BIG) —
-  // macOS's ARG_MAX is larger, which hid this locally.
+  // Authority-aware pull. GitHub owns identity+state (title/status/number); Dolt
+  // owns scheduling (effort/value/kind/depends_on). So:
+  //   - NEW github rows: insert, seeding scheduling fields from the board (0 for
+  //     fresh issues; frontmatter/estimator fills later).
+  //   - EXISTING rows: refresh github-owned fields ONLY — never overwrite Dolt's
+  //     effort/value/kind (that would launder an out-of-band project-field edit;
+  //     such edits are surfaced as drift D6 instead).
+  //   - GONE-from-board: delete only origin='github' rows (hidden/dolt-born survive).
+  const existing = new Set(
+    (await dsqlRows<{ item_id: string }>("SELECT item_id FROM items WHERE origin = 'github'"))
+      .map((r) => r.item_id),
+  );
+  const fresh = items.filter((i) => !existing.has(i.id));
   const CHUNK = 150;
-  for (let at = 0; at < items.length; at += CHUNK) {
-    const values = items
+
+  for (let at = 0; at < fresh.length; at += CHUNK) {
+    const values = fresh
       .slice(at, at + CHUNK)
       .map((i) =>
-        `('${sqlEscape(i.id)}',${i.number},'${sqlEscape(i.title)}','${sqlEscape(i.repository)}','${sqlEscape(i.status)}','${i.kind}',${i.effort},${i.value},'${sqlEscape(i.dependsOn.join(","))}')`,
+        `('${sqlEscape(i.id)}',${i.number},'${sqlEscape(i.title)}','${sqlEscape(i.repository)}','${sqlEscape(i.status)}','${i.kind}',${i.effort},${i.value},'${sqlEscape(i.dependsOn.join(","))}','github','synced')`,
       )
       .join(",");
-    await dsql(`REPLACE INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on) VALUES ${values}`);
+    if (values) {
+      await dsql(`INSERT INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on,origin,sync_state) VALUES ${values}`);
+    }
   }
-  await dsql(`DELETE FROM items WHERE item_id NOT IN (${items.map((i) => `'${sqlEscape(i.id)}'`).join(",")})`);
+  // Refresh github-owned fields on existing rows (batched UPDATE ... CASE).
+  const olds = items.filter((i) => existing.has(i.id));
+  for (let at = 0; at < olds.length; at += CHUNK) {
+    const chunk = olds.slice(at, at + CHUNK);
+    const ids = chunk.map((i) => `'${sqlEscape(i.id)}'`).join(",");
+    const caseFor = (expr: (i: BoardItem) => string) =>
+      chunk.map((i) => `WHEN '${sqlEscape(i.id)}' THEN ${expr(i)}`).join(" ");
+    await dsql(
+      `UPDATE items SET
+         number = CASE item_id ${caseFor((i) => String(i.number))} END,
+         title = CASE item_id ${caseFor((i) => `'${sqlEscape(i.title)}'`)} END,
+         repository = CASE item_id ${caseFor((i) => `'${sqlEscape(i.repository)}'`)} END,
+         status = CASE item_id ${caseFor((i) => `'${sqlEscape(i.status)}'`)} END
+       WHERE item_id IN (${ids})`,
+    );
+  }
+  const keep = items.map((i) => `'${sqlEscape(i.id)}'`).join(",");
+  await dsql(`DELETE FROM items WHERE origin = 'github' AND item_id NOT IN (${keep || "''"})`);
 
-  // Resolve depends_on numbers → same-repo item ids into the item_deps edge
-  // table (FK-enforced, so a dep can only point at a real board item). Numbers
-  // are ambiguous cross-repo; same-repo is the resolution convention, and
-  // unresolvable refs surface in shapeChecks() rather than silently dropping.
-  await dsql("DELETE FROM item_deps");
+  // depends_on 'blocks' edges (Dolt-owned; text field seeds them, frontmatter refines).
+  await dsql("DELETE FROM item_deps WHERE edge_type = 'blocks'");
   const byRepoNumber = new Map(items.map((i) => [`${i.repository}#${i.number}`, i.id]));
   const edges: string[] = [];
   for (const i of items) {
     for (const dep of i.dependsOn) {
       const target = byRepoNumber.get(`${i.repository}#${dep}`);
-      if (target && target !== i.id) edges.push(`('${sqlEscape(i.id)}','${sqlEscape(target)}')`);
+      if (target && target !== i.id) edges.push(`('${sqlEscape(i.id)}','${sqlEscape(target)}','blocks')`);
     }
   }
   if (edges.length > 0) {
-    await dsql(`INSERT IGNORE INTO item_deps (item_id, dep_item_id) VALUES ${edges.join(",")}`);
+    await dsql(`INSERT IGNORE INTO item_deps (item_id, dep_item_id, edge_type) VALUES ${edges.join(",")}`);
   }
+}
+
+/** Insert HIDDEN work: a Dolt-born item with no GitHub counterpart. Never pushed
+ *  unless captured. Visible to whats-next so you can plan against it. */
+export async function insertHiddenItem(
+  input: { title: string; repository: string; kind?: string; effort?: number; value?: number },
+  localId: string,
+): Promise<string> {
+  const id = `dolt:${localId}`;
+  await dsql(
+    `INSERT INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on,origin,sync_state)
+     VALUES ('${sqlEscape(id)}', NULL, '${sqlEscape(input.title)}', '${sqlEscape(input.repository)}',
+             'Todo', '${input.kind ?? "task"}', ${input.effort ?? 0}, ${input.value ?? 0}, '', 'dolt', 'hidden')`,
+  );
+  return id;
+}
+
+/** Set Dolt-owned scheduling fields (the authoritative surface for these) and
+ *  mark the row dolt-dirty so the next push propagates them to GitHub. */
+export async function setDoltFields(
+  itemId: string,
+  fields: { effort?: number; value?: number; kind?: string },
+): Promise<void> {
+  const sets: string[] = [];
+  if (fields.effort !== undefined) sets.push(`effort = ${fields.effort}`);
+  if (fields.value !== undefined) sets.push(`value = ${fields.value}`);
+  if (fields.kind !== undefined) sets.push(`kind = '${fields.kind}'`);
+  if (sets.length === 0) return;
+  await dsql(
+    `UPDATE items SET ${sets.join(", ")}, sync_state = 'dolt-dirty' WHERE item_id = '${sqlEscape(itemId)}'`,
+  );
+}
+
+// --- push (dolt → gh): the second write surface ---
+
+/** Flip a hidden item to "capture-requested" so the next push promotes it to a real issue. */
+export async function captureHidden(itemId: string): Promise<void> {
+  await dsql(`UPDATE items SET sync_state = 'dolt-dirty' WHERE item_id = '${sqlEscape(itemId)}' AND origin = 'dolt'`);
+}
+
+export interface PushResult {
+  readonly captured: number; // dolt-born rows promoted to GitHub issues
+  readonly pushed: number; // dolt-dirty github rows whose fields were written up
+  readonly gated: boolean;
+}
+
+/**
+ * Push Dolt-owned edits to GitHub — the "captured work" flow:
+ *   - dolt-born, capture-requested (`dolt:` id, dolt-dirty): create the GitHub
+ *     issue (scheduling fields ride in frontmatter); drop the placeholder so the
+ *     next pull re-absorbs it as a real github-origin row.
+ *   - github row, dolt-dirty: write effort/value UP to the board project fields
+ *     (Dolt is authoritative; this also corrects any out-of-band drift), mark synced.
+ * Budget-gated like the pull.
+ */
+export async function syncPush(estimatePoints = 200): Promise<PushResult> {
+  const before = await fetchGraphqlLimit();
+  if (!budgetGate(apiCapacity(before), estimatePoints).allow) {
+    return { captured: 0, pushed: 0, gated: true };
+  }
+  const { fetchProjectMeta, setNumberField } = await import("./board.ts");
+
+  // 1. capture dolt-born rows
+  const born = await dsqlRows<{ item_id: string; title: string; repository: string; kind: string; effort: number; value: number }>(
+    "SELECT item_id, title, repository, kind, effort, value FROM items WHERE origin='dolt' AND sync_state='dolt-dirty' AND item_id LIKE 'dolt:%'",
+  );
+  let captured = 0;
+  for (const r of born) {
+    const fm = `---\nkind: ${r.kind}\neffort: ${r.effort}\nvalue: ${r.value}\n---\n\n_Captured from Front Desk hidden work._`;
+    await pexecFile("gh", ["issue", "create", "--repo", `bounded-systems/${r.repository}`, "--title", r.title, "--body", fm]);
+    await dsql(`DELETE FROM items WHERE item_id = '${sqlEscape(r.item_id)}'`); // next pull re-absorbs as github-origin
+    captured++;
+  }
+
+  // 2. push dolt-dirty github rows' owned fields up to the board
+  const dirty = await dsqlRows<{ item_id: string; effort: number; value: number }>(
+    "SELECT item_id, effort, value FROM items WHERE origin='github' AND sync_state='dolt-dirty'",
+  );
+  let pushed = 0;
+  if (dirty.length > 0) {
+    const meta = await fetchProjectMeta();
+    for (const r of dirty) {
+      await setNumberField(meta, r.item_id, "Effort", r.effort);
+      await setNumberField(meta, r.item_id, "Value", r.value);
+      await dsql(`UPDATE items SET sync_state='synced' WHERE item_id='${sqlEscape(r.item_id)}'`);
+      pushed++;
+    }
+  }
+  return { captured, pushed, gated: false };
 }
 
 // --- native-relations mining (the bd-dep replacement) ---
@@ -148,6 +265,7 @@ interface RelationEdge {
 export interface ContentMeta {
   readonly itemId: string;
   readonly createdAt?: string;
+  readonly closedAt?: string;
   readonly fm: FrontMatterResult;
 }
 
@@ -176,7 +294,7 @@ export async function fetchContentGraph(
   for (let page = 0; page < 30; page++) {
     const args = [
       "api", "graphql",
-      "-f", `query=query($org:String!,$num:Int!,$cursor:String){organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id content{__typename ... on Issue{number createdAt body repository{name}parent{number repository{name}}} ... on PullRequest{number createdAt body repository{name}closingIssuesReferences(first:10){nodes{number repository{name}}}}}}}}}}`,
+      "-f", `query=query($org:String!,$num:Int!,$cursor:String){organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id content{__typename ... on Issue{number createdAt closedAt body repository{name}parent{number repository{name}}} ... on PullRequest{number createdAt closedAt body repository{name}closingIssuesReferences(first:10){nodes{number repository{name}}}}}}}}}}`,
       "-F", `org=${org}`, "-F", `num=${project}`,
       ...(cursor ? ["-F", `cursor=${cursor}`] : []),
     ];
@@ -190,6 +308,7 @@ export async function fetchContentGraph(
             __typename: string;
             number?: number;
             createdAt?: string;
+            closedAt?: string;
             body?: string;
             repository?: { name: string };
             parent?: { number: number; repository: { name: string } } | null;
@@ -204,7 +323,7 @@ export async function fetchContentGraph(
       const c = n.content;
       if (!c?.repository || c.number === undefined) continue;
       const fm = parseFrontMatter(c.body ?? "");
-      meta.push({ itemId: n.id, createdAt: c.createdAt, fm });
+      meta.push({ itemId: n.id, createdAt: c.createdAt, closedAt: c.closedAt ?? undefined, fm });
       if (c.parent) {
         const parentId = idByRepoNumber.get(`${c.parent.repository.name}#${c.parent.number}`);
         if (parentId && parentId !== n.id) edges.push({ src: parentId, dst: n.id, type: "parent-child" });
@@ -234,6 +353,7 @@ export async function applyContentMeta(meta: readonly ContentMeta[]): Promise<Sh
       .flatMap((m) => {
         const sets: string[] = [];
         if (m.createdAt) sets.push(`created_at = '${m.createdAt.replace("T", " ").replace("Z", "")}'`);
+        if (m.closedAt) sets.push(`closed_at = '${m.closedAt.replace("T", " ").replace("Z", "")}'`);
         if (m.fm.fm.kind) sets.push(`kind = '${m.fm.fm.kind}'`);
         if (m.fm.fm.effort !== undefined) sets.push(`effort = ${m.fm.fm.effort}`);
         if (m.fm.fm.value !== undefined) sets.push(`value = ${m.fm.fm.value}`);
@@ -339,7 +459,40 @@ export async function shapeChecks(): Promise<ShapeFinding[]> {
     "item(s) with depends_on text that resolved to no edge (typo or cross-repo ref)",
   );
 
+  // D6 — items stuck dolt-dirty (edited on the Dolt surface, never pushed to GitHub).
+  // Not a data error — a reminder that the second write surface has unflushed work.
+  await check(
+    "D6",
+    "warn",
+    "SELECT COUNT(*) AS n FROM items WHERE sync_state = 'dolt-dirty'",
+    "item(s) with unpushed Dolt-owned edits (run scripts/push.ts to capture)",
+  );
+
   return findings;
+}
+
+/**
+ * Drift: a github row whose LIVE board project-field effort/value diverges from
+ * Dolt's authoritative value with no frontmatter to justify it — i.e. someone
+ * edited the project field directly in the GitHub UI (an invalid write under the
+ * authority contract). Returns the offenders; the caller decides (re-push wins).
+ */
+export async function detectFieldDrift(
+  boardItems: readonly BoardItem[],
+): Promise<{ itemId: string; number: number; field: string; board: number; dolt: number }[]> {
+  const dolt = new Map(
+    (await dsqlRows<{ item_id: string; effort: number; value: number }>(
+      "SELECT item_id, effort, value FROM items WHERE origin='github' AND sync_state='synced'",
+    )).map((r) => [r.item_id, r]),
+  );
+  const drift: { itemId: string; number: number; field: string; board: number; dolt: number }[] = [];
+  for (const b of boardItems) {
+    const d = dolt.get(b.id);
+    if (!d) continue;
+    if (b.effort !== d.effort) drift.push({ itemId: b.id, number: b.number, field: "effort", board: b.effort, dolt: d.effort });
+    if (b.value !== d.value) drift.push({ itemId: b.id, number: b.number, field: "value", board: b.value, dolt: d.value });
+  }
+  return drift;
 }
 
 /**
