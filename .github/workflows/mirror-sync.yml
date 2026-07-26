@@ -76,6 +76,19 @@ jobs:
       - name: Sync board → mirror (budget-gated, metered)
         env:
           GH_TOKEN: ${{ steps.broker-token.outputs.token }}
-        run: node scripts/sync.ts
+        # exit 3 = budgetGate refused (expected backpressure, next cron retries)
+        # — a notice, not a red run. Any other non-zero is a real failure.
+        run: |
+          set +e
+          node scripts/sync.ts
+          rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::notice::sync gated by API budget — backpressure working as designed; next cron retries"
+            echo "gated=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$rc"
+        id: sync
       - name: Push mirror → DoltHub
+        if: ${{ steps.sync.outputs.gated != 'true' }}
         run: cd mirror && dolt push origin main

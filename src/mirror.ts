@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import type { BoardItem } from "./board.ts";
 import { fetchBoardItems } from "./board.ts";
 import { budgetGate, type Budget, type CapacityReport } from "./policy.ts";
+import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -141,7 +142,18 @@ export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
 interface RelationEdge {
   readonly src: string; // item_id that is blocked
   readonly dst: string; // item_id it waits on
-  readonly type: "parent-child" | "closes";
+  readonly type: "blocks" | "parent-child" | "closes";
+}
+
+export interface ContentMeta {
+  readonly itemId: string;
+  readonly createdAt?: string;
+  readonly fm: FrontMatterResult;
+}
+
+export interface ContentGraph {
+  readonly edges: RelationEdge[];
+  readonly meta: ContentMeta[];
 }
 
 /**
@@ -153,21 +165,22 @@ interface RelationEdge {
  *     whose fix is already in flight.
  * Paginated over the project's items; cost metered by the caller.
  */
-export async function fetchRelationEdges(
+export async function fetchContentGraph(
   idByRepoNumber: ReadonlyMap<string, string>,
   org = "bounded-systems",
   project = 2,
-): Promise<RelationEdge[]> {
+): Promise<ContentGraph> {
   const edges: RelationEdge[] = [];
+  const meta: ContentMeta[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < 30; page++) {
     const args = [
       "api", "graphql",
-      "-f", `query=query($org:String!,$num:Int!,$cursor:String){organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id content{__typename ... on Issue{number repository{name}parent{number repository{name}}} ... on PullRequest{number repository{name}closingIssuesReferences(first:10){nodes{number repository{name}}}}}}}}}}`,
+      "-f", `query=query($org:String!,$num:Int!,$cursor:String){organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id content{__typename ... on Issue{number createdAt body repository{name}parent{number repository{name}}} ... on PullRequest{number createdAt body repository{name}closingIssuesReferences(first:10){nodes{number repository{name}}}}}}}}}}`,
       "-F", `org=${org}`, "-F", `num=${project}`,
       ...(cursor ? ["-F", `cursor=${cursor}`] : []),
     ];
-    const { stdout } = await pexecFile("gh", args, { maxBuffer: 16 * 1024 * 1024 });
+    const { stdout } = await pexecFile("gh", args, { maxBuffer: 64 * 1024 * 1024 });
     const data = JSON.parse(stdout) as {
       data?: { organization?: { projectV2?: { items?: {
         pageInfo: { hasNextPage: boolean; endCursor: string };
@@ -176,6 +189,8 @@ export async function fetchRelationEdges(
           content?: {
             __typename: string;
             number?: number;
+            createdAt?: string;
+            body?: string;
             repository?: { name: string };
             parent?: { number: number; repository: { name: string } } | null;
             closingIssuesReferences?: { nodes: { number: number; repository: { name: string } }[] };
@@ -188,6 +203,8 @@ export async function fetchRelationEdges(
     for (const n of items.nodes) {
       const c = n.content;
       if (!c?.repository || c.number === undefined) continue;
+      const fm = parseFrontMatter(c.body ?? "");
+      meta.push({ itemId: n.id, createdAt: c.createdAt, fm });
       if (c.parent) {
         const parentId = idByRepoNumber.get(`${c.parent.repository.name}#${c.parent.number}`);
         if (parentId && parentId !== n.id) edges.push({ src: parentId, dst: n.id, type: "parent-child" });
@@ -196,14 +213,49 @@ export async function fetchRelationEdges(
         const issueId = idByRepoNumber.get(`${ref.repository.name}#${ref.number}`);
         if (issueId && issueId !== n.id) edges.push({ src: issueId, dst: n.id, type: "closes" });
       }
+      // frontmatter-declared deps: unambiguous repo#number, any repo → 'blocks'
+      for (const d of fm.fm.dependsOn) {
+        const depId = idByRepoNumber.get(`${d.repo}#${d.number}`);
+        if (depId && depId !== n.id) edges.push({ src: n.id, dst: depId, type: "blocks" });
+      }
     }
     if (!items.pageInfo.hasNextPage) break;
     cursor = items.pageInfo.endCursor;
   }
-  return edges;
+  return { edges, meta };
 }
 
-/** Replace mined edges (keeps text-parsed 'blocks' edges intact). */
+/** Apply content meta: created_at + frontmatter overrides (author intent wins). */
+export async function applyContentMeta(meta: readonly ContentMeta[]): Promise<ShapeFinding[]> {
+  const CHUNK = 100;
+  for (let at = 0; at < meta.length; at += CHUNK) {
+    const stmts = meta
+      .slice(at, at + CHUNK)
+      .flatMap((m) => {
+        const sets: string[] = [];
+        if (m.createdAt) sets.push(`created_at = '${m.createdAt.replace("T", " ").replace("Z", "")}'`);
+        if (m.fm.fm.kind) sets.push(`kind = '${m.fm.fm.kind}'`);
+        if (m.fm.fm.effort !== undefined) sets.push(`effort = ${m.fm.fm.effort}`);
+        if (m.fm.fm.value !== undefined) sets.push(`value = ${m.fm.fm.value}`);
+        return sets.length > 0
+          ? [`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(m.itemId)}';`]
+          : [];
+      })
+      .join("");
+    if (stmts) await dsql(stmts);
+  }
+  const bad = meta.filter((m) => m.fm.findings.length > 0);
+  if (bad.length === 0) return [];
+  return [{
+    id: "D5",
+    severity: "warn",
+    count: bad.length,
+    message: `${bad.length} item(s) with invalid frontmatter: ` +
+      bad.slice(0, 5).map((m) => `${m.itemId.slice(-6)}:${m.fm.findings.map((f) => f.message).join(";")}`).join(" | "),
+  }];
+}
+
+/** Replace mined + declared edges (text-parsed 'blocks' from upsertItems survive via PK dedupe). */
 export async function upsertRelationEdges(edges: readonly RelationEdge[]): Promise<void> {
   await dsql("DELETE FROM item_deps WHERE edge_type IN ('parent-child','closes')");
   if (edges.length === 0) return;
@@ -308,15 +360,16 @@ export async function syncPull(estimatePoints = 1400): Promise<SyncResult | Sync
   const cost = Math.max(before.remaining - after.remaining, 0);
   await upsertItems(items);
 
-  // Mine native relations (sub-issues, closing PRs) into the dep graph — metered separately.
+  // Mine native relations + content meta (frontmatter, createdAt) — metered separately.
   const idByRepoNumber = new Map(items.map((i) => [`${i.repository}#${i.number}`, i.id]));
-  const relEdges = await fetchRelationEdges(idByRepoNumber);
-  await upsertRelationEdges(relEdges);
+  const graph = await fetchContentGraph(idByRepoNumber);
+  await upsertRelationEdges(graph.edges);
+  const fmFindings = await applyContentMeta(graph.meta);
   const afterRel = await fetchGraphqlLimit();
   const relCost = Math.max(after.remaining - afterRel.remaining, 0);
   await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'relations-pull', ${relCost})`);
 
-  const shapeFindings = await shapeChecks();
+  const shapeFindings = [...(await shapeChecks()), ...fmFindings];
   await dsql(
     `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${items.length}, ${cost}, ${after.remaining})`,
   );
@@ -365,13 +418,13 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
  * dependency scores high on flow. This is the `bd ready` computation, in the mirror.
  */
 export async function readMirrorScheduling(): Promise<
-  (BoardItem & { openBlockers: number; unblocks: number })[]
+  (BoardItem & { openBlockers: number; unblocks: number; ageDays: number })[]
 > {
   const rows = await dsqlRows<{
     number: number; item_id: string; title: string; repository: string;
     status: string; kind: string; effort: number; value: number; depends_on: string;
-    open_blockers: number | string; unblocks: number | string;
-  }>(`SELECT i.*,
+    open_blockers: number | string; unblocks: number | string; age_days: number | string | null;
+  }>(`SELECT i.*, DATEDIFF(UTC_TIMESTAMP(), i.created_at) AS age_days,
       (SELECT COUNT(*) FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
         WHERE d.item_id = i.item_id AND t.status <> 'Done') AS open_blockers,
       (SELECT COUNT(*) FROM item_deps d2 JOIN items s ON s.item_id = d2.item_id
@@ -389,6 +442,7 @@ export async function readMirrorScheduling(): Promise<
     dependsOn: r.depends_on ? r.depends_on.split(",").map(Number) : [],
     openBlockers: Number(r.open_blockers),
     unblocks: Number(r.unblocks),
+    ageDays: r.age_days == null ? 0 : Number(r.age_days),
   }));
 }
 

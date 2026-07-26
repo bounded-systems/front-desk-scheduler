@@ -49,7 +49,7 @@ async function main() {
 
   // Read plane: prefer the Dolt mirror (pinned commit, zero API cost, no GitHub
   // credential needed). Fall back to a cached/live gh fetch if the mirror is empty.
-  let board: (BoardItem & { openBlockers?: number; unblocks?: number })[];
+  let board: (BoardItem & { openBlockers?: number; unblocks?: number; ageDays?: number })[];
   let source: string;
   const meta = await mirrorMeta().catch(() => null);
   if (meta) {
@@ -73,6 +73,7 @@ async function main() {
         value: i.value,
         openBlockers: i.openBlockers ?? 0,
         unblocks: i.unblocks ?? 0,
+        ageDays: i.ageDays ?? 0,
       }))
     : toPriorityInputs(scoped);
 
