@@ -7,12 +7,17 @@ name: mirror-sync-delta
 #
 # Same App-token-over-OIDC + DoltHub credential setup as mirror-sync.yml.
 on:
+  # Event-driven: the front-desk-webhook Worker fires repository_dispatch on every
+  # issue/PR open/close/reopen, so the mirror is refreshed in near-real-time
+  # instead of waiting for the hourly poll. The schedule is the backstop.
+  repository_dispatch:
+    types: [board-changed]
   schedule:
-    - cron: "37 * * * *" # hourly — cheap Search-API delta (full sync is mirror-sync.yml)
+    - cron: "37 * * * *" # hourly backstop — cheap Search-API delta (full sync is mirror-sync.yml)
   workflow_dispatch: {}
 concurrency:
   group: mirror-sync-delta
-  cancel-in-progress: false # a running sync finishes; syncs are cheap and serial
+  cancel-in-progress: true # coalesce webhook bursts into one run
 permissions:
   id-token: write # OIDC → cf-token-broker
   contents: read
