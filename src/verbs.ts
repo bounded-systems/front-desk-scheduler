@@ -40,7 +40,7 @@ const QueueItem = z.object({
 });
 
 const WhatsNextOutput = z.object({
-  source: z.enum(["local", "dolthub"]),
+  source: z.enum(["local", "dolthub", "server"]),
   syncedAt: z.string().nullable(),
   budget: z.string(),
   remaining: z.number(),

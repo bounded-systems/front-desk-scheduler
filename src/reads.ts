@@ -15,18 +15,22 @@
 
 import { existsSync } from "node:fs";
 import { MIRROR_DIR, mirrorMeta, readMirrorScheduling } from "./mirror.ts";
-import { meta as dolthubMeta, readScheduling as dolthubScheduling, type SchedulingItem } from "./dolthub.ts";
+import { meta as dolthubMeta, readScheduling as dolthubScheduling } from "./dolthub.ts";
+import { meta as serverMeta, readScheduling as serverScheduling } from "./dolt-server.ts";
+import type { SchedulingItem } from "./scheduling.ts";
 
 export type { SchedulingItem };
+
+export type ReadSource = "local" | "dolthub" | "server";
 
 export interface ReadMeta {
   readonly syncedAt: string;
   readonly commit: string;
-  readonly source: "local" | "dolthub";
+  readonly source: ReadSource;
 }
 
 export interface SchedulerReads {
-  readonly source: "local" | "dolthub";
+  readonly source: ReadSource;
   readScheduling(): Promise<SchedulingItem[]>;
   meta(): Promise<ReadMeta | null>;
 }
@@ -49,10 +53,26 @@ export const localDoltReads: SchedulerReads = {
   },
 };
 
-/** Pick the adapter: env override, else local clone if present, else DoltHub. */
+/** A running `dolt sql-server` over the MySQL protocol (the "dolt image"). */
+export const serverReads: SchedulerReads = {
+  source: "server",
+  readScheduling: () => serverScheduling(),
+  meta: async () => {
+    const m = await serverMeta();
+    return m ? { ...m, source: "server" } : null;
+  },
+};
+
+/**
+ * Pick the adapter. Priority: FDS_READS override → a running dolt-server if
+ * DOLT_HOST is set → a local clone if present → DoltHub (zero-infra default).
+ */
 export function resolveReads(): SchedulerReads {
-  const forced = process.env.FDS_READS;
-  if (forced === "local") return localDoltReads;
-  if (forced === "dolthub") return dolthubReads;
+  switch (process.env.FDS_READS) {
+    case "server": return serverReads;
+    case "local": return localDoltReads;
+    case "dolthub": return dolthubReads;
+  }
+  if (process.env.DOLT_HOST) return serverReads;
   return existsSync(`${MIRROR_DIR}/.dolt`) ? localDoltReads : dolthubReads;
 }

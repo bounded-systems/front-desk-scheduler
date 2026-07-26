@@ -28,6 +28,7 @@
   "dependencies": {
     "@bounded-systems/verbspec": "npm:@jsr/bounded-systems__verbspec@^0.4.0",
     "@bounded-systems/verbspec-mcp": "npm:@jsr/bounded-systems__verbspec-mcp@^0.1.0",
+    "mysql2": "^3.11.0",
     "zod": "^4.0.0"
   }
 }
