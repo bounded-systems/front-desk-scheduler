@@ -1,0 +1,89 @@
+# SHACL shapes for Front Desk mirror items — the declarative twin of the
+# enforcement stack, one layer per mechanism:
+#
+#   column constraints (Dolt ENUM/CHECK/FK)  → sh:in / sh:minInclusive / sh:class
+#   cross-row SQL checks (mirror shapeChecks) → sh:sparql shapes below
+#   scheduler invariants (S1..L2, proven)     → the semantics these shapes guard
+#
+# Validation target: the mirror rendered as RDF (one fd:Item per items row,
+# fd:dependsOn edges from item_deps). Wire to conformance-kit's SHACL runner —
+# see front-desk-scheduler issue tracker.
+
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix fd:   <https://bounded.tools/ns/front-desk#> .
+
+fd:ItemShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:property [
+    sh:path fd:number ;
+    sh:datatype xsd:integer ; sh:minInclusive 1 ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    sh:path fd:status ;
+    sh:in ( "Todo" "In Progress" "Blocked" "Done" ) ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    sh:path fd:kind ;
+    sh:in ( "epic" "room" "door" "task" ) ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    sh:path fd:effort ;
+    sh:datatype xsd:double ; sh:minInclusive 0 ; sh:maxInclusive 10 ;
+  ] ;
+  sh:property [
+    sh:path fd:value ;
+    sh:datatype xsd:double ; sh:minInclusive 0 ; sh:maxInclusive 100 ;
+  ] ;
+  sh:property [
+    sh:path fd:dependsOn ;
+    sh:class fd:Item ;         # referential integrity (mirror: FK fk_dep_dst)
+    sh:disjoint fd:self ;      # no self-dependency (mirror: chk_no_self_dep)
+  ] .
+
+# D2 — a Blocked item must have at least one non-Done dependency (justified block).
+fd:BlockedJustifiedShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:severity sh:Warning ;
+  sh:sparql [
+    sh:message "Blocked item has no open dependency recorded" ;
+    sh:select """
+      SELECT $this WHERE {
+        $this fd:status "Blocked" .
+        FILTER NOT EXISTS {
+          $this fd:dependsOn ?dep .
+          ?dep fd:status ?s . FILTER (?s != "Done")
+        }
+      }""" ;
+  ] .
+
+# D3 — a Todo item with an open dependency should be Blocked (bd-ready agreement).
+fd:ReadyAgreementShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:severity sh:Warning ;
+  sh:sparql [
+    sh:message "Todo item has open dependencies (should be Blocked)" ;
+    sh:select """
+      SELECT $this WHERE {
+        $this fd:status "Todo" ; fd:dependsOn ?dep .
+        ?dep fd:status ?s . FILTER (?s != "Done")
+      }""" ;
+  ] .
+
+# D1 — acyclicity (scheduler invariant L1's data precondition). SHACL-SPARQL can
+# express bounded-depth cycle detection via property paths:
+fd:AcyclicShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:severity sh:Violation ;
+  sh:sparql [
+    sh:message "Item participates in a dependency cycle — can never become Ready" ;
+    sh:select """
+      SELECT $this WHERE { $this fd:dependsOn+ $this }""" ;
+  ] .

@@ -85,6 +85,7 @@ export interface SyncResult {
   readonly remaining: number;
   readonly commit: string;
   readonly gated: false;
+  readonly shapeFindings: ShapeFinding[];
 }
 
 export interface SyncGated {
@@ -116,6 +117,94 @@ export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
     await dsql(`REPLACE INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on) VALUES ${values}`);
   }
   await dsql(`DELETE FROM items WHERE item_id NOT IN (${items.map((i) => `'${sqlEscape(i.id)}'`).join(",")})`);
+
+  // Resolve depends_on numbers → same-repo item ids into the item_deps edge
+  // table (FK-enforced, so a dep can only point at a real board item). Numbers
+  // are ambiguous cross-repo; same-repo is the resolution convention, and
+  // unresolvable refs surface in shapeChecks() rather than silently dropping.
+  await dsql("DELETE FROM item_deps");
+  const byRepoNumber = new Map(items.map((i) => [`${i.repository}#${i.number}`, i.id]));
+  const edges: string[] = [];
+  for (const i of items) {
+    for (const dep of i.dependsOn) {
+      const target = byRepoNumber.get(`${i.repository}#${dep}`);
+      if (target && target !== i.id) edges.push(`('${sqlEscape(i.id)}','${sqlEscape(target)}')`);
+    }
+  }
+  if (edges.length > 0) {
+    await dsql(`INSERT IGNORE INTO item_deps (item_id, dep_item_id) VALUES ${edges.join(",")}`);
+  }
+}
+
+// --- shape checks (the SHACL-style overlay, executed as SQL) ---
+
+export interface ShapeFinding {
+  readonly id: string;
+  readonly severity: "hard" | "warn";
+  readonly count: number;
+  readonly message: string;
+}
+
+/**
+ * Cross-row invariants the column constraints can't express. Same catalog idea
+ * as machine-schema's invariantSpecs / the scheduler's S*-L*: each check is a
+ * query whose result set must be empty. Declared once more, declaratively, in
+ * specs/shapes.ttl (SHACL) for the org conformance story.
+ */
+export async function shapeChecks(): Promise<ShapeFinding[]> {
+  const findings: ShapeFinding[] = [];
+  const check = async (id: string, severity: "hard" | "warn", sql: string, message: string) => {
+    const rows = await dsqlRows<{ n: number | string }>(sql);
+    const n = Number(rows[0]?.n ?? 0);
+    if (n > 0) findings.push({ id, severity, count: n, message: `${n} ${message}` });
+  };
+
+  // D1 — dep graph is acyclic (deadlock-freedom's data precondition; scheduler L1).
+  await check(
+    "D1",
+    "hard",
+    `WITH RECURSIVE walk (src, dst, depth) AS (
+       SELECT item_id, dep_item_id, 1 FROM item_deps
+       UNION ALL
+       SELECT w.src, d.dep_item_id, w.depth + 1
+       FROM walk w JOIN item_deps d ON d.item_id = w.dst
+       WHERE w.depth < 50
+     ) SELECT COUNT(*) AS n FROM walk WHERE src = dst`,
+    "dependency cycle path(s) — items that can never become Ready",
+  );
+
+  // D2 — Blocked status must be justified: a Blocked item should have ≥1 non-Done dep.
+  await check(
+    "D2",
+    "warn",
+    `SELECT COUNT(*) AS n FROM items i
+     WHERE i.status = 'Blocked' AND NOT EXISTS (
+       SELECT 1 FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
+       WHERE d.item_id = i.item_id AND t.status <> 'Done')`,
+    "Blocked item(s) with no open dependency recorded",
+  );
+
+  // D3 — the inverse: a Todo item with an open dep should be Blocked (bd-ready agreement).
+  await check(
+    "D3",
+    "warn",
+    `SELECT COUNT(*) AS n FROM items i
+     WHERE i.status = 'Todo' AND EXISTS (
+       SELECT 1 FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
+       WHERE d.item_id = i.item_id AND t.status <> 'Done')`,
+    "Todo item(s) whose recorded deps are still open (should be Blocked)",
+  );
+
+  // D4 — unresolvable depends_on text (typo'd or cross-repo refs that resolved to nothing).
+  await check(
+    "D4",
+    "warn",
+    `SELECT COUNT(*) AS n FROM items i
+     WHERE i.depends_on <> '' AND NOT EXISTS (SELECT 1 FROM item_deps d WHERE d.item_id = i.item_id)`,
+    "item(s) with depends_on text that resolved to no edge (typo or cross-repo ref)",
+  );
+
+  return findings;
 }
 
 /**
@@ -135,6 +224,7 @@ export async function syncPull(estimatePoints = 1400): Promise<SyncResult | Sync
   const after = await fetchGraphqlLimit();
   const cost = Math.max(before.remaining - after.remaining, 0);
   await upsertItems(items);
+  const shapeFindings = await shapeChecks();
   await dsql(
     `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${items.length}, ${cost}, ${after.remaining})`,
   );
@@ -148,7 +238,14 @@ export async function syncPull(estimatePoints = 1400): Promise<SyncResult | Sync
   );
   const { stdout: head } = await pexecFile("dolt", ["log", "-n", "1", "--oneline"], { cwd: MIRROR_DIR });
 
-  return { items: items.length, costPoints: cost, remaining: after.remaining, commit: head.replace(/\x1b\[[0-9;]*m/g, "").trim(), gated: false };
+  return {
+    items: items.length,
+    costPoints: cost,
+    remaining: after.remaining,
+    commit: head.replace(/\x1b\[[0-9;]*m/g, "").trim(),
+    gated: false,
+    shapeFindings,
+  };
 }
 
 // --- reads (no GitHub credential, pinned to the mirror) ---
