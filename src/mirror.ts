@@ -103,12 +103,18 @@ function sqlEscape(s: string): string {
  * number-keyed REPLACE silently deduplicates. Rows gone from the board are removed.
  */
 export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
-  const values = items
-    .map((i) =>
-      `('${sqlEscape(i.id)}',${i.number},'${sqlEscape(i.title)}','${sqlEscape(i.repository)}','${sqlEscape(i.status)}','${i.kind}',${i.effort},${i.value},'${sqlEscape(i.dependsOn.join(","))}')`,
-    )
-    .join(",");
-  await dsql(`REPLACE INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on) VALUES ${values}`);
+  // Chunked: one giant multi-row statement blows Linux's argv limit (E2BIG) —
+  // macOS's ARG_MAX is larger, which hid this locally.
+  const CHUNK = 150;
+  for (let at = 0; at < items.length; at += CHUNK) {
+    const values = items
+      .slice(at, at + CHUNK)
+      .map((i) =>
+        `('${sqlEscape(i.id)}',${i.number},'${sqlEscape(i.title)}','${sqlEscape(i.repository)}','${sqlEscape(i.status)}','${i.kind}',${i.effort},${i.value},'${sqlEscape(i.dependsOn.join(","))}')`,
+      )
+      .join(",");
+    await dsql(`REPLACE INTO items (item_id,number,title,repository,status,kind,effort,value,depends_on) VALUES ${values}`);
+  }
   await dsql(`DELETE FROM items WHERE item_id NOT IN (${items.map((i) => `'${sqlEscape(i.id)}'`).join(",")})`);
 }
 
