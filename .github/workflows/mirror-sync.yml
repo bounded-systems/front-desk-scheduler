@@ -1,0 +1,73 @@
+name: mirror-sync
+# The deployed read-plane syncer — the ONE GitHub read in the CQRS architecture.
+#
+#   GitHub board ──(App token, budget-gated)──▶ Dolt mirror ──▶ DoltHub (read plane)
+#
+# Runs scripts/sync.ts on a schedule so no laptop ever needs to: it pulls the
+# live Front Desk board into the Dolt mirror (one commit per sync, actual
+# GraphQL cost metered into api_spend, fail-closed via budgetGate) and pushes
+# to the DoltHub remote that all readers consume.
+#
+# Auth:
+#   - GitHub: the Front Desk App token, minted over Actions OIDC via the org's
+#     cf-token-broker (org var FRONT_DESK_BROKER_URL) — same pattern as
+#     gh-project-room's front-desk-sync.yml. App budget, App identity; no PAT.
+#   - DoltHub: repo secret DOLTHUB_CREDS_JWK (a dolt credential keypair).
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6h — the board's freshness contract
+  workflow_dispatch: {}
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false # a running sync finishes; syncs are cheap and serial
+permissions:
+  id-token: write # OIDC → cf-token-broker
+  contents: read
+env:
+  DOLTHUB_DB: bdelanghe/front-desk-mirror
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@6044e13b5dcd12b425e6bb3c96e0e7bcdbe1dbdc # v6.0.0
+        with:
+          node-version: "24"
+      - name: Install dolt
+        run: |
+          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          dolt version
+      - name: Configure dolt identity + DoltHub credential
+        env:
+          DOLTHUB_CREDS_JWK: ${{ secrets.DOLTHUB_CREDS_JWK }}
+        run: |
+          set -euo pipefail
+          [ -n "$DOLTHUB_CREDS_JWK" ] || { echo "::error::DOLTHUB_CREDS_JWK secret not set"; exit 1; }
+          umask 077; printf '%s' "$DOLTHUB_CREDS_JWK" > /tmp/cred.jwk
+          dolt creds import /tmp/cred.jwk
+          rm -f /tmp/cred.jwk
+          dolt config --global --add user.name "front-desk-mirror-sync"
+          dolt config --global --add user.email "1240090+bdelanghe@users.noreply.github.com"
+      - name: Mint Front Desk App token via the OIDC broker
+        id: broker-token
+        env:
+          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$BROKER_URL" ] || { echo "::error::org var FRONT_DESK_BROKER_URL not visible to this repo"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')"
+          [ -n "$tok" ] || { echo "::error::broker did not return a token for app 'front-desk'"; exit 1; }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+      - name: Clone mirror from DoltHub
+        run: dolt clone "$DOLTHUB_DB" mirror
+      - name: Sync board → mirror (budget-gated, metered)
+        env:
+          GH_TOKEN: ${{ steps.broker-token.outputs.token }}
+        run: node scripts/sync.ts
+      - name: Push mirror → DoltHub
+        run: cd mirror && dolt push origin main
