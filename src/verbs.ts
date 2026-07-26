@@ -136,6 +136,83 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
   },
 });
 
+// ── claim / release (the agent work loop; writes the authoritative local mirror) ──
+
+import { claimNext, readMirrorScheduling, releaseClaim } from "./mirror.ts";
+
+const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; byId: Map<string, { number: number; repository: string; title: string }> }> => {
+  const board = (await readMirrorScheduling()).filter(
+    (i) => i.status !== "Done" && !i.leased && (!repo || i.repository === repo),
+  );
+  const inputs: PriorityInput[] = board.map((i, idx) => ({
+    number: idx, title: i.title, kind: i.kind, state: statusToState(i.status),
+    effort: i.effort, value: i.value, openBlockers: i.openBlockers, unblocks: i.unblocks, ageDays: i.ageDays,
+  }));
+  const ranked = prioritize(inputs, Number.MAX_SAFE_INTEGER).filter((r) => r.eligible);
+  const ids = ranked.map((r) => board[r.number].id);
+  const byId = new Map(board.map((i) => [i.id, { number: i.number, repository: i.repository, title: i.title }]));
+  return { ids, byId };
+};
+
+const ClaimOutput = z.object({
+  won: z.boolean(),
+  itemId: z.string().nullable(),
+  number: z.number().nullable(),
+  repository: z.string().nullable(),
+  title: z.string().nullable(),
+  reason: z.string(),
+});
+
+export const claimVerb = defineVerb({
+  id: "claim",
+  summary:
+    "Lease the top-ranked ready item for an agent — an atomic CAS (the scheduler's proven S1) with a ttl visibility timeout; a dead agent's lease auto-expires.",
+  actor: "front-desk",
+  input: z.object({
+    agent: z.string(),
+    repo: z.string().optional(),
+    ttl: z.coerce.number().int().min(1).default(3600),
+  }),
+  output: ClaimOutput,
+  run: async (input) => {
+    const { ids, byId } = await orderedReadyIds(input.repo);
+    const res = await claimNext(input.agent, ids, input.ttl);
+    const meta = res.itemId ? byId.get(res.itemId) : undefined;
+    return {
+      won: res.won,
+      itemId: res.itemId ?? null,
+      number: meta?.number ?? null,
+      repository: meta?.repository ?? null,
+      title: meta?.title ?? null,
+      reason: res.reason,
+    };
+  },
+  render: (o) =>
+    o.won
+      ? `claimed #${o.number} [${o.repository}] — ${o.reason}\n  ${o.title}`
+      : `no claim: ${o.reason}`,
+});
+
+export const releaseVerb = defineVerb({
+  id: "release",
+  summary: "Release or complete a lease, freeing the item (or recording completion).",
+  actor: "front-desk",
+  input: z.object({
+    itemId: z.string(),
+    agent: z.string(),
+    complete: z.coerce.boolean().default(false),
+  }),
+  output: z.object({ released: z.boolean(), status: z.string() }),
+  run: async (input) => {
+    const status = input.complete ? "completed" : "released";
+    await releaseClaim(input.itemId, input.agent, status);
+    return { released: true, status };
+  },
+  render: (o) => `${o.status} (${o.released ? "ok" : "failed"})`,
+});
+
 export const VERBS: Registry = {
   "whats-next": whatsNextVerb,
+  "claim": claimVerb,
+  "release": releaseVerb,
 };
