@@ -63,6 +63,14 @@ jobs:
           [ -n "$tok" ] || { echo "::error::broker did not return a token for app 'front-desk'"; exit 1; }
           echo "::add-mask::$tok"
           echo "token=$tok" >> "$GITHUB_OUTPUT"
+      - name: Force IPv4 for DoltHub remote API
+        # Hosted runners have no IPv6 route; dolt dials the AAAA record and dies
+        # with "network is unreachable". Pin the A record in /etc/hosts.
+        run: |
+          set -euo pipefail
+          ip="$(dig +short A doltremoteapi.dolthub.com | grep -E '^[0-9.]+$' | head -1)"
+          [ -n "$ip" ] || { echo "::error::could not resolve doltremoteapi.dolthub.com A record"; exit 1; }
+          echo "$ip doltremoteapi.dolthub.com" | sudo tee -a /etc/hosts
       - name: Clone mirror from DoltHub
         run: dolt clone "$DOLTHUB_DB" mirror
       - name: Sync board → mirror (budget-gated, metered)
