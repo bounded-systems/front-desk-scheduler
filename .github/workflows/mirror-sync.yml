@@ -24,7 +24,7 @@ permissions:
   id-token: write # OIDC → cf-token-broker
   contents: read
 env:
-  DOLTHUB_DB: bdelanghe/front-desk-mirror
+  DOLTHUB_DB: bounded-systems/front-desk-mirror
 jobs:
   sync:
     runs-on: ubuntu-latest
