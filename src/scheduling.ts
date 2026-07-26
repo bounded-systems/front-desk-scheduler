@@ -73,6 +73,73 @@ export const SQL = {
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
     "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items WHERE status <> 'Done'",
   edges: "SELECT item_id, dep_item_id FROM item_deps",
+  // Typed edges — carries edge_type (blocks / parent-child / closes) that the
+  // flattened `edges` query drops. The GH-canonical dep-graph surface
+  // (`readTypedEdges` → the `graph` verb) needs the kind to distinguish
+  // parent-child (epic children) from blockers.
+  typedEdges: "SELECT item_id, dep_item_id, edge_type FROM item_deps",
   leases:
     "SELECT DISTINCT item_id FROM claims WHERE status='active' AND TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
 } as const;
+
+// ── typed dep-graph surface (GH-canonical) — the bd-dep/bd-ready replacement ──
+
+/** One raw edge with its kind, as `SQL.typedEdges` returns it. */
+export interface RawTypedEdge {
+  item_id: string;
+  dep_item_id: string;
+  edge_type: string;
+}
+
+/** A node in the GH-canonical graph — identity is (repository, number). */
+export interface GraphRef {
+  number: number;
+  repository: string;
+}
+
+/** A typed dependency edge, GH-canonical. `from` depends on / is blocked by `to`. */
+export interface GraphEdge {
+  from: GraphRef;
+  to: GraphRef;
+  kind: string;
+}
+
+/**
+ * The dep-graph over the schedulable (non-Done) set, GH-canonical.
+ *  - `blockedBy` maps an item's `item_id` to its OPEN blockers (deps still in
+ *    the non-Done set via a `blocks`/`parent-child` edge; `closes` excluded —
+ *    same readiness rule as the mirror's ready query).
+ *  - `edges` lists every typed edge whose BOTH endpoints are in the set.
+ */
+export interface Graph {
+  edges: GraphEdge[];
+  blockedBy: Map<string, GraphRef[]>;
+}
+
+/** Edge kinds that gate readiness (an open one blocks). `closes` is NOT a blocker. */
+const BLOCKER_KINDS = new Set(["blocks", "parent-child"]);
+
+/**
+ * Assemble the GH-canonical dep-graph from the non-Done items + typed edges.
+ * Pure: no I/O. Edges to items outside the set (Done ⇒ satisfied) are dropped,
+ * so both `edges` and `blockedBy` describe only the schedulable graph.
+ */
+export function assembleGraph(items: readonly SchedulingItem[], typedEdges: readonly RawTypedEdge[]): Graph {
+  const refById = new Map<string, GraphRef>(
+    items.map((i) => [i.id, { number: i.number, repository: i.repository }]),
+  );
+  const edges: GraphEdge[] = [];
+  const blockedBy = new Map<string, GraphRef[]>();
+  for (const e of typedEdges) {
+    const from = refById.get(e.item_id);
+    const to = refById.get(e.dep_item_id);
+    if (!from || !to) continue; // an endpoint is Done ⇒ outside the schedulable set
+    edges.push({ from, to, kind: e.edge_type });
+    if (BLOCKER_KINDS.has(e.edge_type)) {
+      const list = blockedBy.get(e.item_id) ?? [];
+      list.push(to);
+      blockedBy.set(e.item_id, list);
+    }
+  }
+  return { edges, blockedBy };
+}

@@ -7,7 +7,14 @@
  * budget-gated syncer.
  */
 
-import { assembleScheduling, type RawEdge, type RawItem, type SchedulingItem, SQL } from "./scheduling.ts";
+import {
+  assembleScheduling,
+  type RawEdge,
+  type RawItem,
+  type RawTypedEdge,
+  type SchedulingItem,
+  SQL,
+} from "./scheduling.ts";
 
 export type { SchedulingItem };
 
@@ -57,4 +64,9 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
     query<{ item_id: string }>(SQL.leases, ref),
   ]);
   return assembleScheduling(items, edges, leasedRows.map((r) => r.item_id));
+}
+
+/** Typed dep edges (with edge_type) over DoltHub HTTP — the dep-graph source. */
+export async function readTypedEdges(ref = "main"): Promise<RawTypedEdge[]> {
+  return query<RawTypedEdge>(SQL.typedEdges, ref);
 }

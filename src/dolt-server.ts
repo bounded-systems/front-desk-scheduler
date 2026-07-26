@@ -14,7 +14,14 @@
  */
 
 import { createConnection } from "mysql2/promise";
-import { assembleScheduling, type RawEdge, type RawItem, type SchedulingItem, SQL } from "./scheduling.ts";
+import {
+  assembleScheduling,
+  type RawEdge,
+  type RawItem,
+  type RawTypedEdge,
+  type SchedulingItem,
+  SQL,
+} from "./scheduling.ts";
 
 export interface ServerConfig {
   readonly host: string;
@@ -58,6 +65,11 @@ export async function readScheduling(): Promise<SchedulingItem[]> {
     ]);
     return assembleScheduling(items, edges, leased.map((r) => r.item_id));
   });
+}
+
+/** Typed dep edges (with edge_type) — the GH-canonical dep-graph source. */
+export async function readTypedEdges(): Promise<RawTypedEdge[]> {
+  return withConn(async (q) => (await q(SQL.typedEdges)) as RawTypedEdge[]);
 }
 
 export async function meta(): Promise<{ syncedAt: string; commit: string } | null> {

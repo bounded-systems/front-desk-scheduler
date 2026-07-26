@@ -14,10 +14,18 @@
  */
 
 import { existsSync } from "node:fs";
-import { MIRROR_DIR, mirrorMeta, readMirrorScheduling } from "./mirror.ts";
-import { meta as dolthubMeta, readScheduling as dolthubScheduling } from "./dolthub.ts";
-import { meta as serverMeta, readScheduling as serverScheduling } from "./dolt-server.ts";
-import type { SchedulingItem } from "./scheduling.ts";
+import { MIRROR_DIR, mirrorMeta, readMirrorScheduling, readMirrorTypedEdges } from "./mirror.ts";
+import {
+  meta as dolthubMeta,
+  readScheduling as dolthubScheduling,
+  readTypedEdges as dolthubTypedEdges,
+} from "./dolthub.ts";
+import {
+  meta as serverMeta,
+  readScheduling as serverScheduling,
+  readTypedEdges as serverTypedEdges,
+} from "./dolt-server.ts";
+import type { RawTypedEdge, SchedulingItem } from "./scheduling.ts";
 
 export type { SchedulingItem };
 
@@ -32,12 +40,15 @@ export interface ReadMeta {
 export interface SchedulerReads {
   readonly source: ReadSource;
   readScheduling(): Promise<SchedulingItem[]>;
+  /** Typed dep edges (with edge_type) — the GH-canonical dep-graph source. */
+  readTypedEdges(): Promise<RawTypedEdge[]>;
   meta(): Promise<ReadMeta | null>;
 }
 
 export const dolthubReads: SchedulerReads = {
   source: "dolthub",
   readScheduling: () => dolthubScheduling(),
+  readTypedEdges: () => dolthubTypedEdges(),
   meta: async () => {
     const m = await dolthubMeta();
     return m ? { ...m, source: "dolthub" } : null;
@@ -47,6 +58,7 @@ export const dolthubReads: SchedulerReads = {
 export const localDoltReads: SchedulerReads = {
   source: "local",
   readScheduling: () => readMirrorScheduling(),
+  readTypedEdges: () => readMirrorTypedEdges(),
   meta: async () => {
     const m = await mirrorMeta();
     return m ? { ...m, source: "local" } : null;
@@ -57,6 +69,7 @@ export const localDoltReads: SchedulerReads = {
 export const serverReads: SchedulerReads = {
   source: "server",
   readScheduling: () => serverScheduling(),
+  readTypedEdges: () => serverTypedEdges(),
   meta: async () => {
     const m = await serverMeta();
     return m ? { ...m, source: "server" } : null;

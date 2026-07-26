@@ -18,6 +18,7 @@ import type { BoardItem } from "./board.ts";
 import { fetchBoardItems } from "./board.ts";
 import { budgetGate, type Budget, type CapacityReport } from "./policy.ts";
 import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
+import { type RawTypedEdge, SQL } from "./scheduling.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -723,6 +724,11 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
  * whose fix is already in an open PR ranks as blocked, and closing a hot
  * dependency scores high on flow. This is the `bd ready` computation, in the mirror.
  */
+/** Typed dep edges (with edge_type) from the local clone — the dep-graph source. */
+export async function readMirrorTypedEdges(): Promise<RawTypedEdge[]> {
+  return dsqlRows<RawTypedEdge>(SQL.typedEdges);
+}
+
 export async function readMirrorScheduling(): Promise<
   (BoardItem & { openBlockers: number; unblocks: number; ageDays: number; leased: boolean })[]
 > {
