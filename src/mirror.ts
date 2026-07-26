@@ -616,6 +616,67 @@ export async function syncPull(estimatePoints = 1400): Promise<SyncResult | Sync
   };
 }
 
+// --- delta sync (#1): refresh only what changed, via the Search API ---
+
+export interface DeltaResult {
+  readonly changed: number; // existing rows refreshed
+  readonly newSeen: number; // changed issues not yet on the mirror (weekly full-add covers these)
+  readonly since: string;
+}
+
+/**
+ * Cheap incremental refresh. The full pull costs ~610 GraphQL points because it
+ * pages every one of 1,260 items; but most are Done and static. The Search API
+ * (a SEPARATE rate-limit budget, not GraphQL) returns only issues updated since
+ * the last sync — usually a handful. We refresh github-owned fields (title,
+ * status via open/closed) on the rows we already have; brand-new issues are left
+ * for the weekly full pull to add (they need a project-item id search can't give).
+ *
+ * Deliberately conservative: only sets closed→Done (the transition that goes
+ * stale); open items keep their board status (Todo/In Progress/Blocked), which
+ * the full pull reconciles.
+ */
+export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResult> {
+  const last = await dsqlRows<{ synced_at: string }>(
+    "SELECT synced_at FROM sync_log ORDER BY id DESC LIMIT 1",
+  );
+  const since = (last[0]?.synced_at ?? "2020-01-01 00:00:00").slice(0, 10); // date granularity
+  const { stdout } = await pexecFile("gh", [
+    "search", "issues",
+    "--owner", org,
+    "--updated", `>=${since}`,
+    "--json", "number,repository,title,state,isPullRequest",
+    "--limit", "500",
+  ], { maxBuffer: 32 * 1024 * 1024 });
+  const results = JSON.parse(stdout) as {
+    number: number; title: string; state: string; isPullRequest: boolean;
+    repository: { name: string };
+  }[];
+
+  const known = new Map(
+    (await dsqlRows<{ item_id: string; repository: string; number: number }>(
+      "SELECT item_id, repository, number FROM items WHERE origin='github'",
+    )).map((r) => [`${r.repository}#${r.number}`, r.item_id]),
+  );
+
+  let changed = 0;
+  let newSeen = 0;
+  for (const r of results) {
+    const id = known.get(`${r.repository.name}#${r.number}`);
+    if (!id) { newSeen++; continue; }
+    const status = r.state.toLowerCase() === "closed" ? "Done" : undefined;
+    const sets = [`title = '${sqlEscape(r.title)}'`];
+    if (status) sets.push(`status = '${status}'`);
+    await dsql(`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(id)}'`);
+    changed++;
+  }
+  await dsql(
+    `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${changed}, 0, -1)`,
+  );
+  await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'delta-search', 0)`);
+  return { changed, newSeen, since };
+}
+
 // --- reads (no GitHub credential, pinned to the mirror) ---
 
 export interface MirrorMeta {

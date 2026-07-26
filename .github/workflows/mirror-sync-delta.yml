@@ -1,0 +1,80 @@
+name: mirror-sync-delta
+# Hourly CHEAP incremental refresh (#1). Uses the GitHub Search API (a separate
+# rate-limit budget, NOT GraphQL) to refresh only issues changed since the last
+# sync — ~1 GraphQL point vs ~610 for a full item-list. Refreshes title + status
+# (closed→Done) on existing mirror rows; brand-new items and the relation/
+# frontmatter graph are the weekly full sync's job (mirror-sync.yml).
+#
+# Same App-token-over-OIDC + DoltHub credential setup as mirror-sync.yml.
+on:
+  schedule:
+    - cron: "37 * * * *" # hourly — cheap Search-API delta (full sync is mirror-sync.yml)
+  workflow_dispatch: {}
+concurrency:
+  group: mirror-sync-delta
+  cancel-in-progress: false # a running sync finishes; syncs are cheap and serial
+permissions:
+  id-token: write # OIDC → cf-token-broker
+  contents: read
+env:
+  DOLTHUB_DB: bounded-systems/front-desk-mirror
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      - name: Install dolt
+        run: |
+          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          dolt version
+      - name: Configure dolt identity + DoltHub credential
+        env:
+          DOLTHUB_CREDS_JWK: ${{ secrets.DOLTHUB_CREDS_JWK }}
+        run: |
+          set -euo pipefail
+          [ -n "$DOLTHUB_CREDS_JWK" ] || { echo "::error::DOLTHUB_CREDS_JWK secret not set"; exit 1; }
+          umask 077; printf '%s' "$DOLTHUB_CREDS_JWK" > /tmp/cred.jwk
+          dolt creds import /tmp/cred.jwk
+          rm -f /tmp/cred.jwk
+          dolt config --global --add user.name "front-desk-mirror-sync"
+          dolt config --global --add user.email "1240090+bdelanghe@users.noreply.github.com"
+      - name: Mint Front Desk App token via the OIDC broker
+        id: broker-token
+        env:
+          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$BROKER_URL" ] || { echo "::error::org var FRONT_DESK_BROKER_URL not visible to this repo"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')"
+          [ -n "$tok" ] || { echo "::error::broker did not return a token for app 'front-desk'"; exit 1; }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+      - name: Force IPv4 for DoltHub remote API
+        # Hosted runners have no IPv6 route; dolt dials the AAAA record and dies
+        # with "network is unreachable". Pin the A record in /etc/hosts.
+        run: |
+          set -euo pipefail
+          ip="$(dig +short A doltremoteapi.dolthub.com | grep -E '^[0-9.]+$' | head -1)"
+          [ -n "$ip" ] || { echo "::error::could not resolve doltremoteapi.dolthub.com A record"; exit 1; }
+          echo "$ip doltremoteapi.dolthub.com" | sudo tee -a /etc/hosts
+      - name: Clone mirror from DoltHub
+        run: dolt clone "$DOLTHUB_DB" mirror
+      - name: Delta refresh (Search API — ~1 GraphQL point)
+        env:
+          GH_TOKEN: ${{ steps.broker-token.outputs.token }}
+        run: |
+          cd mirror && dolt config --global --add user.name "front-desk-mirror-sync" && dolt config --global --add user.email "1240090+bdelanghe@users.noreply.github.com" && cd ..
+          node scripts/sync-delta.ts
+          cd mirror
+          if [ -n "$(dolt status --porcelain 2>/dev/null || dolt diff --stat)" ]; then
+            dolt add -A && dolt commit -m "delta: incremental refresh" && dolt push origin main
+          else
+            echo "no changes"
+          fi
