@@ -16,6 +16,14 @@ DOLT_HOST=127.0.0.1 DOLT_PORT=3307 DOLT_USER=fds_reader DOLT_PASSWORD=<pw> \
   FDS_READS=server node scripts/fds.ts whats-next
 ```
 
+## Freshness
+
+The server runs as a **dolt read replica** of DoltHub (`dolt_read_replica_remote=origin`,
+`dolt_replicate_heads=main`, set as persisted system vars in the entrypoint). It
+**auto-pulls `main` on every transaction** — reads are always current, with no pull
+loop and no external client. Verified: a commit pushed to DoltHub appears on the
+server on the next query.
+
 ## Auth
 
 MySQL-style. The image creates a least-privilege read-only user (`fds_reader`,

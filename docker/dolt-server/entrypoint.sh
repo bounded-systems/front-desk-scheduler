@@ -21,5 +21,12 @@ cd "$DB"
 dolt sql -q "CREATE USER IF NOT EXISTS '${FDS_READER_USER}'@'%' IDENTIFIED BY '${FDS_READER_PASSWORD}';
              GRANT SELECT ON \`${DB}\`.* TO '${FDS_READER_USER}'@'%';"
 
-echo "serving $DB on :3306 (read-only user ${FDS_READER_USER})"
+# Freshness: run as a READ REPLICA of DoltHub. Persisted system vars make the
+# server auto-pull `main` from the `origin` remote on each transaction, so reads
+# are always current — native, no pull loop, no external client. Public mirror →
+# no credential needed for replication.
+dolt sql -q "SET @@PERSIST.dolt_read_replica_remote = 'origin';
+             SET @@PERSIST.dolt_replicate_heads = 'main';"
+
+echo "serving $DB on :3306 (read-only ${FDS_READER_USER}, read-replica of ${MIRROR})"
 exec dolt sql-server --host 0.0.0.0 --port 3306
