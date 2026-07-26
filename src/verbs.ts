@@ -73,8 +73,10 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
 
     const scoped = (input.repo ? board.filter((i) => i.repository === input.repo) : board)
       .filter((i) => !i.leased);
-    const inputs: PriorityInput[] = scoped.map((i) => ({
-      number: i.number,
+    // Use the array INDEX as the policy's `number` — issue numbers collide across
+    // repos, so identity must be positional, then mapped back to the real item.
+    const inputs: PriorityInput[] = scoped.map((i, idx) => ({
+      number: idx,
       title: i.title,
       kind: i.kind,
       state: statusToState(i.status),
@@ -87,17 +89,19 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
 
     const remaining = Math.max(budget.capacityPoints - input.consumed, 0);
     const ranked = prioritize(inputs, remaining).filter((r) => r.eligible);
-    const repoOf = (n: number) => scoped.find((i) => i.number === n)?.repository ?? "?";
-    const toQ = (r: (typeof ranked)[number]) => ({
-      number: r.number,
-      repository: repoOf(r.number),
-      kind: r.kind,
-      effort: r.effort,
-      value: r.value,
-      score: Number(r.score.toFixed(2)),
-      fits: r.fitsRemaining,
-      title: r.title,
-    });
+    const toQ = (r: (typeof ranked)[number]) => {
+      const it = scoped[r.number]; // r.number is the index
+      return {
+        number: it.number,
+        repository: it.repository,
+        kind: it.kind,
+        effort: it.effort,
+        value: it.value,
+        score: Number(r.score.toFixed(2)),
+        fits: r.fitsRemaining,
+        title: it.title,
+      };
+    };
 
     const top = ranked[0];
     const report = planCapacity(budget, top ? [top] : [], input.consumed);
