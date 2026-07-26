@@ -37,26 +37,20 @@ jobs:
         run: |
           curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
           dolt version
-      - name: DoltHub credential (OIDC broker preferred, secret fallback)
-        # Prefer the broker's /dolthub key-vault path (the cred lives only in the
-        # Worker, released behind OIDC + workflow-ref pin). Falls back to the
-        # stored secret until the broker is deployed with the DoltHub endpoint —
-        # so this is a non-breaking switch. Once deployed, drop the fallback + secret.
+      - name: DoltHub credential (via OIDC broker)
+        # The dolt cred lives only in the broker Worker; released over OIDC to this
+        # pinned workflow. No stored secret. Fails closed.
         env:
           BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
-          DOLTHUB_CREDS_JWK: ${{ secrets.DOLTHUB_CREDS_JWK }}
         run: |
-          set -uo pipefail
-          jwk=""
-          if [ -n "${BROKER_URL:-}" ]; then
-            jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty' || true)"
-            [ -n "$jwt" ] && jwk="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
-              "${BROKER_URL%/}/dolthub/front-desk-mirror" | jq -r '.jwk // empty' || true)"
-          fi
-          if [ -n "$jwk" ]; then echo "::notice::DoltHub cred via OIDC broker";
-          else echo "::notice::DoltHub broker unavailable — using stored secret"; jwk="${DOLTHUB_CREDS_JWK:-}"; fi
-          [ -n "$jwk" ] || { echo "::error::no DoltHub credential (broker or secret)"; exit 1; }
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          jwk="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/dolthub/front-desk-mirror" | jq -r '.jwk // empty')"
+          [ -n "$jwk" ] || { echo "::error::broker returned no DoltHub credential"; exit 1; }
           umask 077; printf '%s' "$jwk" > /tmp/cred.jwk
           dolt creds import /tmp/cred.jwk
           rm -f /tmp/cred.jwk
