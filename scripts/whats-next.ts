@@ -49,7 +49,7 @@ async function main() {
 
   // Read plane: prefer the Dolt mirror (pinned commit, zero API cost, no GitHub
   // credential needed). Fall back to a cached/live gh fetch if the mirror is empty.
-  let board: (BoardItem & { openBlockers?: number; unblocks?: number; ageDays?: number })[];
+  let board: (BoardItem & { openBlockers?: number; unblocks?: number; ageDays?: number; leased?: boolean })[];
   let source: string;
   const meta = await mirrorMeta().catch(() => null);
   if (meta) {
@@ -61,7 +61,8 @@ async function main() {
     board = await fetchBoardItems(undefined, undefined, undefined, 15);
     source = "github (no mirror yet — run scripts/sync.ts)";
   }
-  const scoped = args.repo ? board.filter((i) => i.repository === args.repo) : board;
+  const unleased = board.filter((i) => !i.leased);
+  const scoped = args.repo ? unleased.filter((i) => i.repository === args.repo) : unleased;
   // Mirror path: graph-derived counts. Fallback path: text-field derivation.
   const inputs = meta
     ? scoped.map((i) => ({

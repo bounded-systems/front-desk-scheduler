@@ -196,6 +196,76 @@ export async function setDoltFields(
   );
 }
 
+// --- leases (SQS-style claiming; the scheduler's S1 mutual-exclusion, in SQL) ---
+
+export interface ClaimResult {
+  readonly won: boolean;
+  readonly itemId?: string;
+  readonly number?: number;
+  readonly title?: string;
+  readonly reason: string;
+}
+
+/** Predicate: a live (active + unexpired) claim exists for this item. */
+const LIVE_CLAIM = (alias = "c") =>
+  `${alias}.status = 'active' AND TIMESTAMPADD(SECOND, ${alias}.ttl_sec, ${alias}.claimed_at) > UTC_TIMESTAMP()`;
+
+/**
+ * Claim the top-ranked eligible item for `agent` — a lease with a visibility
+ * timeout. The INSERT ... SELECT ... WHERE NOT EXISTS is the atomic CAS (the safe
+ * `commitClaim` from ops.ts, proven for S1): the row is written only if no LIVE
+ * claim exists, so two agents racing the same item cannot both win. A dead agent's
+ * lease simply expires (ttl), returning the item to the queue — starvation-free
+ * recovery, no sweep required.
+ *
+ * `orderedIds` is the ranked candidate list (from readMirrorScheduling); we walk
+ * it and take the first item we can actually latch.
+ */
+export async function claimNext(
+  agent: string,
+  orderedIds: readonly string[],
+  ttlSec = 3600,
+): Promise<ClaimResult> {
+  for (const itemId of orderedIds) {
+    const before = await dsqlRows<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM claims c WHERE c.item_id = '${sqlEscape(itemId)}' AND ${LIVE_CLAIM()}`,
+    );
+    if (Number(before[0]?.n ?? 0) > 0) continue; // already leased — next candidate
+    await dsql(
+      `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
+       SELECT '${sqlEscape(itemId)}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec}, 'active'
+       FROM (SELECT 1) t
+       WHERE NOT EXISTS (SELECT 1 FROM claims c WHERE c.item_id = '${sqlEscape(itemId)}' AND ${LIVE_CLAIM()})`,
+    );
+    const got = await dsqlRows<{ n: number; number: number; title: string }>(
+      `SELECT COUNT(*) AS n, MAX(i.number) AS number, MAX(i.title) AS title
+       FROM claims c JOIN items i ON i.item_id = c.item_id
+       WHERE c.item_id = '${sqlEscape(itemId)}' AND c.agent = '${sqlEscape(agent)}' AND ${LIVE_CLAIM()}`,
+    );
+    if (Number(got[0]?.n ?? 0) > 0) {
+      return { won: true, itemId, number: got[0].number, title: got[0].title, reason: `leased ${ttlSec}s` };
+    }
+    // lost the CAS race to another agent between check and insert — try next.
+  }
+  return { won: false, reason: "no unleased eligible item" };
+}
+
+/** Release/complete a lease (frees the item, or records the completion). */
+export async function releaseClaim(itemId: string, agent: string, status: "released" | "completed"): Promise<void> {
+  await dsql(
+    `UPDATE claims SET status = '${status}'
+     WHERE item_id = '${sqlEscape(itemId)}' AND agent = '${sqlEscape(agent)}' AND status = 'active'`,
+  );
+}
+
+/** Item ids currently under a live lease — excluded from the ready queue. */
+export async function liveClaimedIds(): Promise<Set<string>> {
+  const rows = await dsqlRows<{ item_id: string }>(
+    `SELECT DISTINCT c.item_id FROM claims c WHERE ${LIVE_CLAIM()}`,
+  );
+  return new Set(rows.map((r) => r.item_id));
+}
+
 // --- push (dolt → gh): the second write surface ---
 
 /** Flip a hidden item to "capture-requested" so the next push promotes it to a real issue. */
@@ -571,13 +641,14 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
  * dependency scores high on flow. This is the `bd ready` computation, in the mirror.
  */
 export async function readMirrorScheduling(): Promise<
-  (BoardItem & { openBlockers: number; unblocks: number; ageDays: number })[]
+  (BoardItem & { openBlockers: number; unblocks: number; ageDays: number; leased: boolean })[]
 > {
   const rows = await dsqlRows<{
     number: number; item_id: string; title: string; repository: string;
     status: string; kind: string; effort: number; value: number; depends_on: string;
-    open_blockers: number | string; unblocks: number | string; age_days: number | string | null;
+    open_blockers: number | string; unblocks: number | string; age_days: number | string | null; leased: number | string;
   }>(`SELECT i.*, DATEDIFF(UTC_TIMESTAMP(), i.created_at) AS age_days,
+      EXISTS(SELECT 1 FROM claims c WHERE c.item_id=i.item_id AND c.status='active' AND TIMESTAMPADD(SECOND,c.ttl_sec,c.claimed_at)>UTC_TIMESTAMP()) AS leased,
       (SELECT COUNT(*) FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
         WHERE d.item_id = i.item_id AND t.status <> 'Done') AS open_blockers,
       (SELECT COUNT(*) FROM item_deps d2 JOIN items s ON s.item_id = d2.item_id
@@ -596,6 +667,7 @@ export async function readMirrorScheduling(): Promise<
     openBlockers: Number(r.open_blockers),
     unblocks: Number(r.unblocks),
     ageDays: r.age_days == null ? 0 : Number(r.age_days),
+    leased: Number(r.leased) > 0,
   }));
 }
 

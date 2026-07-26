@@ -9,13 +9,8 @@
  *   node scripts/estimate.ts --apply        # (gated) writes Effort/Value to the board
  */
 
-import {
-  fetchBoardItems,
-  fetchProjectMeta,
-  setNumberField,
-  toPriorityInputs,
-  type BoardItem,
-} from "../src/board.ts";
+import { fetchBoardItems, toPriorityInputs, type BoardItem } from "../src/board.ts";
+import { setDoltFields } from "../src/mirror.ts";
 import { estimate } from "../src/estimate.ts";
 import { prioritize, ROLLING_5H_BUDGET, ORG_BUDGETS, type PriorityInput } from "../src/policy.ts";
 
@@ -79,64 +74,22 @@ async function main() {
   const all = scoped.filter((i) => (doneMode ? i.status === "Done" : i.status !== "Done") && missing(i));
   const targets = doneMode ? all.slice(0, batch) : all;
 
-  // Fail-closed API-budget gate (same Budget model that gates agent labor):
-  // ~2 mutations/item at ~1.6 pts each; refuse when it would push past at-risk.
-  const { fetchGraphqlLimit, apiCapacity } = await import("../src/mirror.ts");
-  const live = await fetchGraphqlLimit();
-  const estCost = Math.ceil(targets.length * 3.5);
-  const cap = apiCapacity(live);
-  if (cap.remainingPoints - estCost < 1000) {
-    console.error(
-      `GATED: ~${estCost} pts needed, ${cap.remainingPoints} remaining (floor 1000). Resets ${live.resetAt}.`,
-    );
-    process.exit(3);
-  }
+  // Authority model: effort/value are DOLT-OWNED. The estimator writes the Dolt
+  // surface (setDoltFields → dolt-dirty) — free, no GitHub API — and scripts/push.ts
+  // (or the cron) flushes to the board project fields. Writing GitHub directly
+  // would be the "invalid" out-of-band path.
   console.log(
-    `\n--apply: writing Effort/Value to ${targets.length}${doneMode ? ` of ${all.length} Done` : " non-Done"} items missing inputs${repo ? ` in ${repo}` : " ORG-WIDE"} (est ~${estCost} pts of ${cap.remainingPoints}).`,
+    `\n--apply: estimating Effort/Value on the DOLT surface for ${targets.length}${doneMode ? ` of ${all.length} Done` : " non-Done"} items missing inputs${repo ? ` in ${repo}` : " ORG-WIDE"} (0 GitHub API).`,
   );
-  if (!repo) {
-    console.log("(no --repo → org-wide. If you meant the prx canary, re-run with --repo prx.)");
-  }
-
-  const meta = await fetchProjectMeta();
-  if (!meta.fieldId["Effort"] || !meta.fieldId["Value"]) {
-    console.error("Effort/Value fields not found on the board; aborting.");
-    process.exit(1);
-  }
-
-  const writeWithRetry = async (id: string, field: string, value: number) => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await setNumberField(meta, id, field, value);
-        return;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // transient network/GraphQL blips → retry a couple times; else rethrow.
-        if (attempt < 3 && /connection reset|ECONNRESET|EOF|timeout|502|503/i.test(msg)) {
-          continue;
-        }
-        throw err;
-      }
-    }
-  };
 
   let done = 0;
-  let failed = 0;
   for (const item of targets) {
     const e = estimate(item.kind, item.title);
-    try {
-      await writeWithRetry(item.id, "Effort", e.effort);
-      await writeWithRetry(item.id, "Value", e.value);
-      done++;
-      if (done % 20 === 0 || done === targets.length) {
-        console.log(`  …${done}/${targets.length}`);
-      }
-    } catch (err) {
-      failed++;
-      console.error(`  ✗ #${item.number}: ${err instanceof Error ? err.message : err}`);
-    }
+    await setDoltFields(item.id, { effort: e.effort, value: e.value });
+    done++;
+    if (done % 100 === 0 || done === targets.length) console.log(`  …${done}/${targets.length}`);
   }
-  console.log(`\nwrote ${done} items (${failed} failed). Re-run whats-next to see the live re-ranked queue.`);
+  console.log(`\nestimated ${done} items → Dolt (dolt-dirty). Run scripts/push.ts to flush to GitHub, or let the cron.`);
 }
 
 main().catch((err) => {
