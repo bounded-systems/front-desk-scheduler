@@ -30,3 +30,6 @@ mirror/
 # python venv
 .venv/
 __pycache__/
+
+# deno compile output
+dist/

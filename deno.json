@@ -1,0 +1,19 @@
+{
+  "name": "@bounded-systems/front-desk-scheduler",
+  "version": "0.0.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./verbs": "./src/verbs.ts"
+  },
+  "imports": {
+    "@bounded-systems/verbspec": "jsr:@bounded-systems/verbspec@^0.4.0",
+    "@bounded-systems/verbspec-mcp": "jsr:@bounded-systems/verbspec-mcp@^0.1.0",
+    "zod": "npm:zod@^4.4.3"
+  },
+  "tasks": {
+    "fds": "deno run -A scripts/fds.ts",
+    "mcp": "deno run -A scripts/mcp.ts",
+    "compile": "deno compile -A --no-check --output dist/fds scripts/fds.ts"
+  },
+  "nodeModulesDir": "auto"
+}
