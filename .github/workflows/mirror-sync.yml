@@ -73,6 +73,20 @@ jobs:
           echo "$ip doltremoteapi.dolthub.com" | sudo tee -a /etc/hosts
       - name: Clone mirror from DoltHub
         run: dolt clone "$DOLTHUB_DB" mirror
+      # Flush the DoltHub write surface UP to GitHub first: any dolt-dirty edits
+      # or captured hidden work made on DoltHub (web SQL, a PR) become GitHub
+      # issues / project-field writes before we pull. This is what makes DoltHub
+      # a real write surface that "syncs upstream".
+      - name: Push Dolt edits → GitHub (captured work)
+        env:
+          GH_TOKEN: ${{ steps.broker-token.outputs.token }}
+        run: |
+          set +e
+          node scripts/push.ts
+          rc=$?
+          # exit 3 = budget-gated; any captured issues get absorbed by the pull below
+          [ "$rc" -eq 3 ] && echo "::notice::push gated by budget" && exit 0
+          exit "$rc"
       - name: Sync board → mirror (budget-gated, metered)
         env:
           GH_TOKEN: ${{ steps.broker-token.outputs.token }}

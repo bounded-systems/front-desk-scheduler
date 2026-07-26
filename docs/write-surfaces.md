@@ -1,0 +1,67 @@
+# Two write surfaces
+
+Front Desk is bidirectional: GitHub and the Dolt/DoltHub mirror are both write
+surfaces, reconciled by a scoped **field authority** (`src/authority.ts`) so the
+two masters never fight over the same field.
+
+```
+   ┌── intake ──────────────┐         ┌── planning ─────────────┐
+   │ gh issue create        │         │ dolt / DoltHub edit     │
+   │ (webhook → board)      │         │ (hidden or dolt-dirty)  │
+   └───────────┬────────────┘         └───────────┬─────────────┘
+               │ pull (gh→dolt, budget-gated)      │ push (dolt→gh, budget-gated)
+               ▼                                    ▼
+        ┌──────────────── Dolt mirror ────────────────┐
+        │  origin ∈ {github, dolt}                     │
+        │  sync_state ∈ {synced, dolt-dirty, hidden}   │
+        └──────────────────────────────────────────────┘
+               │ dolt push
+               ▼
+            DoltHub (public read plane + a write surface)
+```
+
+## The three kinds of work (the taxonomy)
+
+| | Path | State |
+|---|---|---|
+| **Intake** | `gh` without dolt — create an issue; webhook lands it on the board; next pull absorbs it | `origin=github, sync_state=synced` |
+| **Hidden** | dolt without gh — `insertHiddenItem`; whats-next ranks it; never pushed; shared via DoltHub | `origin=dolt, sync_state=hidden` |
+| **Captured** | dolt → gh (or gh → dolt → gh) — `syncPush` promotes hidden rows to issues and writes dolt-dirty field edits up to the board | `dolt-dirty → synced` after push |
+
+## Field authority (the mutability scope)
+
+After intake, **direct edits on the wrong surface are invalid** and reconcile
+toward the owner:
+
+- **GitHub-owned** — `title`, `body` (incl. frontmatter), `status`, `created_at`,
+  `closed_at`, mined relations. Pull refreshes; push never writes them.
+- **Dolt-owned** — `kind`, `effort`, `value`, `depends_on`. Push writes them up
+  to the board project fields; a direct project-field UI edit is out-of-band →
+  `detectFieldDrift` flags it, Dolt wins on the next push.
+
+The **only** sanctioned way to set a Dolt-owned field from the GitHub side is
+**body frontmatter** (structured intake), not the project-field UI:
+
+```
+---
+kind: task
+effort: 3
+value: 70
+depends-on: [prx#119, gh-project-room#83]
+---
+```
+
+## Invariants the mirror enforces
+
+Column constraints (ENUM/CHECK/FK) + SQL shape checks D1–D6, declared once more
+in `specs/shacl/front-desk-shapes.ttl`. D6 flags unpushed `dolt-dirty` edits;
+D1 (acyclic deps) is the data precondition for the scheduler's proven L1.
+
+## Conflict posture
+
+Field partitioning removes most conflicts by construction. Where the *same*
+Dolt-owned field is edited on both surfaces between syncs, Dolt is authoritative
+(push overwrites the board); the DoltHub Dolt history (`dolt diff`) is the audit
+trail. Dolt's git-style merge handles DB-level divergence when two syncers race;
+schema-evolution merges currently resolve by force-push of the newer superset
+(see the 2026-07-26 ENUM-migration note).
