@@ -11,16 +11,23 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "sim": "node scripts/demo.ts",
-    "whats-next": "node scripts/whats-next.ts",
+    "whats-next": "node scripts/fds.ts whats-next",
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
     "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
     "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg",
-    "shacl": ".venv/bin/python scripts/shacl_validate.py"
+    "shacl": ".venv/bin/python scripts/shacl_validate.py",
+    "fds": "node scripts/fds.ts",
+    "mcp": "node scripts/mcp.ts"
   },
   "exports": {
     ".": "./src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1"
+  },
+  "dependencies": {
+    "@bounded-systems/verbspec": "npm:@jsr/bounded-systems__verbspec@^0.4.0",
+    "@bounded-systems/verbspec-mcp": "npm:@jsr/bounded-systems__verbspec-mcp@^0.1.0",
+    "zod": "^4.0.0"
   }
 }
