@@ -9,8 +9,8 @@
  *                              [--repo <name>] [--top N] [--json]
  */
 
-import { fetchBoardItems, toPriorityInputs, type BoardItem } from "../src/board.ts";
-import { mirrorMeta, readMirrorItems } from "../src/mirror.ts";
+import { fetchBoardItems, statusToState, toPriorityInputs, type BoardItem } from "../src/board.ts";
+import { mirrorMeta, readMirrorScheduling } from "../src/mirror.ts";
 import {
   budgetGate,
   isEligible,
@@ -49,18 +49,32 @@ async function main() {
 
   // Read plane: prefer the Dolt mirror (pinned commit, zero API cost, no GitHub
   // credential needed). Fall back to a cached/live gh fetch if the mirror is empty.
-  let board: BoardItem[];
+  let board: (BoardItem & { openBlockers?: number; unblocks?: number })[];
   let source: string;
   const meta = await mirrorMeta().catch(() => null);
   if (meta) {
-    board = await readMirrorItems();
+    // openBlockers/unblocks come from the FULL edge graph (text + mined
+    // sub-issue/closing-PR relations) computed in SQL.
+    board = await readMirrorScheduling();
     source = `mirror@${meta.commit} (synced ${meta.syncedAt})`;
   } else {
     board = await fetchBoardItems(undefined, undefined, undefined, 15);
     source = "github (no mirror yet — run scripts/sync.ts)";
   }
   const scoped = args.repo ? board.filter((i) => i.repository === args.repo) : board;
-  const inputs = toPriorityInputs(scoped);
+  // Mirror path: graph-derived counts. Fallback path: text-field derivation.
+  const inputs = meta
+    ? scoped.map((i) => ({
+        number: i.number,
+        title: i.title,
+        kind: i.kind,
+        state: statusToState(i.status),
+        effort: i.effort,
+        value: i.value,
+        openBlockers: i.openBlockers ?? 0,
+        unblocks: i.unblocks ?? 0,
+      }))
+    : toPriorityInputs(scoped);
 
   const remaining = Math.max(budget.capacityPoints - args.consumed, 0);
   const ranked = prioritize(inputs, remaining);

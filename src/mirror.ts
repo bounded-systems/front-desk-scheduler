@@ -136,6 +136,87 @@ export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
   }
 }
 
+// --- native-relations mining (the bd-dep replacement) ---
+
+interface RelationEdge {
+  readonly src: string; // item_id that is blocked
+  readonly dst: string; // item_id it waits on
+  readonly type: "parent-child" | "closes";
+}
+
+/**
+ * Mine GitHub's OWN relationship data into the dep graph — no human data entry:
+ *   - sub-issues: a parent cannot complete while children are open
+ *     → edge (parent → child, 'parent-child')
+ *   - closing PR references: an issue with an open PR that closes it is
+ *     in-delivery → edge (issue → PR, 'closes') — keeps agents off items
+ *     whose fix is already in flight.
+ * Paginated over the project's items; cost metered by the caller.
+ */
+export async function fetchRelationEdges(
+  idByRepoNumber: ReadonlyMap<string, string>,
+  org = "bounded-systems",
+  project = 2,
+): Promise<RelationEdge[]> {
+  const edges: RelationEdge[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 30; page++) {
+    const args = [
+      "api", "graphql",
+      "-f", `query=query($org:String!,$num:Int!,$cursor:String){organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id content{__typename ... on Issue{number repository{name}parent{number repository{name}}} ... on PullRequest{number repository{name}closingIssuesReferences(first:10){nodes{number repository{name}}}}}}}}}}`,
+      "-F", `org=${org}`, "-F", `num=${project}`,
+      ...(cursor ? ["-F", `cursor=${cursor}`] : []),
+    ];
+    const { stdout } = await pexecFile("gh", args, { maxBuffer: 16 * 1024 * 1024 });
+    const data = JSON.parse(stdout) as {
+      data?: { organization?: { projectV2?: { items?: {
+        pageInfo: { hasNextPage: boolean; endCursor: string };
+        nodes: {
+          id: string;
+          content?: {
+            __typename: string;
+            number?: number;
+            repository?: { name: string };
+            parent?: { number: number; repository: { name: string } } | null;
+            closingIssuesReferences?: { nodes: { number: number; repository: { name: string } }[] };
+          } | null;
+        }[];
+      } } } };
+    };
+    const items = data.data?.organization?.projectV2?.items;
+    if (!items) break;
+    for (const n of items.nodes) {
+      const c = n.content;
+      if (!c?.repository || c.number === undefined) continue;
+      if (c.parent) {
+        const parentId = idByRepoNumber.get(`${c.parent.repository.name}#${c.parent.number}`);
+        if (parentId && parentId !== n.id) edges.push({ src: parentId, dst: n.id, type: "parent-child" });
+      }
+      for (const ref of c.closingIssuesReferences?.nodes ?? []) {
+        const issueId = idByRepoNumber.get(`${ref.repository.name}#${ref.number}`);
+        if (issueId && issueId !== n.id) edges.push({ src: issueId, dst: n.id, type: "closes" });
+      }
+    }
+    if (!items.pageInfo.hasNextPage) break;
+    cursor = items.pageInfo.endCursor;
+  }
+  return edges;
+}
+
+/** Replace mined edges (keeps text-parsed 'blocks' edges intact). */
+export async function upsertRelationEdges(edges: readonly RelationEdge[]): Promise<void> {
+  await dsql("DELETE FROM item_deps WHERE edge_type IN ('parent-child','closes')");
+  if (edges.length === 0) return;
+  const CHUNK = 300;
+  for (let at = 0; at < edges.length; at += CHUNK) {
+    const values = edges
+      .slice(at, at + CHUNK)
+      .map((e) => `('${sqlEscape(e.src)}','${sqlEscape(e.dst)}','${e.type}')`)
+      .join(",");
+    await dsql(`INSERT IGNORE INTO item_deps (item_id, dep_item_id, edge_type) VALUES ${values}`);
+  }
+}
+
 // --- shape checks (the SHACL-style overlay, executed as SQL) ---
 
 export interface ShapeFinding {
@@ -184,14 +265,16 @@ export async function shapeChecks(): Promise<ShapeFinding[]> {
     "Blocked item(s) with no open dependency recorded",
   );
 
-  // D3 — the inverse: a Todo item with an open dep should be Blocked (bd-ready agreement).
+  // D3 — the inverse: a Todo item with an open BLOCKING dep should be Blocked
+  // (bd-ready agreement). 'closes' edges excluded: an open closing-PR means the
+  // item is in delivery, not mis-statused.
   await check(
     "D3",
     "warn",
     `SELECT COUNT(*) AS n FROM items i
      WHERE i.status = 'Todo' AND EXISTS (
        SELECT 1 FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
-       WHERE d.item_id = i.item_id AND t.status <> 'Done')`,
+       WHERE d.item_id = i.item_id AND d.edge_type <> 'closes' AND t.status <> 'Done')`,
     "Todo item(s) whose recorded deps are still open (should be Blocked)",
   );
 
@@ -224,6 +307,15 @@ export async function syncPull(estimatePoints = 1400): Promise<SyncResult | Sync
   const after = await fetchGraphqlLimit();
   const cost = Math.max(before.remaining - after.remaining, 0);
   await upsertItems(items);
+
+  // Mine native relations (sub-issues, closing PRs) into the dep graph — metered separately.
+  const idByRepoNumber = new Map(items.map((i) => [`${i.repository}#${i.number}`, i.id]));
+  const relEdges = await fetchRelationEdges(idByRepoNumber);
+  await upsertRelationEdges(relEdges);
+  const afterRel = await fetchGraphqlLimit();
+  const relCost = Math.max(after.remaining - afterRel.remaining, 0);
+  await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'relations-pull', ${relCost})`);
+
   const shapeFindings = await shapeChecks();
   await dsql(
     `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${items.length}, ${cost}, ${after.remaining})`,
@@ -264,6 +356,40 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
   // strip ANSI color codes dolt emits even when piped
   const clean = stdout.replace(/\x1b\[[0-9;]*m/g, "").trim();
   return { syncedAt: rows[0].synced_at, commit: clean.split(" ")[0] };
+}
+
+/**
+ * Scheduling read: items with openBlockers/unblocks computed from the FULL edge
+ * graph (text 'blocks' + mined 'parent-child' + 'closes') in SQL — so an issue
+ * whose fix is already in an open PR ranks as blocked, and closing a hot
+ * dependency scores high on flow. This is the `bd ready` computation, in the mirror.
+ */
+export async function readMirrorScheduling(): Promise<
+  (BoardItem & { openBlockers: number; unblocks: number })[]
+> {
+  const rows = await dsqlRows<{
+    number: number; item_id: string; title: string; repository: string;
+    status: string; kind: string; effort: number; value: number; depends_on: string;
+    open_blockers: number | string; unblocks: number | string;
+  }>(`SELECT i.*,
+      (SELECT COUNT(*) FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
+        WHERE d.item_id = i.item_id AND t.status <> 'Done') AS open_blockers,
+      (SELECT COUNT(*) FROM item_deps d2 JOIN items s ON s.item_id = d2.item_id
+        WHERE d2.dep_item_id = i.item_id AND s.status <> 'Done') AS unblocks
+      FROM items i`);
+  return rows.map((r) => ({
+    id: r.item_id,
+    number: r.number,
+    title: r.title,
+    repository: r.repository,
+    status: r.status,
+    kind: r.kind as BoardItem["kind"],
+    effort: r.effort,
+    value: r.value,
+    dependsOn: r.depends_on ? r.depends_on.split(",").map(Number) : [],
+    openBlockers: Number(r.open_blockers),
+    unblocks: Number(r.unblocks),
+  }));
 }
 
 export async function readMirrorItems(): Promise<BoardItem[]> {
