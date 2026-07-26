@@ -12,7 +12,8 @@ name: mirror-sync
 #   - GitHub: the Front Desk App token, minted over Actions OIDC via the org's
 #     cf-token-broker (org var FRONT_DESK_BROKER_URL) — same pattern as
 #     gh-project-room's front-desk-sync.yml. App budget, App identity; no PAT.
-#   - DoltHub: repo secret DOLTHUB_CREDS_JWK (a dolt credential keypair).
+#   - DoltHub: dolt credential fetched from the broker's /dolthub key-vault path
+#     over Actions OIDC (no stored secret — same broker as the App token).
 on:
   schedule:
     - cron: "17 */6 * * *" # every 6h — the board's freshness contract
