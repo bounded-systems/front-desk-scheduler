@@ -312,14 +312,36 @@ export async function syncPush(estimatePoints = 200): Promise<PushResult> {
     "SELECT item_id, effort, value FROM items WHERE origin='github' AND sync_state='dolt-dirty'",
   );
   let pushed = 0;
+  let failed = 0;
   if (dirty.length > 0) {
     const meta = await fetchProjectMeta();
+    // GitHub's project API 5xx/504s intermittently under load — retry a few times
+    // with backoff before giving up on an item (it stays dolt-dirty for next run).
+    const setWithRetry = async (field: string, value: number, id: string) => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await setNumberField(meta, id, field, value);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (attempt < 5 && /50[0234]|timeout|ECONNRESET|EOF|reset by peer/i.test(msg)) {
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
     for (const r of dirty) {
-      await setNumberField(meta, r.item_id, "Effort", r.effort);
-      await setNumberField(meta, r.item_id, "Value", r.value);
-      await dsql(`UPDATE items SET sync_state='synced' WHERE item_id='${sqlEscape(r.item_id)}'`);
-      pushed++;
+      try {
+        await setWithRetry("Effort", r.effort, r.item_id);
+        await setWithRetry("Value", r.value, r.item_id);
+        await dsql(`UPDATE items SET sync_state='synced' WHERE item_id='${sqlEscape(r.item_id)}'`);
+        pushed++;
+      } catch {
+        failed++; // leave dolt-dirty; a later run retries
+      }
     }
+    if (failed > 0) console.error(`syncPush: ${failed} items left dolt-dirty (transient errors) — retry later`);
   }
   return { captured, pushed, gated: false };
 }
