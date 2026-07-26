@@ -14,7 +14,8 @@
     "whats-next": "node scripts/whats-next.ts",
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
     "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
-    "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg"
+    "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg",
+    "shacl": ".venv/bin/python scripts/shacl_validate.py"
   },
   "exports": {
     ".": "./src/index.ts"

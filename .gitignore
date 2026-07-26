@@ -26,3 +26,7 @@ specs/rust/target/
 
 # Dolt mirror (a database, versioned by Dolt itself — not by git)
 mirror/
+
+# python venv
+.venv/
+__pycache__/
