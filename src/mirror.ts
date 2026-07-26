@@ -18,7 +18,7 @@ import type { BoardItem } from "./board.ts";
 import { fetchBoardItems } from "./board.ts";
 import { budgetGate, type Budget, type CapacityReport } from "./policy.ts";
 import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
-import { type RawTypedEdge, SQL } from "./scheduling.ts";
+import { type RawItem, type RawTypedEdge, SQL } from "./scheduling.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -727,6 +727,11 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
 /** Typed dep edges (with edge_type) from the local clone — the dep-graph source. */
 export async function readMirrorTypedEdges(): Promise<RawTypedEdge[]> {
   return dsqlRows<RawTypedEdge>(SQL.typedEdges);
+}
+
+/** ALL items incl Done from the local clone — the `bd list --all` replacement. */
+export async function readMirrorAllItems(): Promise<RawItem[]> {
+  return dsqlRows<RawItem>(SQL.allItems);
 }
 
 export async function readMirrorScheduling(): Promise<

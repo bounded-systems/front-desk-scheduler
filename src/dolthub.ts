@@ -70,3 +70,8 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
 export async function readTypedEdges(ref = "main"): Promise<RawTypedEdge[]> {
   return query<RawTypedEdge>(SQL.typedEdges, ref);
 }
+
+/** ALL items incl Done over DoltHub HTTP — the `bd list --all` replacement. */
+export async function readAllItems(ref = "main"): Promise<RawItem[]> {
+  return query<RawItem>(SQL.allItems, ref);
+}

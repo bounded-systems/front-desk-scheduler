@@ -78,6 +78,12 @@ export const SQL = {
   // (`readTypedEdges` → the `graph` verb) needs the kind to distinguish
   // parent-child (epic children) from blockers.
   typedEdges: "SELECT item_id, dep_item_id, edge_type FROM item_deps",
+  // ALL items incl Done — the `bd list --all` replacement (the `list` verb).
+  // The scheduling/graph queries drop Done (not schedulable); list must include
+  // it so consumers see closed work (e.g. epic children reporting `state`).
+  allItems:
+    "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
+    "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items",
   leases:
     "SELECT DISTINCT item_id FROM claims WHERE status='active' AND TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
 } as const;

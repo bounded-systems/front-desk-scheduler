@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineVerb, type Registry, type VerbSpec } from "@bounded-systems/verbspec";
 import { statusToState } from "./board.ts";
 import { resolveReads, type SchedulerReads } from "./reads.ts";
-import { assembleGraph } from "./scheduling.ts";
+import { assembleGraph, assembleScheduling } from "./scheduling.ts";
 import {
   budgetGate,
   ORG_BUDGETS,
@@ -326,9 +326,92 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
     ].join("\n"),
 });
 
+// ── list ─────────────────────────────────────────────────────────────────────
+// The `bd list --all` replacement (GH-1011). ALL items incl Done (unlike graph,
+// which is non-Done only) + the typed edges, GH-canonical. A consumer maps these
+// to its record shape (e.g. prx's BeadsRecord). Repo-scoped for collision-free
+// numbers.
+
+const ListInput = z.object({
+  repo: z.string().optional(),
+});
+
+const ListItemOut = z.object({
+  number: z.number(),
+  repository: z.string(),
+  kind: z.string(),
+  title: z.string(),
+  status: z.string(),
+  effort: z.number(),
+  value: z.number(),
+  dependsOn: z.array(z.number()),
+  ageDays: z.number(),
+});
+const ListEdgeOut = z.object({ from: GraphRefOut, to: GraphRefOut, kind: z.string() });
+
+const ListOutput = z.object({
+  source: z.enum(["local", "dolthub", "server"]),
+  syncedAt: z.string().nullable(),
+  items: z.array(ListItemOut),
+  edges: z.array(ListEdgeOut),
+});
+
+export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = defineVerb<
+  typeof ListInput,
+  typeof ListOutput,
+  Deps
+>({
+  id: "list",
+  summary:
+    "Every work item incl Done + the typed dep edges, GH-canonical — the `bd list --all` replacement. Read from the mirror; zero GitHub API.",
+  actor: "front-desk",
+  input: ListInput,
+  deps: () => ({ reads: resolveReads() }),
+  output: ListOutput,
+  run: async (input, deps) => {
+    const reads = deps?.reads ?? resolveReads();
+    const [raw, typedEdges, meta] = await Promise.all([
+      reads.readAllItems(),
+      reads.readTypedEdges(),
+      reads.meta(),
+    ]);
+
+    // assembleScheduling with no edges/leases gives us the id-bearing item
+    // objects (openBlockers unused here); passing ALL items means assembleGraph
+    // drops no edges (every endpoint is in the set).
+    const all = assembleScheduling(raw, [], []);
+    const scoped = input.repo ? all.filter((i) => i.repository === input.repo) : all;
+    const graph = assembleGraph(scoped, typedEdges);
+
+    return {
+      source: reads.source,
+      syncedAt: meta?.syncedAt ?? null,
+      items: scoped.map((i) => ({
+        number: i.number,
+        repository: i.repository,
+        kind: i.kind,
+        title: i.title,
+        status: i.status,
+        effort: i.effort,
+        value: i.value,
+        dependsOn: [...i.dependsOn],
+        ageDays: i.ageDays,
+      })),
+      edges: graph.edges,
+    };
+  },
+  render: (o) =>
+    [
+      `Front Desk — list   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}`,
+      `items: ${o.items.length}   edges: ${o.edges.length}`,
+      ...o.items.slice(0, 15).map((i) => `  ${i.repository}#${i.number} [${i.status}] ${i.title}`),
+    ].join("\n"),
+});
+
 export const VERBS: Registry = {
   "whats-next": whatsNextVerb,
   "graph": graphVerb,
+  "list": listVerb,
   "claim": claimVerb,
   "release": releaseVerb,
 };

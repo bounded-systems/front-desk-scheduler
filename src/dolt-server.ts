@@ -72,6 +72,11 @@ export async function readTypedEdges(): Promise<RawTypedEdge[]> {
   return withConn(async (q) => (await q(SQL.typedEdges)) as RawTypedEdge[]);
 }
 
+/** ALL items incl Done — the `bd list --all` replacement. */
+export async function readAllItems(): Promise<RawItem[]> {
+  return withConn(async (q) => (await q(SQL.allItems)) as RawItem[]);
+}
+
 export async function meta(): Promise<{ syncedAt: string; commit: string } | null> {
   return withConn(async (q) => {
     const rows = (await q("SELECT synced_at FROM sync_log ORDER BY id DESC LIMIT 1")) as { synced_at: string }[];
