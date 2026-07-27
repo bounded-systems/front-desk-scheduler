@@ -71,9 +71,11 @@ npm run whats-next -- --top 12                 # ranked ready queue across the o
 npm run whats-next -- --repo prx --budget rolling-5h
 ```
 
-> Today the queue is honest about being degenerate: `Effort`/`Value`/`Depends on`
-> are unpopulated on the real board (0/1251), so scoring runs its fallback and the
-> ranking is near-FIFO. `whats-next` says so. Populate those fields and the same
-> command returns a meaningful WSJF-style queue — no code change.
+> Triage coverage is a measured number, not a vibe: `npm run triage:coverage`
+> reports it per repo (and CI prints it on every schema-drift run). As of
+> 2026-07-27 effort/value are ~98% populated — the remaining gap is the
+> dependency graph (4/210 items carry dep edges), so readiness gating and the
+> unblocks bonus are running on a nearly empty DAG. `whats-next` flags any
+> item ranking on the fallback as `~` untriaged.
 
 Source-available under **PolyForm Noncommercial 1.0.0** (matching gh-project-room).

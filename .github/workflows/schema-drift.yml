@@ -40,3 +40,8 @@ jobs:
       # runtime dependencies. Node 24 strips the types natively.
       - name: Check the checked-in projection against the deployed schema
         run: node scripts/schema-export.ts --check
+      - name: Triage coverage (informational — never fails)
+        # Report, don't gate: a red build over an unfilled estimate teaches
+        # people to fill in garbage. Visibility is the enforcement.
+        if: always()
+        run: node scripts/triage-coverage.ts
