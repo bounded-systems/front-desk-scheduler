@@ -19,7 +19,10 @@ on:
     - cron: "17 */6 * * *" # every 6h — the board's freshness contract
   workflow_dispatch: {}
 concurrency:
-  group: mirror-sync
+  # Shared with mirror-migrate: every workflow that WRITES the mirror serializes
+  # on one group, so a migration can never interleave with a sync push. Same
+  # cancel semantics as before — a running sync still finishes.
+  group: mirror-write
   cancel-in-progress: false # a running sync finishes; syncs are cheap and serial
 permissions:
   id-token: write # OIDC → cf-token-broker
