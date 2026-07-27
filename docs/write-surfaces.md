@@ -101,6 +101,38 @@ surfaces as a diff on an owned file.
 > from `prx`'s runtime authorization of **effects**. Who may change the contract
 > vs. who may exercise it; complementary, not overlapping.
 
+## Credentials: the session gets a button, not a secret
+
+The broker's trust boundary is a GitHub Actions OIDC JWT. `verifyOIDC` pins
+`iss`, `aud`, `repository_owner`, `repository` and **`job_workflow_ref`** — which
+carries `@refs/heads/main`, so only a named workflow file, running on main, can
+obtain a credential.
+
+A Claude Code cloud session is **not** an Actions runner: it has no
+`ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN` and cannot mint a GitHub-signed OIDC
+token, so it cannot authenticate to the broker at all. That is the design
+working, not a gap to route around. Issuing the session a long-lived credential
+instead would delete the exact property the broker exists to provide, and would
+put a production write credential inside a process that reads untrusted issue
+text.
+
+So privileged mirror writes go through `mirror-migrate.yml`, which the session
+**dispatches** rather than performs. The workflow holds the pinned identity; the
+session holds only the ability to ask. Two gates stand in front of it, both
+fail-closed:
+
+| gate | enforced by | effect if absent |
+|---|---|---|
+| `job_workflow_ref` on the broker allowlist | the broker | 401, no credential |
+| `mirror-write` Environment, required reviewers | GitHub | run waits for approval |
+
+Every workflow that writes the mirror shares the `mirror-write` concurrency
+group, so a migration cannot interleave with a sync push.
+
+> Note the shape: this is the same "who may exercise the capability" question as
+> the runtime authorization of effects — resolved the same way, by making the
+> credential reachable only from an identity that can be pinned.
+
 ## Invariants the mirror enforces
 
 Column constraints (ENUM/CHECK/FK) + SQL shape checks D1–D6, declared once more

@@ -1,0 +1,175 @@
+name: mirror-migrate
+# Apply a pending schema migration to the deployed Dolt mirror.
+#
+# WHY THIS IS A WORKFLOW AND NOT SOMETHING A SESSION DOES DIRECTLY
+# ----------------------------------------------------------------
+# The broker's trust boundary is a GitHub Actions OIDC JWT: `verifyOIDC` pins
+# iss, aud, repository_owner, repository AND `job_workflow_ref` (which carries
+# `@refs/heads/main`). Only a specific workflow file, running on main, can obtain
+# credentials. That is the property that makes "no stored secret" true.
+#
+# A Claude Code cloud session is not an Actions runner. It has no
+# ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN and cannot mint a GitHub-signed OIDC token,
+# so it cannot authenticate to the broker at all — by design, not by oversight.
+# Handing the session a long-lived credential instead would destroy exactly the
+# property the broker exists to provide, and would put a writable production
+# credential inside a process that reads untrusted issue text.
+#
+# So the session does not get credentials. It gets a BUTTON: it dispatches this
+# workflow, which runs with its own pinned identity, fetches the credential over
+# OIDC, does the write, and leaves the audit trail in Actions. The privileged
+# thing stays where it can be pinned and reviewed.
+#
+# ⚠ SETUP REQUIRED BEFORE THIS CAN RUN (both fail closed until done):
+#   1. Add this file's job_workflow_ref to the broker's allowed refs:
+#        bounded-systems/front-desk-scheduler/.github/workflows/mirror-migrate.yml@refs/heads/main
+#      Until then the broker returns 401 and this workflow cannot get a credential.
+#   2. Create the `mirror-write` GitHub Environment with REQUIRED REVIEWERS.
+#      Dispatch alone must not be able to mutate the production database; the
+#      reviewer gate is the actual control, and the environment claim is signed
+#      by GitHub so it cannot be forged.
+on:
+  workflow_dispatch:
+    inputs:
+      migration:
+        description: "Migration file in schema/migrations/ (e.g. 2026-07-27-leases.sql)"
+        required: true
+        type: string
+      dry_run:
+        description: "Parse and print the migration without applying it"
+        required: false
+        default: true
+        type: boolean
+concurrency:
+  group: mirror-write # never race the syncer or another migration
+  cancel-in-progress: false
+permissions:
+  id-token: write # OIDC → broker
+  contents: write # push the regenerated projection branch
+  pull-requests: write # open the PR that records the new reality
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # The reviewer gate. `deriveEdit`-style environment claims are signed by
+    # GitHub, so entering this environment is a fact the broker can trust.
+    environment: mirror-write
+    env:
+      DOLTHUB_DB: bounded-systems/front-desk-mirror
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      - name: Validate the requested migration exists
+        # Do this BEFORE touching any credential: a typo should fail with no
+        # secret in the environment.
+        run: |
+          set -euo pipefail
+          f="schema/migrations/${{ inputs.migration }}"
+          case "${{ inputs.migration }}" in
+            */*|..*) echo "::error::migration must be a bare filename"; exit 1 ;;
+          esac
+          [ -f "$f" ] || { echo "::error::no such migration: $f"; exit 1; }
+          echo "--- $f ---"; cat "$f"
+
+      - name: Install dolt
+        run: |
+          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          dolt version
+
+      - name: DoltHub credential (via OIDC broker)
+        env:
+          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          jwk="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/dolthub/front-desk-mirror" | jq -r '.jwk // empty')"
+          [ -n "$jwk" ] || { echo "::error::broker returned no DoltHub credential (is this workflow's job_workflow_ref on the broker allowlist?)"; exit 1; }
+          umask 077; printf '%s' "$jwk" > /tmp/cred.jwk
+          dolt creds import /tmp/cred.jwk
+          rm -f /tmp/cred.jwk
+          dolt config --global --add user.name "front-desk-mirror-migrate"
+          dolt config --global --add user.email "1240090+bdelanghe@users.noreply.github.com"
+
+      - name: Force IPv4 for DoltHub remote API
+        # Hosted runners have no IPv6 route; dolt dials the AAAA record and dies.
+        run: |
+          set -euo pipefail
+          ip="$(dig +short A doltremoteapi.dolthub.com | grep -E '^[0-9.]+$' | head -1)"
+          [ -n "$ip" ] || { echo "::error::could not resolve doltremoteapi.dolthub.com"; exit 1; }
+          echo "$ip doltremoteapi.dolthub.com" | sudo tee -a /etc/hosts
+
+      - name: Clone mirror
+        run: dolt clone "$DOLTHUB_DB" mirror
+
+      - name: Apply migration
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          set -euo pipefail
+          cd mirror
+          dolt sql < "../schema/migrations/${{ inputs.migration }}"
+          dolt add -A
+          # No-op migrations are legitimate (they are idempotent by contract).
+          if dolt diff --stat HEAD | grep -q .; then
+            dolt commit -m "schema: apply ${{ inputs.migration }}"
+          else
+            echo "::notice::migration was a no-op (already applied) — nothing to commit"
+          fi
+
+      - name: Push mirror → DoltHub
+        if: ${{ inputs.dry_run == false }}
+        run: cd mirror && dolt push origin main
+
+      - name: Regenerate the checked-in projection
+        # Applying a migration makes schema/mirror.live.sql stale, which turns the
+        # schema-drift gate red. Regenerate here so the two land together.
+        if: ${{ inputs.dry_run == false }}
+        run: node scripts/schema-export.ts
+
+      - name: Open the PR that records the new reality
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- schema/mirror.live.sql; then
+            echo "::notice::projection unchanged — no PR needed"
+            exit 0
+          fi
+          branch="schema/live-after-${{ inputs.migration }}"
+          branch="${branch%.sql}"
+          git config user.name "front-desk-mirror-migrate"
+          git config user.email "1240090+bdelanghe@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add schema/mirror.live.sql
+          git commit -m "schema: regenerate projection after ${{ inputs.migration }}"
+          git push -u origin "$branch"
+          cat > /tmp/pr-body.md <<'BODY'
+          Generated by `mirror-migrate` after applying a migration to the deployed mirror.
+
+          The deployed schema changed, so `schema/mirror.live.sql` is regenerated to match.
+          Merging this returns the `schema-drift` gate to green.
+          BODY
+          sed -i 's/^          //' /tmp/pr-body.md
+          {
+            echo ""
+            echo "Migration: \`${{ inputs.migration }}\`"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> /tmp/pr-body.md
+          gh pr create --draft \
+            --title "schema: projection after ${{ inputs.migration }}" \
+            --body-file /tmp/pr-body.md
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### mirror-migrate"
+            echo "- migration: \`${{ inputs.migration }}\`"
+            echo "- mode: ${{ inputs.dry_run == true && 'DRY RUN (nothing applied)' || 'APPLIED' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
