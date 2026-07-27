@@ -17,7 +17,8 @@
 --   cd mirror && dolt sql < ../schema/migrations/2026-07-27-leases.sql \
 --     && dolt commit -am "schema: structural S1 via leases table"
 --
--- Idempotent; safe to re-run.
+-- Applied at most once: the runner records it in `schema_migrations` and skips
+-- a file already listed there. See .github/workflows/mirror-migrate.yml.
 
 CREATE TABLE IF NOT EXISTS `leases` (
   `item_id`    varchar(64)  NOT NULL,
@@ -31,7 +32,14 @@ CREATE TABLE IF NOT EXISTS `leases` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 -- Close out the interval on the audit log so a row describes a complete hold.
-ALTER TABLE `claims` ADD COLUMN IF NOT EXISTS `released_at` datetime AFTER `ttl_sec`;
+-- NOTE: a bare ADD COLUMN, deliberately. Dolt cannot express a conditional
+-- column add — `ADD COLUMN IF NOT EXISTS` is MariaDB-only syntax, `PREPARE`
+-- silently refuses DDL, and `DATABASE()` is empty under `dolt sql`, so an
+-- information_schema guard cannot work either. Re-applying therefore errors
+-- with "Column already exists" and exits 1. That is fine BECAUSE the runner
+-- now keeps a `schema_migrations` ledger and never applies a file twice; the
+-- idempotency lives there rather than in every statement.
+ALTER TABLE `claims` ADD COLUMN `released_at` datetime AFTER `ttl_sec`;
 
 -- Backfill: carry any currently-live claim over to a lease. If the old bug had
 -- already produced two live claims for one item, MAX(id) picks the later one —

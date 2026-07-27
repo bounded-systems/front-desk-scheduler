@@ -109,16 +109,44 @@ jobs:
 
       - name: Apply migration
         if: ${{ inputs.dry_run == false }}
+        # Idempotency lives in the `schema_migrations` ledger, NOT inside each
+        # migration file. Dolt cannot express conditional DDL — `ADD COLUMN IF
+        # NOT EXISTS` is MariaDB-only, `PREPARE` silently refuses DDL, and
+        # `DATABASE()` is empty under `dolt sql`, so an information_schema guard
+        # cannot work either. A file that ALTERs a table therefore cannot be
+        # written to survive a second run; the runner has to skip it instead.
         run: |
           set -euo pipefail
           cd mirror
-          dolt sql < "../schema/migrations/${{ inputs.migration }}"
+          M="${{ inputs.migration }}"
+
+          # The ledger must exist before it can be consulted (it will not on a
+          # mirror that predates it). CREATE TABLE IF NOT EXISTS is supported.
+          dolt sql -q "CREATE TABLE IF NOT EXISTS \`schema_migrations\` (
+            \`filename\`   varchar(255) NOT NULL,
+            \`applied_at\` datetime     NOT NULL,
+            PRIMARY KEY (\`filename\`)
+          )"
+
+          applied="$(dolt sql -r csv -q \
+            "SELECT COUNT(*) AS n FROM \`schema_migrations\` WHERE \`filename\` = '$M'" \
+            | tail -1)"
+          if [ "$applied" != "0" ]; then
+            echo "::notice::$M is already recorded in schema_migrations — skipping (nothing to do)"
+            exit 0
+          fi
+
+          dolt sql < "../schema/migrations/$M"
+          # Record it in the SAME commit as its effects, so the ledger can never
+          # disagree with the schema it describes.
+          dolt sql -q "INSERT INTO \`schema_migrations\` (\`filename\`, \`applied_at\`)
+                       VALUES ('$M', UTC_TIMESTAMP())"
+
           dolt add -A
-          # No-op migrations are legitimate (they are idempotent by contract).
           if dolt diff --stat HEAD | grep -q .; then
-            dolt commit -m "schema: apply ${{ inputs.migration }}"
+            dolt commit -m "schema: apply $M"
           else
-            echo "::notice::migration was a no-op (already applied) — nothing to commit"
+            echo "::notice::migration produced no change — nothing to commit"
           fi
 
       - name: Push mirror → DoltHub

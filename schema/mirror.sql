@@ -125,6 +125,23 @@ CREATE TABLE IF NOT EXISTS `claims` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 -- ---------------------------------------------------------------------------
+-- schema_migrations — the applied-migrations ledger.
+--
+-- Idempotency belongs HERE, not inside each migration file. Dolt cannot express
+-- conditional DDL (no `ADD COLUMN IF NOT EXISTS`; `PREPARE` refuses DDL;
+-- `DATABASE()` is empty under `dolt sql`), so a file that ALTERs a table simply
+-- cannot be written to survive a second run. Recording what has been applied
+-- lets the runner skip it instead — the standard migration-ledger pattern, and
+-- the thing whose absence turned a re-runnable migration into a run-once one
+-- without anybody noticing.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `schema_migrations` (
+  `filename`   varchar(255) NOT NULL,
+  `applied_at` datetime     NOT NULL,
+  PRIMARY KEY (`filename`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+-- ---------------------------------------------------------------------------
 -- sync_log — one row per completed gh→dolt sync; the mirror's freshness pin.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `sync_log` (
