@@ -38,6 +38,10 @@ const QueueItem = z.object({
   score: z.number(),
   fits: z.boolean(),
   title: z.string(),
+  // No declared effort/value — the score is the kind+unblocks+age fallback, not
+  // a real WSJF density. Surfaced per-item so estimate-backed ranks never pass
+  // silently as triaged ones.
+  untriaged: z.boolean(),
 });
 
 const WhatsNextOutput = z.object({
@@ -46,6 +50,7 @@ const WhatsNextOutput = z.object({
   budget: z.string(),
   remaining: z.number(),
   eligible: z.number(),
+  untriagedCount: z.number(),
   queue: z.array(QueueItem),
   pick: QueueItem.nullable(),
   gate: z.object({ allow: z.boolean(), reason: z.string() }),
@@ -101,6 +106,7 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
         score: Number(r.score.toFixed(2)),
         fits: r.fitsRemaining,
         title: it.title,
+        untriaged: it.effort <= 0 && it.value <= 0,
       };
     };
 
@@ -114,6 +120,7 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
       budget: budget.id,
       remaining,
       eligible: ranked.length,
+      untriagedCount: ranked.filter((r) => toQ(r).untriaged).length,
       queue: ranked.slice(0, input.top).map(toQ),
       pick: top ? toQ(top) : null,
       gate: { allow: gate.allow, reason: gate.reason },
@@ -124,14 +131,22 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
     const lines = [
       `Front Desk — whats-next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}`,
       `budget=${o.budget} remaining=${o.remaining}   ready: ${o.eligible}`,
-      `  ${w("#", 6)} ${w("repo", 16)} ${w("kind", 5)} ${w("eff", 4)} ${w("val", 4)} ${w("score", 7)} fits`,
+      `  ${w("#", 6)} ${w("repo", 16)} ${w("kind", 5)} ${w("eff", 4)} ${w("val", 4)} ${w("score", 7)} ${w("fits", 4)} meta`,
       ...o.queue.map(
         (r) =>
-          `  ${w("#" + r.number, 6)} ${w(r.repository, 16)} ${w(r.kind, 5)} ${w(String(r.effort), 4)} ${w(String(r.value), 4)} ${w(r.score.toFixed(2), 7)} ${r.fits ? "✔" : "·"}`,
+          `  ${w("#" + r.number, 6)} ${w(r.repository, 16)} ${w(r.kind, 5)} ${w(String(r.effort), 4)} ${w(String(r.value), 4)} ${w(r.score.toFixed(2), 7)} ${w(r.fits ? "✔" : "·", 4)} ${r.untriaged ? "~" : "✔"}`,
       ),
       o.pick
-        ? `\n→ pick: #${o.pick.number} [${o.pick.repository}] ${o.pick.title}\n  budget: ${o.gate.allow ? "ALLOW" : "DENY"} — ${o.gate.reason}`
+        ? `\n→ pick: #${o.pick.number} [${o.pick.repository}] ${o.pick.title}` +
+          (o.pick.untriaged ? `\n  ⚠ untriaged — this rank is the fallback (kind+unblocks+age), not a declared priority` : "") +
+          `\n  budget: ${o.gate.allow ? "ALLOW" : "DENY"} — ${o.gate.reason}`
         : "\n→ nothing eligible.",
+      ...(o.untriagedCount > 0
+        ? [
+            `\n~ ${o.untriagedCount}/${o.eligible} ready items are untriaged (no declared effort/value).`,
+            `  Declare via issue-body frontmatter (kind/effort/value/depends-on) — see .github/ISSUE_TEMPLATE/task.md.`,
+          ]
+        : []),
     ];
     return lines.join("\n");
   },

@@ -61,7 +61,11 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
   const [items, edges, leasedRows] = await Promise.all([
     query<RawItem>(SQL.items, ref),
     query<RawEdge>(SQL.edges, ref),
-    query<{ item_id: string }>(SQL.leases, ref),
+    // Pre-migration mirrors have no `leases` table yet — reads must keep
+    // working on both sides of schema/migrations/2026-07-27-leases.sql.
+    query<{ item_id: string }>(SQL.leases, ref).catch((e: unknown) =>
+      /table not found: leases/.test(String(e)) ? query<{ item_id: string }>(SQL.leasesLegacy, ref) : Promise.reject(e)
+    ),
   ]);
   return assembleScheduling(items, edges, leasedRows.map((r) => r.item_id));
 }

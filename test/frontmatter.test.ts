@@ -42,3 +42,40 @@ test("unknown keys and comments are ignored (frontmatter may serve other tools)"
   assert.equal(r.fm.kind, "door");
   assert.deepEqual(r.findings, []);
 });
+
+// ── the issue templates carry a valid contract block ─────────────────────────
+// GitHub strips a .md template's OWN metadata block (name/about) and the rest
+// becomes the issue body — so the scheduler's contract block must be the FIRST
+// block of that remainder. These tests simulate exactly that stripping, so a
+// template edit that breaks the contract (bad enum, moved block, range slip)
+// fails here instead of silently producing untriaged issues.
+
+import { readFileSync } from "node:fs";
+
+/** What GitHub does to a markdown issue template: drop its leading metadata block. */
+function templateBody(file: string): string {
+  const raw = readFileSync(new URL(`../.github/ISSUE_TEMPLATE/${file}`, import.meta.url), "utf8");
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(raw);
+  assert.ok(m, `${file}: template must open with GitHub's metadata block`);
+  return raw.slice(m[0].length);
+}
+
+test("task template body parses: declared kind/effort/value, empty deps, zero findings", () => {
+  const r = parseFrontMatter(templateBody("task.md"));
+  assert.equal(r.present, true, "the contract block must survive GitHub's metadata stripping");
+  assert.equal(r.fm.kind, "task");
+  assert.equal(r.fm.effort, 3);
+  assert.equal(r.fm.value, 40);
+  assert.deepEqual(r.fm.dependsOn, []);
+  assert.deepEqual(r.findings, [], JSON.stringify(r.findings));
+});
+
+test("epic template body parses: declared kind/effort/value, empty deps, zero findings", () => {
+  const r = parseFrontMatter(templateBody("epic.md"));
+  assert.equal(r.present, true);
+  assert.equal(r.fm.kind, "epic");
+  assert.equal(r.fm.effort, 8);
+  assert.equal(r.fm.value, 60);
+  assert.deepEqual(r.fm.dependsOn, []);
+  assert.deepEqual(r.findings, [], JSON.stringify(r.findings));
+});
