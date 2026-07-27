@@ -56,13 +56,14 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 ## Run it
 
 > Claude Code web sessions provision themselves: `.claude/hooks/session-start.sh`
-> installs npm deps, `dolt` (the mirror's write plane), `deno` (the type gate)
+> installs `deno` then deps **from the lock** (`deno install --frozen`), plus
+> `dolt` (the mirror's write plane)
 > and `elan`/Lean (specs). Every toolchain fetch is best-effort — a network
 > hiccup starts a degraded session, never a failed one. Locally it no-ops.
 >
 > **Cloud-environment network policy**: the default **Trusted** allowlist does
 > NOT cover this repo's footprint (verified 2026-07-27 — JSR and DoltHub return
-> 403 through the proxy, which kills `npm install` and the entire read plane).
+> 403 through the proxy, which kills dependency install and the entire read plane).
 > The environment config of record is **`.claude/cloud-environment.json`**:
 > network access **Custom** + defaults, with the domain list (and per-domain
 > reasons, env vars, and known caveats) in that file. To paste the list into
@@ -73,8 +74,8 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 > ```
 
 ```sh
-npm install                      # required: two test files import zod at load
-node --test test/sim.test.ts     # the 5 invariant tests (needs Node >= 23.6 for native TS)
+deno install --frozen            # deps FROM the lock (also creates node_modules)
+node --test test/sim.test.ts     # the 5 invariant tests (needs Node >= 22.18 for native TS)
 node scripts/demo.ts             # prints the reproduced racy traces vs the safe run
 
 # TLA+ / TLC — two ways, no Nix required:
