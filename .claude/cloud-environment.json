@@ -13,7 +13,7 @@
       { "domain": "deno.land", "reason": "deno install — `deno check` is this repo's type gate" },
       { "domain": "dl.deno.land", "reason": "deno release binaries" },
       { "domain": "elan.lean-lang.org", "reason": "Lean toolchain manager (specs/lean re-verification)" },
-      { "domain": "releases.lean-lang.org", "reason": "Lean toolchain downloads" },
+      { "domain": "release.lean-lang.org", "reason": "Lean toolchain downloads — singular 'release', which is the origin compiled into elan 4.2.3. NOT 'releases.lean-lang.org': that host exists but just 302s to the lean-lang.org marketing site, so allowlisting it provisions nothing (verified 2026-07-27)" },
       { "domain": "nodejs.org", "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)" }
     ]
   },
@@ -25,6 +25,7 @@
   "knownCaveats": [
     "Secrets never go in environmentVariables — the dialog stores them account-visible in plaintext. Credentialed writes go through the mirror-migrate workflow_dispatch + OIDC broker instead (docs/write-surfaces.md).",
     "The GitHub proxy limits release-asset downloads to session-attached repositories regardless of network level, so the dolt install (a dolthub/dolt release asset) can 403 even with these domains. Fallback: the dolthub/dolt Docker image — Docker Hub is on the default Trusted list (docker/dolt-server/).",
-    "The cloud image ships Node 22.x; engines.node is >=22.18 (native TS type-stripping floor). Suite verified 40/40 on 22.22.2."
+    "The cloud image ships Node 22.x; engines.node is >=22.18 (native TS type-stripping floor). Suite verified 40/40 on 22.22.2.",
+    "elan resolves toolchains from release.lean-lang.org but falls back to github.com/leanprover/lean4/releases/download/... for some assets, which is subject to the session-attached-repo limit above. So the elan.lean-lang.org + release.lean-lang.org pair gets the elan binary and should get the toolchain, but Lean provisioning is the one step still worth confirming empirically after an environment edit — `elan toolchain install stable` is the check."
   ]
 }
