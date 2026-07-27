@@ -60,6 +60,12 @@ if ! command -v deno >/dev/null 2>&1 && [ ! -x "$HOME/.deno/bin/deno" ]; then
 fi
 if [ -x "$HOME/.deno/bin/deno" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "export PATH=\"\$HOME/.deno/bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+  # Fail rather than silently rewrite deno.lock. If a deno command wants to
+  # change the lockfile, that is a real dependency-resolution change and should
+  # be an explicit `deno install` + commit — not working-tree noise that every
+  # session rediscovers and hand-curates. (deno.lock shipped incomplete until
+  # 2026-07-27; that is exactly how the gap stayed invisible.)
+  echo "export DENO_FROZEN_LOCKFILE=1" >> "$CLAUDE_ENV_FILE"
 fi
 
 # --- lean: re-verify specs/lean (Leases.lean = S1, FrontDesk.lean = S2) -------
