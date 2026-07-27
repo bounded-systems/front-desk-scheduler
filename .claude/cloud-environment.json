@@ -13,7 +13,7 @@
       { "domain": "deno.land", "reason": "deno install — `deno check` is this repo's type gate" },
       { "domain": "dl.deno.land", "reason": "deno release binaries" },
       { "domain": "elan.lean-lang.org", "reason": "Lean toolchain manager (specs/lean re-verification)" },
-      { "domain": "releases.lean-lang.org", "reason": "Lean toolchain downloads" },
+      { "domain": "release.lean-lang.org", "reason": "Lean toolchain downloads — SINGULAR. `releases.` (plural) is a real host but only 302s to the marketing site, so it provisions nothing; verified with `strings $(command -v elan)`, which has https://release.lean-lang.org/ compiled in" },
       { "domain": "nodejs.org", "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)" }
     ]
   },
