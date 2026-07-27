@@ -63,26 +63,14 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 > **Cloud-environment network policy**: the default **Trusted** allowlist does
 > NOT cover this repo's footprint (verified 2026-07-27 — JSR and DoltHub return
 > 403 through the proxy, which kills `npm install` and the entire read plane).
-> Set the environment's network access to **Custom**, check *"Also include
-> default list of common package managers"*, and add:
+> The environment config of record is **`.claude/cloud-environment.json`**:
+> network access **Custom** + defaults, with the domain list (and per-domain
+> reasons, env vars, and known caveats) in that file. To paste the list into
+> the dialog:
 >
-> ```text
-> npm.jsr.io            # JSR npm-compat registry — @bounded-systems/* deps
-> jsr.io                # JSR metadata
-> *.dolthub.com         # read plane (www) + remote API (doltremoteapi)
-> dolthub.com
-> deno.land             # deno install (the type gate)
-> dl.deno.land
-> elan.lean-lang.org    # Lean toolchain (specs/lean)
-> releases.lean-lang.org
-> nodejs.org            # nvm, if a newer Node than the image's is wanted
+> ```sh
+> jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json
 > ```
->
-> Caveat from the docs: the GitHub proxy limits **release-asset** downloads to
-> repositories attached to the session, regardless of network level — so the
-> `dolt` install (a `dolthub/dolt` release asset) may 403 in some contexts.
-> If it does, use the `dolthub/dolt` Docker image instead (Docker Hub is on the
-> Trusted list; see `docker/dolt-server/`).
 
 ```sh
 npm install                      # required: two test files import zod at load
