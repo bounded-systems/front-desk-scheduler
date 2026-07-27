@@ -59,6 +59,30 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 > installs npm deps, `dolt` (the mirror's write plane), `deno` (the type gate)
 > and `elan`/Lean (specs). Every toolchain fetch is best-effort — a network
 > hiccup starts a degraded session, never a failed one. Locally it no-ops.
+>
+> **Cloud-environment network policy**: the default **Trusted** allowlist does
+> NOT cover this repo's footprint (verified 2026-07-27 — JSR and DoltHub return
+> 403 through the proxy, which kills `npm install` and the entire read plane).
+> Set the environment's network access to **Custom**, check *"Also include
+> default list of common package managers"*, and add:
+>
+> ```text
+> npm.jsr.io            # JSR npm-compat registry — @bounded-systems/* deps
+> jsr.io                # JSR metadata
+> *.dolthub.com         # read plane (www) + remote API (doltremoteapi)
+> dolthub.com
+> deno.land             # deno install (the type gate)
+> dl.deno.land
+> elan.lean-lang.org    # Lean toolchain (specs/lean)
+> releases.lean-lang.org
+> nodejs.org            # nvm, if a newer Node than the image's is wanted
+> ```
+>
+> Caveat from the docs: the GitHub proxy limits **release-asset** downloads to
+> repositories attached to the session, regardless of network level — so the
+> `dolt` install (a `dolthub/dolt` release asset) may 403 in some contexts.
+> If it does, use the `dolthub/dolt` Docker image instead (Docker Hub is on the
+> Trusted list; see `docker/dolt-server/`).
 
 ```sh
 npm install                      # required: two test files import zod at load

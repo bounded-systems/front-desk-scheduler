@@ -6,7 +6,7 @@
   "sideEffects": false,
   "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
-    "node": ">=23.6"
+    "node": ">=22.18"
   },
   "bin": { "fds": "scripts/fds.ts" },
   "scripts": {
