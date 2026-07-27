@@ -84,8 +84,10 @@ export const SQL = {
   allItems:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
     "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items",
+  // Live leases — the held set, excluded from the ready queue. Reads `leases`
+  // (one row per held item, PK-enforced), NOT the append-only `claims` history.
   leases:
-    "SELECT DISTINCT item_id FROM claims WHERE status='active' AND TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
+    "SELECT item_id FROM leases WHERE TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
 } as const;
 
 // ── typed dep-graph surface (GH-canonical) — the bd-dep/bd-ready replacement ──

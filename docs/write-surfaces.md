@@ -51,6 +51,26 @@ depends-on: [prx#119, gh-project-room#83]
 ---
 ```
 
+## Claiming: `leases` is the mechanism, `claims` is the record
+
+An agent takes work by latching a row in **`leases`**, which has one row per held
+item under `PRIMARY KEY (item_id)`. That key *is* the scheduler's S1 (mutual
+exclusion): a second claimant collides and loses, with no check-then-act window
+and no isolation-level assumption. Expiry is a TTL refreshed by `renewLease`, so
+a dead worker's hold lapses and the item requeues — a lease, not a lock, which is
+why convoys and priority inversion don't arise.
+
+**`claims`** is the append-only history of those holds (audit, effort
+calibration). It is written *after* a successful latch and is not load-bearing:
+losing a claims row costs forensics, not correctness.
+
+> Until 2026-07-27 `claims` was both, and mutual exclusion was attempted with
+> `INSERT ... WHERE NOT EXISTS` over a table with no unique index — which enforced
+> nothing, and whose confirmation query filtered on `agent`, so a double-insert
+> reported success to *both* agents. The models in `specs/` prove an atomic CAS
+> upholds S1; they cannot supply the atomicity. Only the schema can.
+> See `schema/migrations/2026-07-27-leases.sql`.
+
 ## Invariants the mirror enforces
 
 Column constraints (ENUM/CHECK/FK) + SQL shape checks D1–D6, declared once more
