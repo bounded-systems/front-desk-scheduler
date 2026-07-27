@@ -1,7 +1,12 @@
 name = "FrontDesk"
-defaultTargets = ["FrontDesk"]
+defaultTargets = ["FrontDesk", "Leases"]
 
-# Pure-core proof: no mathlib dependency, builds from the toolchain alone.
+# Pure-core proofs: no mathlib dependency, they build from the toolchain alone.
 [[lean_lib]]
 name = "FrontDesk"
+srcDir = "."
+
+# S1 (mutual exclusion) — the lease cell vs. the predicate-guarded log.
+[[lean_lib]]
+name = "Leases"
 srcDir = "."
