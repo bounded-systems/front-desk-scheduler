@@ -1,0 +1,42 @@
+name: schema-drift
+# The projection gate for the deployed mirror schema.
+#
+#   live DoltHub schema ──project──▶ schema/mirror.live.sql ──diff──▶ pass/fail
+#
+# The api-extractor pattern: make the semantic object a file, fail CI when the
+# file and reality disagree, and put CODEOWNERS on the directory. A change to the
+# deployed schema then cannot land unreviewed by its owner, whatever route it
+# took to get there — including routes that touch no source file at all.
+#
+# That last case is why this also runs on a schedule and not only on PRs: a
+# `dolt sql` run against the mirror by hand produces no pull request to gate.
+# The scheduled run is the one that catches it.
+#
+# Auth: none. Reads the PUBLIC DoltHub SQL API, so there is no credential to
+# broker and no GitHub rate-limit budget consumed. Deliberately not path-filtered
+# — the job is ~6 HTTP requests, and an unfiltered check is one that branch
+# protection can require without the skipped-required-check problem.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 7 * * *" # daily; offset from mirror-sync's 17 */6
+  workflow_dispatch: {}
+concurrency:
+  group: schema-drift-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      # No `npm ci`: the projector imports only src/dolthub.ts, which has no
+      # runtime dependencies. Node 24 strips the types natively.
+      - name: Check the checked-in projection against the deployed schema
+        run: node scripts/schema-export.ts --check

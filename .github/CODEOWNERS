@@ -1,0 +1,30 @@
+# Code owners.
+#
+# NOTE ON ENFORCEMENT: this file only gates anything if branch protection on
+# `main` has "Require review from Code Owners" enabled. Without that it is
+# documentation. The entries below are written assuming it will be turned on;
+# until it is, treat them as intent rather than as a control.
+#
+# Path granularity is CODEOWNERS' only namespace, so semantic ownership is
+# obtained the established way (api-extractor, buf breaking, golden files):
+# project the semantic object into a file, gate drift in CI, own the file.
+# See scripts/schema-export.ts and .github/workflows/schema-drift.yml.
+
+# The mirror's schema — both the hand-written intent and the generated
+# projection of what is actually deployed. Owning this directory means every
+# change to the deployed queue schema surfaces as a diff requiring review,
+# regardless of which source file (or which out-of-band `dolt sql`) caused it.
+# The S1 bug lived in the gap this closes: the tables existed only in the
+# database, so there was nothing for anyone to review.
+/schema/ @bdelanghe
+
+# The projector and its gate. If these can be changed without review, the
+# ownership above is unenforceable — a weakened check silently un-owns /schema/.
+/scripts/schema-export.ts        @bdelanghe
+/.github/workflows/schema-drift.yml @bdelanghe
+
+# Ownership of ownership.
+/.github/CODEOWNERS @bdelanghe
+
+# The verified specs. Changes here alter what "proven" means for this repo.
+/specs/ @bdelanghe

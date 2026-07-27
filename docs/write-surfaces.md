@@ -71,6 +71,36 @@ losing a claims row costs forensics, not correctness.
 > upholds S1; they cannot supply the atomicity. Only the schema can.
 > See `schema/migrations/2026-07-27-leases.sql`.
 
+## The schema is itself a projection with an owner
+
+The S1 bug lived where a projection didn't. `items`, `claims` and `item_deps`
+existed only in the deployed database — nothing in the repo stated their shape,
+so nothing could review a change to it, and the missing unique index was
+invisible until someone went looking. The habitat was the gap.
+
+Closed with the api-extractor pattern (also `buf breaking`, `cargo-public-api`,
+golden files): make the semantic object a **file**, gate drift in CI, own the
+file. Two artifacts, and the distinction is load-bearing:
+
+| file | is | written by |
+|---|---|---|
+| `schema/mirror.sql` | **intent** — schema of record, with the rationale | hand |
+| `schema/mirror.live.sql` | **reality** — projection of what is deployed | `scripts/schema-export.ts` |
+
+`schema-drift.yml` fails when `mirror.live.sql` and the live database disagree,
+and runs on a **schedule** as well as on PRs — an out-of-band `dolt sql` against
+the mirror produces no pull request to gate, so the scheduled run is the one that
+catches it. Divergence between *intent* and *reality* is reported rather than
+failed: that is a pending migration, a legitimate state, but one worth seeing.
+
+`CODEOWNERS` then owns `/schema/`, which buys semantic granularity from a
+path-granular namespace: any change to the deployed queue schema, by any route,
+surfaces as a diff on an owned file.
+
+> This is merge-time authorization of **contract changes** — a different clock
+> from `prx`'s runtime authorization of **effects**. Who may change the contract
+> vs. who may exercise it; complementary, not overlapping.
+
 ## Invariants the mirror enforces
 
 Column constraints (ENUM/CHECK/FK) + SQL shape checks D1–D6, declared once more
