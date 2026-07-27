@@ -207,17 +207,38 @@ export interface ClaimResult {
   readonly reason: string;
 }
 
-/** Predicate: a live (active + unexpired) claim exists for this item. */
-const LIVE_CLAIM = (alias = "c") =>
-  `${alias}.status = 'active' AND TIMESTAMPADD(SECOND, ${alias}.ttl_sec, ${alias}.claimed_at) > UTC_TIMESTAMP()`;
+/** Predicate: this lease row has not yet lapsed. `p` qualifies the columns. */
+export const LEASE_LIVE = (p = "") =>
+  `TIMESTAMPADD(SECOND, ${p}ttl_sec, ${p}claimed_at) > UTC_TIMESTAMP()`;
+
+/**
+ * Free every lapsed lease. Idempotent and safe to run concurrently: a lease that
+ * is live cannot be reaped, and two reapers deleting the same dead row is a
+ * no-op for the second. This is the whole recovery story for a dead worker —
+ * no sweeper process, no stuck work.
+ */
+async function reapExpiredLeases(): Promise<void> {
+  await dsql(`DELETE FROM leases WHERE NOT (${LEASE_LIVE()})`);
+}
 
 /**
  * Claim the top-ranked eligible item for `agent` — a lease with a visibility
- * timeout. The INSERT ... SELECT ... WHERE NOT EXISTS is the atomic CAS (the safe
- * `commitClaim` from ops.ts, proven for S1): the row is written only if no LIVE
- * claim exists, so two agents racing the same item cannot both win. A dead agent's
- * lease simply expires (ttl), returning the item to the queue — starvation-free
- * recovery, no sweep required.
+ * timeout.
+ *
+ * Mutual exclusion (the scheduler's S1) is carried by the PRIMARY KEY on
+ * `leases.item_id`, not by a predicate: the INSERT either creates the single
+ * permitted row or collides and is ignored. Two agents racing the same item
+ * cannot both win regardless of isolation level, because there is no
+ * check-then-act window between them — the engine adjudicates.
+ *
+ * This replaced an `INSERT ... WHERE NOT EXISTS` over the append-only `claims`
+ * table, which enforced nothing (no unique index) and confirmed the win by
+ * filtering on `agent`, so a double-insert reported success to BOTH agents. The
+ * atomic CAS that specs/tla and specs/rust prove safe has to be supplied by the
+ * implementation; only the schema can supply it. See schema/mirror.sql.
+ *
+ * Re-latching an item you already hold succeeds — a restarted worker reclaiming
+ * its own lease is idempotent, not a race.
  *
  * `orderedIds` is the ranked candidate list (from readMirrorScheduling); we walk
  * it and take the first item we can actually latch.
@@ -227,42 +248,71 @@ export async function claimNext(
   orderedIds: readonly string[],
   ttlSec = 3600,
 ): Promise<ClaimResult> {
+  await reapExpiredLeases();
   for (const itemId of orderedIds) {
-    const before = await dsqlRows<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM claims c WHERE c.item_id = '${sqlEscape(itemId)}' AND ${LIVE_CLAIM()}`,
+    const id = sqlEscape(itemId);
+    await dsql(
+      `INSERT IGNORE INTO leases (item_id, agent, claimed_at, ttl_sec)
+       VALUES ('${id}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec})`,
     );
-    if (Number(before[0]?.n ?? 0) > 0) continue; // already leased — next candidate
+    // Read back the one row the PK guarantees exists. Race-free BECAUSE it is
+    // unique: whoever it names is the sole holder, so this cannot report two winners.
+    const held = await dsqlRows<{ agent: string; number: number; title: string }>(
+      `SELECT l.agent AS agent, i.number AS number, i.title AS title
+       FROM leases l JOIN items i ON i.item_id = l.item_id
+       WHERE l.item_id = '${id}'`,
+    );
+    if (held[0]?.agent !== agent) continue; // another agent holds it — next candidate
+    // Audit only, deliberately after the latch: `claims` records history and is
+    // not load-bearing for S1, so losing this row costs forensics, not correctness.
     await dsql(
       `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
-       SELECT '${sqlEscape(itemId)}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec}, 'active'
-       FROM (SELECT 1) t
-       WHERE NOT EXISTS (SELECT 1 FROM claims c WHERE c.item_id = '${sqlEscape(itemId)}' AND ${LIVE_CLAIM()})`,
+       VALUES ('${id}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
     );
-    const got = await dsqlRows<{ n: number; number: number; title: string }>(
-      `SELECT COUNT(*) AS n, MAX(i.number) AS number, MAX(i.title) AS title
-       FROM claims c JOIN items i ON i.item_id = c.item_id
-       WHERE c.item_id = '${sqlEscape(itemId)}' AND c.agent = '${sqlEscape(agent)}' AND ${LIVE_CLAIM()}`,
-    );
-    if (Number(got[0]?.n ?? 0) > 0) {
-      return { won: true, itemId, number: got[0].number, title: got[0].title, reason: `leased ${ttlSec}s` };
-    }
-    // lost the CAS race to another agent between check and insert — try next.
+    return { won: true, itemId, number: held[0].number, title: held[0].title, reason: `leased ${ttlSec}s` };
   }
   return { won: false, reason: "no unleased eligible item" };
 }
 
-/** Release/complete a lease (frees the item, or records the completion). */
-export async function releaseClaim(itemId: string, agent: string, status: "released" | "completed"): Promise<void> {
+/**
+ * Heartbeat — push the lease's expiry out without releasing it. Returns false if
+ * the lease has already lapsed and been taken by someone else, which is the
+ * signal for a long-running agent to stop working on the item rather than race
+ * the new holder. Renewing on a shorter TTL than the job's runtime is the point:
+ * a worker that dies stops heartbeating and the item returns to the queue fast.
+ */
+export async function renewLease(itemId: string, agent: string, ttlSec?: number): Promise<boolean> {
+  const id = sqlEscape(itemId);
+  const a = sqlEscape(agent);
   await dsql(
-    `UPDATE claims SET status = '${status}'
-     WHERE item_id = '${sqlEscape(itemId)}' AND agent = '${sqlEscape(agent)}' AND status = 'active'`,
+    `UPDATE leases SET claimed_at = UTC_TIMESTAMP()${ttlSec ? `, ttl_sec = ${ttlSec}` : ""}
+     WHERE item_id = '${id}' AND agent = '${a}' AND ${LEASE_LIVE()}`,
+  );
+  const rows = await dsqlRows<{ agent: string }>(
+    `SELECT agent FROM leases WHERE item_id = '${id}' AND ${LEASE_LIVE()}`,
+  );
+  return rows[0]?.agent === agent;
+}
+
+/**
+ * Release/complete a lease — frees the item and closes the audit interval. The
+ * `agent` predicate matters: a straggler whose lease already lapsed and was
+ * re-latched by someone else must not free the new holder's lease.
+ */
+export async function releaseClaim(itemId: string, agent: string, status: "released" | "completed"): Promise<void> {
+  const id = sqlEscape(itemId);
+  const a = sqlEscape(agent);
+  await dsql(`DELETE FROM leases WHERE item_id = '${id}' AND agent = '${a}'`);
+  await dsql(
+    `UPDATE claims SET status = '${status}', released_at = UTC_TIMESTAMP()
+     WHERE item_id = '${id}' AND agent = '${a}' AND status = 'active'`,
   );
 }
 
 /** Item ids currently under a live lease — excluded from the ready queue. */
 export async function liveClaimedIds(): Promise<Set<string>> {
   const rows = await dsqlRows<{ item_id: string }>(
-    `SELECT DISTINCT c.item_id FROM claims c WHERE ${LIVE_CLAIM()}`,
+    `SELECT item_id FROM leases WHERE ${LEASE_LIVE()}`,
   );
   return new Set(rows.map((r) => r.item_id));
 }
@@ -742,7 +792,7 @@ export async function readMirrorScheduling(): Promise<
     status: string; kind: string; effort: number; value: number; depends_on: string;
     open_blockers: number | string; unblocks: number | string; age_days: number | string | null; leased: number | string;
   }>(`SELECT i.*, DATEDIFF(UTC_TIMESTAMP(), i.created_at) AS age_days,
-      EXISTS(SELECT 1 FROM claims c WHERE c.item_id=i.item_id AND c.status='active' AND TIMESTAMPADD(SECOND,c.ttl_sec,c.claimed_at)>UTC_TIMESTAMP()) AS leased,
+      EXISTS(SELECT 1 FROM leases l WHERE l.item_id=i.item_id AND ${LEASE_LIVE("l.")}) AS leased,
       (SELECT COUNT(*) FROM item_deps d JOIN items t ON t.item_id = d.dep_item_id
         WHERE d.item_id = i.item_id AND t.status <> 'Done') AS open_blockers,
       (SELECT COUNT(*) FROM item_deps d2 JOIN items s ON s.item_id = d2.item_id

@@ -41,9 +41,14 @@ src/invariants.ts   the spec: S1..L2 as a catalog + assertInvariants(world) → 
 src/ops.ts          the concurrency mechanism — claim/spend/complete, each with a racy and a safe variant
 src/scheduler.ts    dispatch = prioritize ∘ budgetGate over the ready set
 src/sim.ts          deterministic-simulation engine (seeded PRNG, decide/commit split, per-step invariant checks)
+schema/mirror.sql   INTENT — the schema of record, incl. `leases`, where S1 is enforced by a PRIMARY KEY
+schema/mirror.live.sql  REALITY — generated projection of the DEPLOYED schema; CI fails on drift
+schema/migrations/  ordered, idempotent DDL changes against an existing mirror
+scripts/schema-export.ts  the projector (public DoltHub API, no credential); `--check` is the CI gate
 test/sim.test.ts    reproduces S1, S2, lost-wakeup; proves safe ops hold across 1000 seeds; catches L1
+test/leases.test.ts the SQL-layer S1 regression: models both claim designs and races them
 specs/tla/          the same protocol in TLA+ — racy config finds a counterexample, atomic config passes
-specs/lean/         Lean 4 proof of budgetGate soundness + the TOCTOU (✅ builds, Lean 4.32.1)
+specs/lean/         Lean 4 proofs: budgetGate soundness + the TOCTOU; S1 over ALL schedules (✅ Lean 4.32.1)
 specs/rust/         Rust + loom: real atomics, exhaustive interleavings (✅ 3 tests, loom 0.7)
 docs/model.md       the invariant catalog, the race taxonomy, and how each projection checks it
 ```

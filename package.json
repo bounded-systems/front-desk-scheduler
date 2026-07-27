@@ -16,6 +16,8 @@
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
     "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
     "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg",
+    "schema:export": "node scripts/schema-export.ts",
+    "schema:check": "node scripts/schema-export.ts --check",
     "shacl": ".venv/bin/python scripts/shacl_validate.py",
     "fds": "node scripts/fds.ts",
     "mcp": "node scripts/mcp.ts"
