@@ -1,20 +1,47 @@
 {
-  "$comment": "Reference config for the Claude Code cloud environment this repo expects. Nothing consumes this file automatically — the environment is configured in the claude.ai/code UI — but it is the checked-in record of what that UI should say, so the next person (or session) doesn't rediscover it from proxy 403s. Paste the domain list with: jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json",
+  "$comment": "Reference config for the Claude Code cloud environment this repo expects. Nothing consumes this file automatically \u2014 the environment is configured in the claude.ai/code UI \u2014 but it is the checked-in record of what that UI should say, so the next person (or session) doesn't rediscover it from proxy 403s. Paste the domain list with: jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json",
   "name": "front-desk",
   "networkAccess": {
     "level": "custom",
     "includeDefaultPackageManagers": true,
     "$comment": "The default Trusted allowlist covers registry.npmjs.org but NOT JSR or DoltHub (verified 2026-07-27: both 403 through the proxy, killing npm install and the whole read plane). Hence custom.",
     "allowedDomains": [
-      { "domain": "npm.jsr.io", "reason": "JSR npm-compat registry — the @bounded-systems/* deps (guest-room, verbspec, verbspec-mcp) resolve here, not npmjs" },
-      { "domain": "jsr.io", "reason": "JSR metadata" },
-      { "domain": "*.dolthub.com", "reason": "read plane: www.dolthub.com (public SQL API) + doltremoteapi.dolthub.com (dolt clone/push)" },
-      { "domain": "dolthub.com", "reason": "apex, in case a redirect lands on it" },
-      { "domain": "deno.land", "reason": "deno install — `deno check` is this repo's type gate" },
-      { "domain": "dl.deno.land", "reason": "deno release binaries" },
-      { "domain": "elan.lean-lang.org", "reason": "Lean toolchain manager (specs/lean re-verification)" },
-      { "domain": "release.lean-lang.org", "reason": "Lean toolchain downloads — SINGULAR. `releases.` (plural) is a real host but only 302s to the marketing site, so it provisions nothing; verified with `strings $(command -v elan)`, which has https://release.lean-lang.org/ compiled in" },
-      { "domain": "nodejs.org", "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)" }
+      {
+        "domain": "npm.jsr.io",
+        "reason": "JSR npm-compat registry \u2014 the @bounded-systems/* deps (guest-room, verbspec, verbspec-mcp) resolve here, not npmjs"
+      },
+      {
+        "domain": "jsr.io",
+        "reason": "JSR metadata"
+      },
+      {
+        "domain": "*.dolthub.com",
+        "reason": "read plane: www.dolthub.com (public SQL API) + doltremoteapi.dolthub.com (dolt clone/push)"
+      },
+      {
+        "domain": "dolthub.com",
+        "reason": "apex, in case a redirect lands on it"
+      },
+      {
+        "domain": "deno.land",
+        "reason": "deno install \u2014 `deno check` is this repo's type gate"
+      },
+      {
+        "domain": "dl.deno.land",
+        "reason": "deno release binaries"
+      },
+      {
+        "domain": "elan.lean-lang.org",
+        "reason": "Lean toolchain manager (specs/lean re-verification)"
+      },
+      {
+        "domain": "release.lean-lang.org",
+        "reason": "Lean toolchain downloads \u2014 singular 'release', the origin compiled into elan (verified via strings on the binary). NOT 'releases.' (plural): that host exists but 302s to the marketing site, so allowlisting it provisions nothing"
+      },
+      {
+        "domain": "nodejs.org",
+        "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)"
+      }
     ]
   },
   "environmentVariables": {
@@ -23,8 +50,9 @@
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
   "knownCaveats": [
-    "Secrets never go in environmentVariables — the dialog stores them account-visible in plaintext. Credentialed writes go through the mirror-migrate workflow_dispatch + OIDC broker instead (docs/write-surfaces.md).",
-    "The GitHub proxy limits release-asset downloads to session-attached repositories regardless of network level, so the dolt install (a dolthub/dolt release asset) can 403 even with these domains. Fallback: the dolthub/dolt Docker image — Docker Hub is on the default Trusted list (docker/dolt-server/).",
-    "The cloud image ships Node 22.x; engines.node is >=22.18 (native TS type-stripping floor). Suite verified 40/40 on 22.22.2."
+    "Secrets never go in environmentVariables \u2014 the dialog stores them account-visible in plaintext. Credentialed writes go through the mirror-migrate workflow_dispatch + OIDC broker instead (docs/write-surfaces.md).",
+    "The GitHub proxy limits release-asset downloads to session-attached repositories regardless of network level, so the dolt install (a dolthub/dolt release asset) can 403 even with these domains. Fallback: the dolthub/dolt Docker image \u2014 Docker Hub is on the default Trusted list (docker/dolt-server/).",
+    "The cloud image ships Node 22.x; engines.node is >=22.18 (native TS type-stripping floor). Suite verified 40/40 on 22.22.2.",
+    "elan resolves toolchains from release.lean-lang.org but falls back to github.com/leanprover/lean4/releases/download/... for some assets, which is subject to the session-attached-repo limit above. So the elan.lean-lang.org + release.lean-lang.org pair gets the elan binary and should get the toolchain, but Lean provisioning is the one step still worth confirming empirically after an environment edit \u2014 `elan toolchain install stable` is the check."
   ]
 }
