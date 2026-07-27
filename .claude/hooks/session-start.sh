@@ -25,10 +25,17 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 
-# --- npm deps (important: two test files import zod at module load) -----------
+# --- npm deps (important: three test files + the verbs surface need them) -----
 if [ -f package.json ]; then
   echo "session-start: npm install ..."
-  npm install --no-audit --no-fund || echo "session-start: WARN npm install failed; zod-importing tests will fail"
+  npm install --no-audit --no-fund || {
+    echo "session-start: WARN npm install failed."
+    echo "  Most likely cause in a cloud session: the environment's network policy"
+    echo "  blocks npm.jsr.io (the @bounded-systems/* deps live on JSR, not npmjs)."
+    echo "  Fix: set network access to Custom and add the domains listed in the"
+    echo "  README's cloud-environment note. Until then, graph/list/whats-next"
+    echo "  tests and the fds verbs will fail on missing imports."
+  }
 fi
 
 # --- dolt: the mirror's WRITE plane (reads go over the public HTTP API) -------

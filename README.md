@@ -59,6 +59,18 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 > installs npm deps, `dolt` (the mirror's write plane), `deno` (the type gate)
 > and `elan`/Lean (specs). Every toolchain fetch is best-effort — a network
 > hiccup starts a degraded session, never a failed one. Locally it no-ops.
+>
+> **Cloud-environment network policy**: the default **Trusted** allowlist does
+> NOT cover this repo's footprint (verified 2026-07-27 — JSR and DoltHub return
+> 403 through the proxy, which kills `npm install` and the entire read plane).
+> The environment config of record is **`.claude/cloud-environment.json`**:
+> network access **Custom** + defaults, with the domain list (and per-domain
+> reasons, env vars, and known caveats) in that file. To paste the list into
+> the dialog:
+>
+> ```sh
+> jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json
+> ```
 
 ```sh
 npm install                      # required: two test files import zod at load
