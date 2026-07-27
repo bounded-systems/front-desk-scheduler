@@ -130,8 +130,13 @@ export interface Graph {
   blockedBy: Map<string, GraphRef[]>;
 }
 
-/** Edge kinds that gate readiness (an open one blocks). `closes` is NOT a blocker. */
-const BLOCKER_KINDS = new Set(["blocks", "parent-child"]);
+/**
+ * Edge kinds that gate readiness (an open one blocks). `closes` is NOT a blocker
+ * — it is mined PR→issue provenance. Exported so anything reporting on the DAG
+ * (scripts/triage-coverage.ts) classifies edges the same way the scheduler does,
+ * rather than keeping a second list that can drift.
+ */
+export const BLOCKER_KINDS = new Set(["blocks", "parent-child"]);
 
 /**
  * Assemble the GH-canonical dep-graph from the non-Done items + typed edges.

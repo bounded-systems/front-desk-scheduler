@@ -55,7 +55,13 @@ docs/model.md       the invariant catalog, the race taxonomy, and how each proje
 
 ## Run it
 
+> Claude Code web sessions provision themselves: `.claude/hooks/session-start.sh`
+> installs npm deps, `dolt` (the mirror's write plane), `deno` (the type gate)
+> and `elan`/Lean (specs). Every toolchain fetch is best-effort — a network
+> hiccup starts a degraded session, never a failed one. Locally it no-ops.
+
 ```sh
+npm install                      # required: two test files import zod at load
 node --test test/sim.test.ts     # the 5 invariant tests (needs Node >= 23.6 for native TS)
 node scripts/demo.ts             # prints the reproduced racy traces vs the safe run
 
@@ -73,9 +79,13 @@ npm run whats-next -- --repo prx --budget rolling-5h
 
 > Triage coverage is a measured number, not a vibe: `npm run triage:coverage`
 > reports it per repo (and CI prints it on every schema-drift run). As of
-> 2026-07-27 effort/value are ~98% populated — the remaining gap is the
-> dependency graph (4/210 items carry dep edges), so readiness gating and the
-> unblocks bonus are running on a nearly empty DAG. `whats-next` flags any
-> item ranking on the fallback as `~` untriaged.
+> 2026-07-27 effort/value are ~98% populated (206/210); the real gap is the
+> **dependency DAG — 2 gating edges over the whole schedulable board, blocking
+> 2/210 items**. So readiness admits nearly everything and the unblocks bonus is
+> inert: the ranking is value-density alone. `depends-on:` in issue frontmatter
+> is what populates it. `whats-next` flags fallback-ranked items as `~`.
+>
+> (Only `blocks`/`parent-child` edges gate; the 36 mined `closes` edges are PR
+> provenance and gate nothing — counting them together overstates DAG coverage.)
 
 Source-available under **PolyForm Noncommercial 1.0.0** (matching gh-project-room).
