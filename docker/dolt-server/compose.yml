@@ -1,0 +1,23 @@
+# Session-local read plane: the prebuilt GHCR image if pullable, else built
+# from this directory (the base dolthub/dolt-sql-server comes from Docker Hub,
+# which is on the default Trusted allowlist).
+#
+#   FDS_READER_PASSWORD=<pw> docker compose -f docker/dolt-server/compose.yml up -d
+#   DOLT_HOST=127.0.0.1 DOLT_PORT=3307 DOLT_USER=fds_reader DOLT_PASSWORD=<pw> \
+#     FDS_READS=server node scripts/fds.ts whats-next
+#
+# The volume keeps the clone across restarts; the server auto-pulls main from
+# DoltHub on each transaction (read replica), so a stale volume self-heals.
+services:
+  dolt-server:
+    image: ghcr.io/bounded-systems/front-desk-dolt-server:latest
+    build: .
+    ports:
+      - "3307:3306"
+    environment:
+      FDS_READER_PASSWORD: ${FDS_READER_PASSWORD:?set FDS_READER_PASSWORD}
+    volumes:
+      - dolt-data:/var/lib/dolt
+    restart: unless-stopped
+volumes:
+  dolt-data:

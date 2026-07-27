@@ -1,6 +1,8 @@
 {
   "$comment": "Reference config for the Claude Code cloud environment this repo expects. Nothing consumes this file automatically \u2014 the environment is configured in the claude.ai/code UI \u2014 but it is the checked-in record of what that UI should say, so the next person (or session) doesn't rediscover it from proxy 403s. Paste the domain list with: jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json",
   "name": "front-desk",
+  "configVersion": 2,
+  "configVersionNote": "Bump this when ANYTHING above the session's control changes (domains, env vars). The session hook compares FDS_ENV_CONFIG against this and warns on mismatch, so a stale dialog is caught at boot instead of by a failed install. v1 had the plural releases.lean-lang.org hostname bug.",
   "networkAccess": {
     "level": "custom",
     "includeDefaultPackageManagers": true,
@@ -45,7 +47,9 @@
     ]
   },
   "environmentVariables": {
-    "FDS_READS": "dolthub"
+    "FDS_READS": "dolthub",
+    "FDS_ENV_NAME": "front-desk",
+    "FDS_ENV_CONFIG": "2"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",

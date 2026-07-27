@@ -1,0 +1,74 @@
+name: build-dolt-image
+# Prebuild the dolt-server read-plane image to GHCR.
+#
+# Why prebuilt: cloud sessions can't fetch the dolt binary reliably — it ships
+# as a GitHub RELEASE ASSET of dolthub/dolt, and the session's GitHub proxy
+# limits release-asset downloads to session-attached repositories, so the
+# curl-install can 403. ghcr.io, by contrast, is on the default Trusted network
+# allowlist. A prebuilt image turns the flakiest provisioning step into a plain
+# registry pull — and it is the on-ramp to the A2 fix (claims through ONE
+# server instead of per-worker clones), since sessions then already talk to a
+# dolt sql-server rather than shelling out to a local clone.
+#
+# Deliberately no third-party build actions: plain docker build + push with the
+# workflow's own GITHUB_TOKEN keeps the trust surface to actions/checkout only
+# (same SHA-pinned version the other workflows use).
+#
+# ⚠ ONE-TIME AFTER FIRST RUN: make the package PUBLIC
+#   (org → Packages → front-desk-dolt-server → settings → visibility), or
+#   unauthenticated session pulls will 403 and the hook falls back to building
+#   the image locally from docker/dolt-server/.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/dolt-server/**"
+      - ".github/workflows/build-dolt-image.yml"
+  workflow_dispatch: {}
+concurrency:
+  group: build-dolt-image
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: write
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/front-desk-dolt-server
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.description="dolt sql-server read replica of the public front-desk-mirror" \
+            -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" \
+            docker/dolt-server
+      - name: Smoke test — server comes up and answers SQL
+        # The entrypoint clones the PUBLIC mirror (no credential) and serves it.
+        # A query through the read-only user proves clone + user + replica
+        # config all work before the image is published.
+        run: |
+          set -euo pipefail
+          docker run -d --name fds-dolt -p 3307:3306 -e FDS_READER_PASSWORD=smoke "$IMAGE:latest"
+          for i in $(seq 1 60); do
+            if docker exec fds-dolt dolt version >/dev/null 2>&1 && \
+               docker run --rm --network container:fds-dolt mysql:8 \
+                 mysql -h127.0.0.1 -ufds_reader -psmoke -D front-desk-mirror \
+                 -e "SELECT COUNT(*) FROM items" >/dev/null 2>&1; then
+              echo "server answered"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::dolt-server did not become queryable in 300s"
+          docker logs fds-dolt | tail -50
+          exit 1
+      - name: Push
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
