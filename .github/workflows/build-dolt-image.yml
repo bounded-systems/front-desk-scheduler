@@ -68,7 +68,24 @@ jobs:
           echo "::error::dolt-server did not become queryable in 300s"
           docker logs fds-dolt | tail -50
           exit 1
-      - name: Push
+      - name: Push (retried — GHCR's cross-repo layer mount intermittently
+          dies with "unknown blob")
+        # First run hit exactly this: build + smoke green, then the registry
+        # offered a layer mount from an unrelated package and aborted the push.
+        # Transient registry errors get the same exponential backoff this
+        # repo's git-push convention uses. SHA tag first so the second push
+        # finds every layer already uploaded.
         run: |
-          docker push "$IMAGE:latest"
-          docker push "$IMAGE:${{ github.sha }}"
+          set -euo pipefail
+          push_with_retry() {
+            local ref="$1"
+            for delay in 0 2 4 8 16; do
+              sleep "$delay"
+              if docker push "$ref"; then return 0; fi
+              echo "push $ref failed — retrying after backoff"
+            done
+            echo "::error::push $ref failed after 5 attempts"
+            return 1
+          }
+          push_with_retry "$IMAGE:${{ github.sha }}"
+          push_with_retry "$IMAGE:latest"
