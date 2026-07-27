@@ -143,11 +143,28 @@ jobs:
                        VALUES ('$M', UTC_TIMESTAMP())"
 
           dolt add -A
-          if dolt diff --stat HEAD | grep -q .; then
-            dolt commit -m "schema: apply $M"
-          else
-            echo "::notice::migration produced no change — nothing to commit"
+
+          # Diagnostics first: the previous attempt reported success while
+          # changing nothing, because the old guard parsed `dolt diff` output
+          # inside an `if`. Under `set -o pipefail` a FAILING dolt diff is
+          # indistinguishable from an empty one — both take the else branch —
+          # so a broken guard silently looked like "no changes".
+          echo "--- dolt status ---"
+          dolt status
+          echo "--- staged/unstaged entries (dolt_status) ---"
+          changed="$(dolt sql -r csv -q 'SELECT COUNT(*) AS n FROM dolt_status' | tail -1)"
+          echo "dolt_status rows: ${changed:-<none>}"
+
+          # The ledger already told us this file was NOT applied. If applying it
+          # changed nothing, something is wrong — fail loudly rather than push a
+          # no-op and report success.
+          if [ "${changed:-0}" -eq 0 ] 2>/dev/null; then
+            echo "::error::$M is unrecorded in schema_migrations yet produced NO change."
+            echo "::error::Refusing to report success. Inspect the dolt status output above."
+            exit 1
           fi
+
+          dolt commit -m "schema: apply $M"
 
       - name: Push mirror → DoltHub
         if: ${{ inputs.dry_run == false }}
