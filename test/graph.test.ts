@@ -60,7 +60,7 @@ test("assembleGraph: 'parent-child' blocks, 'closes' does NOT", () => {
 function mockReads(items: SchedulingItem[], edges: RawTypedEdge[]): SchedulerReads {
   return {
     source: "server",
-    readScheduling: async () => items,
+    readScheduling: async () => ({ items, at: "v0110csl2jph0aeeij7rhhurrbjcft6g" }),
     readTypedEdges: async () => edges,
     readAllItems: async () => [],
     meta: async () => ({ syncedAt: "2026-07-26T00:00:00Z", commit: "abc", source: "server" }),

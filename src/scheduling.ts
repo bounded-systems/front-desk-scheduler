@@ -14,6 +14,24 @@ export type SchedulingItem = BoardItem & {
   leased: boolean;
 };
 
+/**
+ * A queue read plus the state it was derived from.
+ *
+ * `at` is the Dolt commit every query in this read was pinned to — the answer to
+ * "which board did this ranking come from". It is NOT a separate lookup: a
+ * second resolution of the head can differ from the one the read used (a sync
+ * landing in between), so a stamp resolved independently could describe a board
+ * the ranking never saw. Returning it with the data is what makes the stamp
+ * trustworthy.
+ *
+ * `null` when the adapter cannot pin (local clone, or an unresolvable head) —
+ * the read still works, it just cannot say precisely what it read.
+ */
+export interface ScheduleRead {
+  readonly items: SchedulingItem[];
+  readonly at: string | null;
+}
+
 export interface RawItem {
   item_id: string;
   number: number | null;

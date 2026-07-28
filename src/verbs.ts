@@ -47,6 +47,10 @@ const QueueItem = z.object({
 const WhatsNextOutput = z.object({
   source: z.enum(["local", "dolthub", "server"]),
   syncedAt: z.string().nullable(),
+  // The commit this ranking was DERIVED FROM — the pin the read actually used,
+  // not a second resolution of the head (which can differ if a sync lands in
+  // between). `AS OF` this commit re-derives the same queue.
+  derivedFrom: z.string().nullable(),
   budget: z.string(),
   remaining: z.number(),
   eligible: z.number(),
@@ -75,7 +79,8 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
   run: async (input, deps) => {
     const reads = deps?.reads ?? resolveReads();
     const budget = ORG_BUDGETS.get(input.budget) ?? ROLLING_5H_BUDGET;
-    const [board, meta] = await Promise.all([reads.readScheduling(), reads.meta()]);
+    const [read, meta] = await Promise.all([reads.readScheduling(), reads.meta()]);
+    const board = read.items;
 
     const scoped = (input.repo ? board.filter((i) => i.repository === input.repo) : board)
       .filter((i) => !i.leased);
@@ -117,6 +122,7 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
     return {
       source: reads.source,
       syncedAt: meta?.syncedAt ?? null,
+      derivedFrom: read.at,
       budget: budget.id,
       remaining,
       eligible: ranked.length,
@@ -129,7 +135,8 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
   render: (o) => {
     const w = (s: string, n: number) => String(s).padEnd(n).slice(0, n);
     const lines = [
-      `Front Desk — whats-next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}`,
+      `Front Desk — whats-next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
+        (o.derivedFrom ? `\nderived from commit ${o.derivedFrom} — \`AS OF '${o.derivedFrom}'\` re-derives this exact queue` : ""),
       `budget=${o.budget} remaining=${o.remaining}   ready: ${o.eligible}`,
       `  ${w("#", 6)} ${w("repo", 16)} ${w("kind", 5)} ${w("eff", 4)} ${w("val", 4)} ${w("score", 7)} ${w("fits", 4)} meta`,
       ...o.queue.map(
@@ -275,11 +282,12 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
   output: GraphOutput,
   run: async (input, deps) => {
     const reads = deps?.reads ?? resolveReads();
-    const [board, typedEdges, meta] = await Promise.all([
+    const [read, typedEdges, meta] = await Promise.all([
       reads.readScheduling(),
       reads.readTypedEdges(),
       reads.meta(),
     ]);
+    const board = read.items;
 
     const scoped = input.repo ? board.filter((i) => i.repository === input.repo) : board;
     const graph = assembleGraph(scoped, typedEdges);

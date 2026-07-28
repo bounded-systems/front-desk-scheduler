@@ -19,6 +19,7 @@ import {
   type RawEdge,
   type RawItem,
   type RawTypedEdge,
+  type ScheduleRead,
   type SchedulingItem,
   SQL,
 } from "./scheduling.ts";
@@ -56,7 +57,7 @@ async function withConn<T>(fn: (q: (sql: string) => Promise<unknown[]>) => Promi
   }
 }
 
-export async function readScheduling(): Promise<SchedulingItem[]> {
+export async function readScheduling(): Promise<ScheduleRead> {
   return withConn(async (q) => {
     // Snapshot consistency, same concern as dolthub.ts but by different means:
     // one transaction pins all three reads to one working-set state, so a
@@ -76,7 +77,14 @@ export async function readScheduling(): Promise<SchedulingItem[]> {
             : Promise.reject(e)
         ),
       ]);
-      return assembleScheduling(items, edges, leased.map((r) => r.item_id));
+      // The transaction IS the pin here; report the head it saw so callers get
+      // the same stamp shape as the DoltHub plane.
+      const head = (await q("SELECT commit_hash FROM dolt_log ORDER BY date DESC LIMIT 1")
+        .catch(() => [])) as { commit_hash?: string }[];
+      return {
+        items: assembleScheduling(items, edges, leased.map((r) => r.item_id)),
+        at: head[0]?.commit_hash ?? null,
+      };
     } finally {
       await q("COMMIT").catch(() => {});
     }

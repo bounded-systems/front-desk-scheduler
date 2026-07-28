@@ -9,6 +9,7 @@
 
 import {
   assembleScheduling,
+  type ScheduleRead,
   type RawEdge,
   type RawItem,
   type RawTypedEdge,
@@ -82,7 +83,7 @@ export function pinTables(sql: string, head: string): string {
  * identity rather than a hope. If the head cannot be resolved, reads fall back
  * to unpinned `main` — availability over strictness for a read plane.
  */
-export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
+export async function readScheduling(ref = "main"): Promise<ScheduleRead> {
   const head = await resolveHead(ref);
   const at = (sql: string) => (head ? pinTables(sql, head) : sql);
   const [items, edges, leasedRows] = await Promise.all([
@@ -99,7 +100,7 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
       /table not found: leases/.test(String(e)) ? query<{ item_id: string }>(at(SQL.leasesLegacy), ref) : Promise.reject(e)
     ),
   ]);
-  return assembleScheduling(items, edges, leasedRows.map((r) => r.item_id));
+  return { items: assembleScheduling(items, edges, leasedRows.map((r) => r.item_id)), at: head };
 }
 
 /** Typed dep edges (with edge_type) over DoltHub HTTP — the dep-graph source. */
