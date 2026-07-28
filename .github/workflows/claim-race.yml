@@ -1,19 +1,37 @@
 name: claim-race
-# The empirical A1/A2 gate: race real concurrent claimants against a real
-# dolt sql-server and require exactly one winner.
+# Race real concurrent claimants and require exactly one winner.
 #
-# Three proof systems (TLA+, loom, Lean) establish that an ATOMIC latch upholds
-# S1 — and all three ASSUME the engine supplies the atomicity. The original S1
-# bug was precisely an implementation quietly failing a proof's precondition,
-# and this test's first-ever run caught two more bugs of the same species in the
-# A2 seam (a TOCTOU commit guard; unhandled optimistic-concurrency retries).
-# Models bound the design; only an experiment binds the deployment.
+# WHAT THIS FILE USED TO GET WRONG
+# --------------------------------
+# It called itself "the empirical A1/A2 gate" and provisioned its own
+# `dolt sql-server`. So it measured a topology that does not exist: CI satisfied
+# A2 (one serialization point) by construction, the race passed, and the green
+# was an artifact of the harness rather than evidence about production. In
+# production `DOLT_HOST` is unset, `writesGoToServer()` is false, claim writes go
+# to a LOCAL CLONE, and `leases.item_id`'s PRIMARY KEY excludes only within one
+# database — of which there are as many as there are agents.
 #
-# Scratch server, not the GHCR image: the race needs a WRITABLE database seeded
-# from schema/mirror.sql, whereas the image serves a read replica of the public
-# mirror. No credential, no network beyond installs.
+# A green test whose green-ness comes from the harness is worse than no test: it
+# reports the assumption as discharged. So the two questions are now separate
+# jobs, and only one of them is evidence about production.
+#
+#   harness-a1   — self-provisioned server. Tests A1 (does the ENGINE make
+#                  INSERT IGNORE atomic under contention?) and the seam's own
+#                  mechanics. Real signal; this is where the TOCTOU commit guard
+#                  and the unhandled 40001 retries were caught. NOT evidence
+#                  about production topology, and no longer claims to be.
+#
+#   production-a2 — points at the deployed serialization endpoint. Provisions
+#                  NOTHING. Red until one exists, which is the honest state:
+#                  A2 is currently ASSERTED, not discharged.
+#
+# ACCEPTANCE CRITERION for the Durable Object work (docs/queue-vs-log.md):
+# production-a2 goes green — N agents against the real endpoint, exactly one
+# grant. Until that run happens, "the DO enforces exclusion" is a design claim.
 on:
   pull_request:
+    # NB: duplicated below rather than shared with a YAML anchor — GitHub
+    # Actions does not support anchors/aliases in workflow files.
     paths:
       - "src/mirror.ts"
       - "src/dolt-server.ts"
@@ -30,14 +48,24 @@ on:
       - "schema/**"
       - "scripts/claim-race.ts"
       - ".github/workflows/claim-race.yml"
-  workflow_dispatch: {}
+  schedule:
+    - cron: "23 6 * * *" # daily; production-a2 is a standing signal, not a one-off
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: "Serialization endpoint to race (host:port). Overrides the FDS_CLAIM_ENDPOINT variable."
+        required: false
+        default: ""
+        type: string
 concurrency:
   group: claim-race-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read
 jobs:
-  race:
+  # ── A1 + seam mechanics ─────────────────────────────────────────────────────
+  harness-a1:
+    name: harness (A1 — engine atomicity, NOT production)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -53,6 +81,9 @@ jobs:
           curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
           dolt version
       - name: Seed a scratch mirror and start a sql-server
+        # Scratch server, not the GHCR image: the race needs a WRITABLE database
+        # seeded from schema/mirror.sql, whereas the image serves a read replica
+        # of the public mirror. No credential, no network beyond installs.
         run: |
           set -euo pipefail
           dolt config --global --add user.name "claim-race"
@@ -81,3 +112,87 @@ jobs:
       - name: Server log on failure
         if: failure()
         run: tail -50 /tmp/race/server.log || true
+      - name: Say what this did and did not establish
+        if: always()
+        run: |
+          {
+            echo "### harness-a1"
+            echo "Raced against a server this job started itself."
+            echo ""
+            echo "Establishes: **A1** — the engine adjudicates \`INSERT IGNORE\` atomically"
+            echo "against the PRIMARY KEY under real contention — and that the seam's"
+            echo "commit/retry mechanics hold."
+            echo ""
+            echo "Does NOT establish **A2**. This job creates the single serialization"
+            echo "point it then relies on. See \`production-a2\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── A2 against real topology ────────────────────────────────────────────────
+  production-a2:
+    name: production (A2 — one serialization point, for real)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      - name: Resolve the serialization endpoint
+        # Deliberately NOT provisioned. The whole defect this job exists to expose
+        # is a test that manufactures its own premise.
+        id: endpoint
+        env:
+          FROM_INPUT: ${{ inputs.endpoint }}
+          FROM_VAR: ${{ vars.FDS_CLAIM_ENDPOINT }}
+        run: |
+          set -uo pipefail
+          ep="${FROM_INPUT:-}"
+          [ -n "$ep" ] || ep="${FROM_VAR:-}"
+          if [ -z "$ep" ]; then
+            echo "::error::No serialization endpoint configured (FDS_CLAIM_ENDPOINT is unset)."
+            echo "::error::"
+            echo "::error::This job is RED BY DESIGN until one exists, and that red is accurate:"
+            echo "::error::production claim writes currently go to a LOCAL CLONE per agent, so"
+            echo "::error::leases.item_id's PRIMARY KEY excludes within one database and there is"
+            echo "::error::no shared one. A2 in specs/lean/Leases.lean is ASSERTED, not discharged."
+            echo "::error::"
+            echo "::error::Turning this green is the acceptance criterion for the Durable Object"
+            echo "::error::work — see docs/queue-vs-log.md. Do NOT satisfy it by provisioning a"
+            echo "::error::server inside this job; that is exactly the bug this replaced."
+            {
+              echo "### ⛔ production-a2 — no endpoint"
+              echo "A2 is asserted, not discharged. Claim writes go to per-agent local clones."
+              echo "Set \`FDS_CLAIM_ENDPOINT\` once a real serialization point is deployed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "host=${ep%%:*}" >> "$GITHUB_OUTPUT"
+          echo "port=${ep##*:}" >> "$GITHUB_OUTPUT"
+          echo "::notice::racing against $ep"
+
+      - name: Install deno + deps from the lock
+        run: |
+          curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y
+          "$HOME/.deno/bin/deno" install --frozen
+
+      - name: "Race the real endpoint: 16 agents, then 32"
+        env:
+          DOLT_HOST: ${{ steps.endpoint.outputs.host }}
+          DOLT_PORT: ${{ steps.endpoint.outputs.port }}
+          DOLT_DB: ${{ vars.FDS_CLAIM_DB || 'mirror' }}
+          DOLT_USER: ${{ vars.FDS_CLAIM_USER || 'root' }}
+          DOLT_PASSWORD: ${{ secrets.FDS_CLAIM_PASSWORD }}
+          RACE_ITEM: ${{ vars.FDS_CLAIM_RACE_ITEM || 'race#1' }}
+        run: |
+          set -euo pipefail
+          node scripts/claim-race.ts
+          RACE_AGENTS=32 node scripts/claim-race.ts
+
+      - name: Record what this establishes
+        if: success()
+        run: |
+          {
+            echo "### ✅ production-a2"
+            echo "N agents raced the DEPLOYED serialization endpoint and exactly one won."
+            echo "A2 is discharged by experiment rather than asserted."
+          } >> "$GITHUB_STEP_SUMMARY"
