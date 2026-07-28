@@ -81,12 +81,14 @@ test("only the lease plane claims to be fenced", () => {
   assert.equal(LOCAL_PLANE.fenced, false);
 });
 
-test("the lease plane admits it leaves no audit row yet", () => {
-  // The DO is ground truth and Dolt is a derived projection; the writer does
-  // not exist. Reporting `projected: true` here would let an absent record be
-  // read as a lost one.
+test("the lease plane admits its audit row is asynchronous, not at claim time", () => {
+  // The DO is ground truth; Dolt rows arrive via lease-projection, later.
+  // `projected` keeps meaning "row exists when claimNext returns" — still
+  // false here, so a reader checking Dolt right after a claim learns the row
+  // may be absent-so-far rather than lost.
   assert.equal(LEASE_PLANE.projected, false);
-  assert.match(LEASE_PLANE.guarantee, /NO Dolt audit row/);
+  assert.match(LEASE_PLANE.guarantee, /NOT written at claim time/);
+  assert.match(LEASE_PLANE.guarantee, /lease-projection/, "and names the mechanism that does write it");
   assert.equal(SERVER_PLANE.projected, true);
   assert.equal(LOCAL_PLANE.projected, true);
 });

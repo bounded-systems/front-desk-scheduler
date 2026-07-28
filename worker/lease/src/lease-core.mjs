@@ -143,7 +143,15 @@ export function decideRenew(state, { agent, fencing, ttlSec }, now) {
  * Releasing an already-free lease is idempotent, not an error — a retried
  * release must not be able to disturb a subsequent holder.
  */
-export function decideRelease(state, { agent, fencing }, now) {
+export function decideRelease(state, { agent, fencing, status }, now) {
+  // `status` restores the released-vs-completed distinction the lease plane
+  // used to DROP (effort calibration reads it). Validated here because it goes
+  // into the history record verbatim; an unknown value is a caller bug, not a
+  // value to store.
+  const st = status ?? "released";
+  if (st !== "released" && st !== "completed") {
+    throw new TypeError("status must be 'released' or 'completed'");
+  }
   if (!isLive(state, now)) {
     return { state, response: { released: false, reason: "not-held", fencing: state.fencing } };
   }
@@ -156,9 +164,13 @@ export function decideRelease(state, { agent, fencing }, now) {
   // Holder and expiry clear; `fencing` is RETAINED. It is a monotonic counter
   // for the item, not a property of the current grant — resetting it on release
   // would let a later grant reuse a token an old zombie still carries.
+  //
+  // `status` is ECHOED so a caller can tell whether the worker it reached
+  // records statuses at all: an older deployment ignores the field and its
+  // response carries no echo, which is the client's version-skew signal.
   return {
     state: { holder: null, expiresAt: null, fencing: state.fencing },
-    response: { released: true, fencing: state.fencing },
+    response: { released: true, fencing: state.fencing, status: st },
   };
 }
 
@@ -170,4 +182,92 @@ export function describe(state, now) {
     expiresAt: state.expiresAt,
     live: isLive(state, now),
   };
+}
+
+/*
+  ── GRANT HISTORY (the projection's source) ───────────────────────────────────
+
+  docs/queue-vs-log.md names the weakening this plane accepts: the log records
+  decisions rather than being the decision — and it holds only if the projection
+  write is IDEMPOTENT and REPLAYABLE. Replayable means the DO retains what
+  happened; this fold is that record. One entry per GRANT, keyed by the fencing
+  ordinal (unique and monotonic per item, which is what makes `(item_id,
+  fencing)` the projection's idempotency key), updated in place as the grant is
+  renewed and closed — a complete interval, the shape effort calibration reads.
+
+  A separate pure function rather than a change to decide*'s signatures: the
+  exclusion decision and the record of it are different concerns, and the
+  existing decision theorems/tests stay untouched. The shell applies both inside
+  ONE storage transaction (see index.mjs), so they cannot diverge.
+
+  Retention: everything, for now. A grant record is ~120 bytes and DO storage is
+  per-item; pruning behind a projector acknowledgement is future work and is
+  NOT needed for replayability — the opposite: retention is what replayability
+  currently rests on.
+*/
+
+const COMMIT_SHAPE = /^[a-z0-9]{32}$/;
+
+/** Normalise a decided_at_commit: a well-formed Dolt hash or null. Invalid
+    input degrades to null — "basis not reconstructible", never a fabricated
+    stamp; the same rule src/mirror.ts applies before interpolating. */
+export function normalizeDecidedAt(v) {
+  return typeof v === "string" && COMMIT_SHAPE.test(v) ? v : null;
+}
+
+/**
+ * Fold one adjudicated event into the grant history. Pure; returns a NEW array.
+ * Only SUCCESSFUL transitions touch history — a refusal changes no state, so it
+ * has nothing to record (refusals are the caller's log line, not the item's).
+ */
+export function historyStep(history, { type, request, before, after, response }, now) {
+  const h = history ?? [];
+
+  if (type === "claim" && response.granted) {
+    const closedOver = h.map((r) =>
+      // A grant over a LAPSED holder is the moment the DO learns the old grant
+      // died. Close it as 'expired' AT ITS RECORDED EXPIRY — the factual lapse
+      // time — not at `now`, which is merely when somebody next showed up.
+      r.fencing === before.fencing && r.status === "active"
+        ? { ...r, status: "expired", releasedAt: r.expiresAt }
+        : r
+    );
+    return [
+      ...closedOver,
+      {
+        fencing: after.fencing,
+        agent: after.holder,
+        decidedAtCommit: normalizeDecidedAt(request.decidedAtCommit),
+        grantedAt: now,
+        ttlSec: request.ttlSec,
+        expiresAt: after.expiresAt,
+        releasedAt: null,
+        status: "active",
+        reason: response.reason, // free | expired — how the grant was obtained
+      },
+    ];
+  }
+
+  if (type === "renew" && response.renewed) {
+    return h.map((r) =>
+      r.fencing === after.fencing ? { ...r, expiresAt: after.expiresAt, ttlSec: request.ttlSec } : r
+    );
+  }
+
+  if (type === "release" && response.released) {
+    return h.map((r) =>
+      r.fencing === before.fencing ? { ...r, status: response.status, releasedAt: now } : r
+    );
+  }
+
+  return h;
+}
+
+/** A record's status AS OF `now`: an 'active' record past its expiry is
+    'expired' even though nothing has touched the item since — expiry is a fact
+    about the clock, not about contention. Computed on read so the stored record
+    is never mutated by observation. */
+export function effectiveStatus(record, now) {
+  if (record.status === "active" && now >= record.expiresAt) return "expired";
+  return record.status;
 }

@@ -205,3 +205,114 @@ test("describe reports liveness rather than making callers compare clocks", () =
   assert.equal(lapsed.holder, null, "a lapsed holder is not reported as the holder");
   assert.equal(lapsed.fencing, 1, "but the counter is still visible");
 });
+
+// ── grant history (the projection's source) ──────────────────────────────────
+// The fold is what the Dolt projection derives from, so what is pinned here is
+// interval INTEGRITY: every grant appears exactly once keyed by its fencing
+// ordinal, closes exactly once with the right status, and a takeover closes the
+// corpse at its FACTUAL expiry — not at whenever someone next showed up.
+
+import { effectiveStatus, historyStep, normalizeDecidedAt } from "./lease-core.mjs";
+
+/** Drive a decide* + historyStep pair the way the shell does — one event. */
+function step(hist, type, state, req, now) {
+  const decide = { claim: decideClaim, renew: decideRenew, release: decideRelease }[type];
+  const { state: after, response } = decide(state, req, now);
+  return { state: after, response, hist: historyStep(hist, { type, request: req, before: state, after, response }, now) };
+}
+
+test("a grant opens an interval; release closes it with the caller's status", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 60, decidedAtCommit: "v0110csl2jph0aeeij7rhhurrbjcft6g" }, T0));
+  assert.equal(h.length, 1);
+  assert.deepEqual(
+    { ...h[0] },
+    {
+      fencing: 1, agent: "alice", decidedAtCommit: "v0110csl2jph0aeeij7rhhurrbjcft6g",
+      grantedAt: T0, ttlSec: 60, expiresAt: T0 + 60_000, releasedAt: null,
+      status: "active", reason: "free",
+    },
+  );
+  ({ state: s, hist: h } = step(h, "release", s, { agent: "alice", fencing: 1, status: "completed" }, T0 + 30_000));
+  assert.equal(h.length, 1, "release UPDATES the interval, never appends");
+  assert.equal(h[0].status, "completed");
+  assert.equal(h[0].releasedAt, T0 + 30_000);
+});
+
+test("a takeover closes the corpse at its FACTUAL expiry, not at now", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "zombie", ttlSec: 1 }, T0));
+  const lapse = T0 + 1_000;
+  // Nobody touches the item for an hour; then a taker shows up.
+  const later = T0 + 3_600_000;
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "taker", ttlSec: 60 }, later));
+  assert.equal(h.length, 2);
+  const [corpse, live] = h;
+  assert.equal(corpse.status, "expired");
+  assert.equal(corpse.releasedAt, lapse, "closed at expiry — the factual lapse time");
+  assert.notEqual(corpse.releasedAt, later, "NOT at when the taker happened to arrive");
+  assert.equal(live.agent, "taker");
+  assert.equal(live.reason, "expired", "the grant records that it took over a corpse");
+});
+
+test("renew extends the open interval in place", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 60 }, T0));
+  ({ state: s, hist: h } = step(h, "renew", s, { agent: "alice", fencing: 1, ttlSec: 120 }, T0 + 30_000));
+  assert.equal(h.length, 1);
+  assert.equal(h[0].expiresAt, T0 + 30_000 + 120_000);
+  assert.equal(h[0].ttlSec, 120, "the renewed ttl is recorded, not the original");
+  assert.equal(h[0].status, "active");
+});
+
+test("refusals record NOTHING — a denied claim is the caller's log line, not the item's", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 60 }, T0));
+  const before = JSON.stringify(h);
+  ({ hist: h } = step(h, "claim", s, { agent: "bob", ttlSec: 60 }, T0 + 1));         // held
+  ({ hist: h } = step(h, "renew", s, { agent: "bob", fencing: 1, ttlSec: 60 }, T0 + 2)); // not-holder
+  ({ hist: h } = step(h, "release", s, { agent: "alice", fencing: 99 }, T0 + 3));    // stale-fencing
+  assert.equal(JSON.stringify(h), before, "no refused event may touch the record");
+});
+
+test("history over many cycles: one interval per fencing ordinal, all closed but the last", () => {
+  let s = EMPTY_STATE, h = [], now = T0;
+  for (let i = 0; i < 9; i++) {
+    ({ state: s, hist: h } = step(h, "claim", s, { agent: `a${i}`, ttlSec: 60 }, now));
+    if (i % 3 === 0) {
+      ({ state: s, hist: h } = step(h, "release", s, { agent: `a${i}`, fencing: i + 1, status: "completed" }, now + 1_000));
+      now += 2_000;
+    } else {
+      now += 61_000; // lapse
+    }
+  }
+  assert.equal(h.length, 9);
+  assert.deepEqual(h.map((r) => r.fencing), [1,2,3,4,5,6,7,8,9], "one interval per ordinal, in order");
+  assert.equal(new Set(h.map((r) => r.fencing)).size, 9, "no ordinal appears twice");
+  for (const r of h.slice(0, -1)) assert.notEqual(r.status, "active", "every superseded interval is closed");
+});
+
+test("effectiveStatus reads expiry off the clock without a write", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 60 }, T0));
+  assert.equal(effectiveStatus(h[0], T0 + 1_000), "active");
+  assert.equal(effectiveStatus(h[0], T0 + 61_000), "expired", "lapsed-but-untouched reads as expired");
+  assert.equal(h[0].status, "active", "…while the stored record is not mutated by observation");
+});
+
+test("normalizeDecidedAt degrades to null, never fabricates", () => {
+  assert.equal(normalizeDecidedAt("v0110csl2jph0aeeij7rhhurrbjcft6g"), "v0110csl2jph0aeeij7rhhurrbjcft6g");
+  for (const bad of [undefined, null, "", "DEADBEEF", "x".repeat(31), 42]) {
+    assert.equal(normalizeDecidedAt(bad), null);
+  }
+});
+
+test("release validates status — an unknown value is refused, not stored", () => {
+  const held = claim(EMPTY_STATE, "alice", T0).state;
+  assert.throws(
+    () => decideRelease(held, { agent: "alice", fencing: 1, status: "done" }, T0 + 1),
+    /status must be/,
+  );
+  const ok = decideRelease(held, { agent: "alice", fencing: 1, status: "completed" }, T0 + 1);
+  assert.equal(ok.response.status, "completed", "and the accepted status is echoed for skew detection");
+});

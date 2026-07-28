@@ -138,6 +138,31 @@ if (PLANE.fenced) {
   // The takeover must OUT-FENCE the corpse, or a sink cannot tell them apart.
   check(typeof zf === "number" && typeof tf === "number" && tf > zf,
     `fencing: the taker out-fences the zombie (${zf} → ${tf})`);
+
+  console.log("phase 4 — AUDIT (history must agree with the grants this race observed)");
+  // The projection derives from the DO's history, so history disagreeing with
+  // what the racers experienced would mean the audit trail lies at the source
+  // — a defect no downstream idempotency could repair.
+  const { fetchLeaseHistory } = await import("../src/lease-client.ts");
+  const { records } = await fetchLeaseHistory(ITEM);
+  const byFencing = new Map(records.map((r) => [r.fencing, r]));
+  check(new Set(records.map((r) => r.fencing)).size === records.length,
+    "audit: no fencing ordinal appears twice in history");
+  let matched = 0;
+  for (const [agent, f] of fenceOf) {
+    if (typeof f !== "number") continue;
+    const rec = byFencing.get(f);
+    if (rec?.agent === agent) matched++;
+    else check(false, `audit: grant ${f} (${agent}) missing or misattributed in history`);
+  }
+  check(matched === [...fenceOf.values()].filter((f) => typeof f === "number").length,
+    `audit: every observed grant appears in history exactly as granted (${matched} matched)`);
+  const zrec = typeof zf === "number" ? byFencing.get(zf) : undefined;
+  check(zrec?.status === "expired",
+    `audit: the zombie's interval is closed as expired (got ${zrec?.status})`);
+  const trec = typeof tf === "number" ? byFencing.get(tf) : undefined;
+  check(trec?.status === "completed",
+    `audit: the taker's interval is closed as completed (got ${trec?.status})`);
 }
 
 if (failures > 0) {

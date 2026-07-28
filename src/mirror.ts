@@ -229,24 +229,6 @@ async function claimRows<T>(sql: string): Promise<T[]> {
   return srv.writesGoToServer() ? srv.serverRows<T>(sql) : dsqlRows<T>(sql);
 }
 
-/**
- * Warn once that a release on the lease plane drops its `status`.
- *
- * scripts/estimate.ts reads released-vs-completed to calibrate effort. Until the
- * projection writer lands there is nowhere to put it, and losing a calibration
- * input quietly is how a metric starts lying without anyone noticing.
- */
-let warnedLeaseStatus = false;
-function warnLeasePlaneDropsStatus(): void {
-  if (warnedLeaseStatus) return;
-  warnedLeaseStatus = true;
-  console.warn(
-    "warning: releasing on the lease plane discards `status` (released|completed).\n" +
-      "  The Durable Object records exclusion, not history, and the Dolt projection that\n" +
-      "  would carry it does not exist yet — so effort calibration loses this interval.",
-  );
-}
-
 /** Warn once when the mirror predates the decided_at_commit column. */
 let warnedNoDecidedAt = false;
 function warnNoDecidedAtColumn(): void {
@@ -350,7 +332,9 @@ export async function claimNext(
   // first grant — the ordering is the scheduler's, only the adjudication moves.
   if (plane.name === "lease") {
     for (const itemId of orderedIds) {
-      const attempt = await claimLease(itemId, agent, ttlSec);
+      // decidedAtCommit rides into the DO's grant history, so the projected
+      // claims row carries the same provenance the Dolt planes write inline.
+      const attempt = await claimLease(itemId, agent, ttlSec, decidedAtCommit);
       if (!attempt.granted) continue; // held by someone else — next candidate
       return {
         won: true,
@@ -501,12 +485,11 @@ export async function releaseClaim(
           "a release without one is how a zombie frees the NEW holder's lease",
       );
     }
-    // `status` has nowhere to go: the DO records exclusion, not history, and
-    // the Dolt projection that would carry released/completed does not exist
-    // yet. Dropping it silently would lose the released-vs-completed
-    // distinction that effort calibration reads, so say so once.
-    warnLeasePlaneDropsStatus();
-    await releaseLeaseRemote(itemId, agent, fencing);
+    // `status` goes into the DO's grant history and reaches Dolt via the
+    // lease-projection workflow — the released-vs-completed interval effort
+    // calibration reads. A worker predating status recording is detected by
+    // the client (missing echo) and warned there, not silently absorbed here.
+    await releaseLeaseRemote(itemId, agent, fencing, status);
     return;
   }
   const id = sqlEscape(itemId);

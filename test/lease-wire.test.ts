@@ -118,3 +118,82 @@ test("a caller error from the worker surfaces as an error, not a refusal", withW
   // turn a bug in the caller into an invisible failure to claim anything.
   await assert.rejects(() => claimLease("prx#12", "alice", 0), /ttl_sec/);
 }));
+
+// ── grant history over the wire (the projection's source) ────────────────────
+
+import { _resetSkewWarning, fetchLeaseHistory, type LeaseHistoryRecord } from "../src/lease-client.ts";
+import { planProjection } from "../src/lease-projection.ts";
+
+test("a full lifecycle is auditable from history — and projectable", withWorker(async () => {
+  const g1 = await claimLease("prx#12", "alice", 60, "v0110csl2jph0aeeij7rhhurrbjcft6g");
+  assert.ok(g1.granted);
+  if (!g1.granted) return;
+  await renewLeaseRemote("prx#12", "alice", g1.fencing, 120);
+  await releaseLeaseRemote("prx#12", "alice", g1.fencing, "completed");
+  const g2 = await claimLease("prx#12", "bob", 60);
+  assert.ok(g2.granted);
+
+  const { records } = await fetchLeaseHistory("prx#12");
+  assert.equal(records.length, 2, "one interval per grant");
+  const [a, b] = records;
+  assert.equal(a.agent, "alice");
+  assert.equal(a.status, "completed", "the caller's status reached the record");
+  assert.equal(a.decidedAtCommit, "v0110csl2jph0aeeij7rhhurrbjcft6g", "provenance survived the wire");
+  assert.equal(a.ttlSec, 120, "the renewed ttl is what history remembers");
+  assert.equal(b.agent, "bob");
+  assert.equal(b.effective_status, "active");
+
+  // And the records feed the projector directly — the whole pipeline in one
+  // process: claim → history → idempotent SQL, no seams left untested between.
+  const plan = planProjection("prx#12", records as LeaseHistoryRecord[], 0);
+  assert.equal(plan.length, 2);
+  assert.match(plan[0], /'completed'/);
+  assert.match(plan[1], /'active'/);
+}));
+
+test("since_fencing resumes from the watermark", withWorker(async () => {
+  const g1 = await claimLease("prx#12", "alice", 60);
+  if (!g1.granted) return assert.fail("setup");
+  await releaseLeaseRemote("prx#12", "alice", g1.fencing);
+  const g2 = await claimLease("prx#12", "bob", 60);
+  assert.ok(g2.granted);
+  const { records } = await fetchLeaseHistory("prx#12", 1);
+  assert.equal(records.length, 1, "records at or below the watermark are not re-sent");
+  assert.equal(records[0].agent, "bob");
+}));
+
+test("a worker without /history is a NAMED skew error, not an empty projection", withWorker(async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: "not found" }), { status: 404 })) as typeof fetch;
+  try {
+    await assert.rejects(() => fetchLeaseHistory("prx#12"), /predates grant recording/);
+    // The wrong behavior would be resolving to zero records: the projector
+    // would then read "this item was never claimed" off a worker that simply
+    // cannot answer, and commit that silence as truth.
+  } finally {
+    globalThis.fetch = real;
+  }
+}));
+
+test("an old worker that ignores `status` trips the skew warning once", withWorker(async () => {
+  const g = await claimLease("prx#12", "alice", 60);
+  if (!g.granted) return assert.fail("setup");
+  const real = globalThis.fetch;
+  // Simulate a pre-status deployment: released:true but no status echo.
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ released: true, fencing: g.fencing }), { status: 200 })) as typeof fetch;
+  const seen: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (m: string) => seen.push(String(m));
+  try {
+    _resetSkewWarning();
+    assert.equal(await releaseLeaseRemote("prx#12", "alice", g.fencing, "completed"), true);
+    assert.equal(await releaseLeaseRemote("prx#12", "alice", g.fencing, "completed"), true);
+  } finally {
+    console.warn = realWarn;
+    globalThis.fetch = real;
+  }
+  assert.equal(seen.length, 1, "warned exactly once");
+  assert.match(seen[0], /predates status recording/);
+}));

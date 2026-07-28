@@ -120,12 +120,21 @@ CREATE TABLE IF NOT EXISTS `claims` (
   -- the board at a commit is immutable. NULL when the reading adapter cannot
   -- pin (the local clone) — "basis not reconstructible", not a fabricated stamp.
   `decided_at_commit` varchar(32),
+  -- The fencing ordinal, on rows PROJECTED from the lease Durable Object
+  -- (docs/queue-vs-log.md: the DO is ground truth for exclusion, this table is
+  -- its derived record). (item_id, fencing) is the projection's IDEMPOTENCY
+  -- key — the upsert that makes a replayed run identical to the first. NULL on
+  -- rows the Dolt planes wrote inline at claim time, which have no ordinal:
+  -- a commit hash is an identity, never an ordering. Multiple NULLs coexist
+  -- under the unique key (verified against Dolt 2.2.2, not assumed).
+  `fencing` int,
   `claimed_at`  datetime     NOT NULL,
   `ttl_sec`     int          NOT NULL,
   `released_at` datetime,
   `status`      enum('active','released','completed','expired') NOT NULL DEFAULT 'active',
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`, `status`),
+  UNIQUE KEY `uq_claim_item_fencing` (`item_id`, `fencing`),
   CONSTRAINT `fk_claim_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
