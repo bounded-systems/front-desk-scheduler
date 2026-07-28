@@ -73,6 +73,40 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Assert the reviewer gate actually exists
+        # The header calls the `lease-deploy` environment "the actual control".
+        # Nothing enforced that. GitHub AUTO-CREATES an environment when a
+        # workflow names one that is missing — with NO protection rules — so a
+        # typo in the environment name, or simply never creating it, produces a
+        # job that runs unreviewed while every comment here says it is gated.
+        # That is a documented control with no implementation, which is the
+        # failure this repo keeps finding in other costumes.
+        #
+        # Distinguish "checked and it is unprotected" (fatal) from "could not
+        # check" (loud, but not fatal — a token without administration:read is a
+        # different problem from a missing gate, and conflating them would make
+        # this step unrunnable rather than informative).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if ! env_json="$(gh api "repos/${{ github.repository }}/environments/lease-deploy" 2>&1)"; then
+            echo "::warning::could not read the lease-deploy environment: ${env_json//$'\n'/ }"
+            echo "::warning::NOT verifying that a reviewer gate exists. If this token lacks"
+            echo "::warning::administration:read that is benign; if the environment is missing,"
+            echo "::warning::this job is running UNREVIEWED. Check by hand before trusting it."
+            exit 0
+          fi
+          rules="$(jq -r '[.protection_rules[].type] | join(",")' <<<"$env_json")"
+          echo "::notice::lease-deploy protection rules: ${rules:-<none>}"
+          if ! grep -q 'required_reviewers' <<<"$rules"; then
+            echo "::error::the lease-deploy environment has NO required_reviewers rule."
+            echo "::error::Dispatch alone would then be able to replace the mechanism that"
+            echo "::error::enforces mutual exclusion for the whole scheduler. Refusing to run."
+            echo "::error::Add required reviewers to the environment, then dispatch again."
+            exit 1
+          fi
+
       - name: Cloudflare credential (via OIDC broker)
         id: cfcred
         run: |
