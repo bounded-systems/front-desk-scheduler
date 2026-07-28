@@ -21,6 +21,18 @@ name: claim-race
 #                  and the unhandled 40001 retries were caught. NOT evidence
 #                  about production topology, and no longer claims to be.
 #
+#   lease-integration — races the REAL worker/lease under a local `wrangler dev`
+#                  (workerd): real Durable Object SQLite storage, real input-gate
+#                  serialization, real HTTP. Establishes A1' (the RUNTIME, not a
+#                  fake single-threaded storage, applies one transition at a time)
+#                  and that the DEPLOYED code excludes — closing the gap between
+#                  lease-core.test.mjs (pure core proven) and production-a2. Like
+#                  harness-a1 it PROVISIONS its own single instance, so it does
+#                  NOT establish A2. Strictly stronger than the in-process stub
+#                  (worker/lease/src/index.test.mjs), strictly weaker than
+#                  production-a2 — and labelled as neither. Needs no endpoint, no
+#                  credential, no deploy.
+#
 #   production-a2 — points at the deployed serialization endpoint. Provisions
 #                  NOTHING. Red until one exists, which is the honest state:
 #                  A2 is currently ASSERTED, not discharged.
@@ -42,6 +54,9 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "scripts/lease-integration.sh"
+      - "src/lease-client.ts"
+      - "src/claim-plane.ts"
       - "worker/**"
       - ".github/workflows/claim-race.yml"
   push:
@@ -52,6 +67,9 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "scripts/lease-integration.sh"
+      - "src/lease-client.ts"
+      - "src/claim-plane.ts"
       - "worker/**"
       - ".github/workflows/claim-race.yml"
   schedule:
@@ -131,6 +149,48 @@ jobs:
             echo ""
             echo "Does NOT establish **A2**. This job creates the single serialization"
             echo "point it then relies on. See \`production-a2\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── real Worker, local topology ─────────────────────────────────────────────
+  lease-integration:
+    name: lease-integration (real Worker excludes under HTTP — NOT A2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+      - name: Install deps from the lock (frozen)
+        # The racer imports src/mirror.ts + src/claim-plane.ts; deno.lock is the
+        # single pin for what those resolve to. wrangler is fetched separately via
+        # npx inside the script — it is a dev-only tool, not a tracked dependency.
+        run: deno install --frozen
+      - name: Race the real Worker under a local workerd
+        # Starts worker/lease under `wrangler dev`, waits for /health, then points
+        # scripts/claim-race.ts (the production-a2 racer) at it via the lease plane.
+        run: bash scripts/lease-integration.sh
+      - name: Say what this did and did not establish
+        if: always()
+        run: |
+          {
+            echo "### lease-integration"
+            echo "Raced the REAL \`worker/lease\` under a local \`wrangler dev\` (workerd) over HTTP."
+            echo ""
+            echo "Establishes: **A1'** — the runtime (real Durable Object storage + input"
+            echo "gates), not a fake single-threaded storage, applies one transition at a time,"
+            echo "and the DEPLOYED code grants exactly one claim among N concurrent HTTP"
+            echo "claimants. Strictly stronger than the in-process stub"
+            echo "(\`worker/lease/src/index.test.mjs\`)."
+            echo ""
+            echo "Does NOT establish **A2**. Like \`harness-a1\`, this job provisions the single"
+            echo "serialization point it relies on — one local workerd is one instance by"
+            echo "construction. A2 (every claimant reaches ONE GLOBAL instance) is discharged"
+            echo "only by \`production-a2\` against the deployed endpoint."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ── A2 against real topology ────────────────────────────────────────────────

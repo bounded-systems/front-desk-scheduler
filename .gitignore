@@ -33,3 +33,7 @@ __pycache__/
 
 # deno compile output
 dist/
+
+# wrangler dev local state (workerd + miniflare persistence; lease-integration
+# runs `wrangler dev`, which writes here — never commit a local DO namespace)
+.wrangler/
