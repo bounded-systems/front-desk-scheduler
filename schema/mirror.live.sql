@@ -21,6 +21,7 @@ CREATE TABLE `claims` (
   `id` int NOT NULL AUTO_INCREMENT,
   `item_id` varchar(64) NOT NULL,
   `agent` varchar(128) NOT NULL,
+  `decided_at_commit` varchar(32),
   `claimed_at` datetime NOT NULL,
   `ttl_sec` int NOT NULL,
   `released_at` datetime,
