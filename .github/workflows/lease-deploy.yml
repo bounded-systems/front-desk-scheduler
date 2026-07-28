@@ -19,20 +19,26 @@ name: lease-deploy
 #
 # ⚠ SETUP REQUIRED — BOTH FAIL CLOSED, DELIBERATELY
 #
-#   1. The broker must mint a Cloudflare token that can DEPLOY A WORKER, i.e. a
-#      policy including "Workers Scripts: Edit" at ACCOUNT scope. The public
-#      cf-oidc-token-broker template's `policyFor` mints DNS tokens plus
-#      OPTIONAL Workers *read* — there is no Workers-edit tier in it. The
-#      deployed broker's policy lives in bounded-systems/infra, which is outside
-#      this session's repo scope, so I could not verify what it currently grants.
-#      Until it grants Workers Scripts Edit, the credential step below fails and
-#      nothing is deployed. That is the correct outcome, not a bug.
+#   1. The broker's OWN CF_BROKER_TOKEN must be able to DELEGATE a Workers
+#      deploy scope. OBSERVED 2026-07-28 against the live broker:
 #
-#   2. `FRONT_DESK_CF_BROKER_PATH` must name the broker route that serves it.
-#      mirror-migrate uses `/dolthub/front-desk-mirror` and `/github/front-desk`,
-#      so the deployed broker is path-routed; I have NOT guessed the Cloudflare
-#      one. Set the variable to whatever it actually serves. The default below is
-#      a placeholder that will 404 loudly rather than silently do something else.
+#        HTTP 502  {"error":"mint failed",
+#                   "cf_errors":[{"code":9109,"message":"Unauthorized to access
+#                                 requested resource"}],
+#                   "token_check":{"ok":true,...}}
+#
+#      Read that pair carefully, because it is the discriminator: token_check
+#      OK means the broker's parent credential is alive and authenticated, and
+#      9109 on the mint means Cloudflare refused to ISSUE the requested policy.
+#      A token can only mint permissions it itself holds — so this is not a
+#      broker-code problem and not an allowlist problem. The parent token needs
+#      Workers Scripts: Edit at ACCOUNT scope, set in bounded-systems/infra,
+#      which is outside this session's repo scope.
+#
+#   2. `FRONT_DESK_CF_BROKER_PATH` must name the broker route. The live broker
+#      IS path-routed and reachable (it answered above rather than 404ing), so
+#      this is a matter of pointing at the right one, not of the route being
+#      absent.
 #
 #   3. The `lease-deploy` GitHub Environment with REQUIRED REVIEWERS. Dispatch
 #      alone must not be able to replace the mechanism that enforces mutual
@@ -115,12 +121,36 @@ jobs:
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=cf-oidc-token-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
-          if ! body="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
-                 "${BROKER_URL%/}${CF_BROKER_PATH}" 2>&1)"; then
-            echo "::error::broker refused at ${CF_BROKER_PATH}: ${body}"
-            echo "::error::Either this workflow's job_workflow_ref is not on the broker's allowlist,"
-            echo "::error::or the route is wrong (set FRONT_DESK_CF_BROKER_PATH), or the broker's"
-            echo "::error::policy has no Workers Scripts Edit tier — see this file's header."
+          # NOT `curl -f`. `-f` DISCARDS THE RESPONSE BODY on an HTTP error, and
+          # the broker's error body is the most useful thing in the whole
+          # failure: it reports cf_errors, token_check and policy_check, which
+          # is what separates "my request was wrong" from "the broker's own
+          # credential cannot grant this". Throwing that away to save a line
+          # would leave only "502".
+          code="$(curl -sS -o /tmp/broker.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${CF_BROKER_PATH}" || echo 000)"
+          body="$(cat /tmp/broker.json 2>/dev/null || true)"
+          if [ "$code" != "200" ]; then
+            echo "::error::broker returned HTTP ${code} for ${CF_BROKER_PATH}"
+            echo "::error::  response: ${body:0:900}"
+            # The discriminators, in the order they narrow the problem.
+            case "$code" in
+              401|403) echo "::error::  → this workflow's job_workflow_ref is not on the broker allowlist." ;;
+              404)     echo "::error::  → wrong route. Set FRONT_DESK_CF_BROKER_PATH to what the broker serves." ;;
+              502)
+                echo "::error::  → the broker reached Cloudflare and Cloudflare refused the MINT."
+                if grep -q '"ok":true' <<<"$body" && grep -q '9109' <<<"$body"; then
+                  echo "::error::  → token_check ok + cf_error 9109 ('Unauthorized to access requested"
+                  echo "::error::    resource') means the broker's OWN CF_BROKER_TOKEN cannot DELEGATE"
+                  echo "::error::    the scope being asked for. A token can only mint permissions it"
+                  echo "::error::    itself holds, so this is not fixed here: give the parent token"
+                  echo "::error::    Workers Scripts: Edit at ACCOUNT scope in bounded-systems/infra,"
+                  echo "::error::    and check the policy's resource names that account."
+                else
+                  echo "::error::  → inspect token_check / policy_check above; live detail with"
+                  echo "::error::    \`wrangler tail cf-token-broker\` while re-running this."
+                fi ;;
+            esac
             exit 1
           fi
           tok="$(jq -r '.token // empty' <<<"$body")"
