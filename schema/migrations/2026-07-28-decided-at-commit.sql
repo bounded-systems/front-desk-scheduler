@@ -1,0 +1,31 @@
+-- 2026-07-28 — record WHICH BOARD STATE a claim was decided against.
+--
+-- `claims` says who claimed what and when. It does not say what the agent was
+-- LOOKING AT when it chose — and the ranking is a pure function of the board, so
+-- without that the decision is unreproducible. A bad pick cannot be told apart:
+-- stale data, or bad policy? Those want opposite fixes.
+--
+-- Since #24/#25 every read is pinned to one Dolt commit and returns it
+-- (ScheduleRead.at), so the value is in hand at claim time. Storing it makes a
+-- claim replayable: re-derive the queue `AS OF decided_at_commit` and the same
+-- ranking comes back, because the board at that commit is immutable.
+--
+-- It also makes decision staleness MEASURABLE rather than anecdotal: compare a
+-- claim's decided_at_commit against the head at the time. Note this is equality,
+-- not order — a content-addressed hash answers "has the board moved?" exactly
+-- and "how far behind?" not at all. Magnitude needs an ordinal, which is the
+-- separate fencing-token thread.
+--
+-- NULL is meaningful and expected: the local-clone adapter cannot pin, so it
+-- reports no commit rather than fabricating one. NULL reads as "this claim's
+-- basis is not reconstructible", which is the truth.
+--
+-- Bare ADD COLUMN — Dolt has no conditional DDL (ADD COLUMN IF NOT EXISTS is
+-- MariaDB-only; PREPARE refuses DDL; DATABASE() is empty under `dolt sql`).
+-- Re-applying errors, which is fine: the runner consults `schema_migrations` and
+-- never applies a file twice. See .github/workflows/mirror-migrate.yml.
+--
+-- Apply:  gh workflow run mirror-migrate.yml \
+--           -f migration=2026-07-28-decided-at-commit.sql -f dry_run=false
+
+ALTER TABLE `claims` ADD COLUMN `decided_at_commit` varchar(32) AFTER `agent`;

@@ -120,3 +120,53 @@ test("server readScheduling wraps its reads in one transaction", () => {
   assert.match(fn, /START TRANSACTION/, "reads must share one snapshot");
   assert.match(fn, /COMMIT/, "and release it");
 });
+
+// ── decided_at_commit: the claim records what it was looking at ──────────────
+// The ranking is a pure function of the board, so a claim without its board
+// state is unreproducible — a bad pick cannot be told apart from stale data.
+
+test("the claim path reads through the seam, not the local clone", () => {
+  // Until 2026-07-28 orderedReadyIds called readMirrorScheduling() directly:
+  // the claim RANKED off a local clone while (post-A2) it LATCHED on the shared
+  // server — two databases, one decision — and `fds claim` died on
+  // `spawn dolt ENOENT` anywhere without a clone (e.g. a cloud session).
+  const verbs = readFileSync(new URL("../src/verbs.ts", import.meta.url), "utf8");
+  const fn = /const orderedReadyIds[\s\S]*?\n};/.exec(verbs)?.[0] ?? "";
+  assert.match(fn, /resolveReads\(\)\.readScheduling\(\)/, "must read through the seam");
+  assert.doesNotMatch(fn, /readMirrorScheduling\(\)/, "must not bypass it to the local clone");
+  assert.match(fn, /at: read\.at/, "and must carry the pin out for the claim to record");
+});
+
+test("claimNext records decided_at_commit, shape-checked, NULL when unpinnable", () => {
+  const fn = /export async function claimNext[\s\S]*?\n}/.exec(mirror)?.[0] ?? "";
+  assert.match(fn, /decidedAtCommit/, "must accept the commit");
+  assert.match(fn, /decided_at_commit/, "and write it into the claims row");
+  // Interpolated into SQL — must be shape-checked, and must degrade to NULL
+  // rather than inventing a value when the adapter could not pin.
+  assert.match(fn, /\[a-z0-9\]\{32\}/, "must validate the hash shape before interpolating");
+  assert.match(fn, /"NULL"/, "must write NULL when there is no pin");
+});
+
+test("the migration adds the column and the schema of record documents it", () => {
+  const mig = readFileSync(
+    new URL("../schema/migrations/2026-07-28-decided-at-commit.sql", import.meta.url), "utf8");
+  assert.match(mig, /ALTER TABLE `claims` ADD COLUMN `decided_at_commit`/);
+  // Check the STATEMENTS, not the prose — the header explains *why* IF NOT
+  // EXISTS is unusable, so matching the whole file would match its own rationale.
+  const statements = mig.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
+  assert.doesNotMatch(statements, /IF NOT EXISTS/, "Dolt rejects conditional ADD COLUMN; the ledger handles idempotency");
+  const ddl = readFileSync(new URL("../schema/mirror.sql", import.meta.url), "utf8");
+  assert.match(ddl, /`decided_at_commit` varchar\(32\)/, "schema of record must carry the column");
+});
+
+test("a claim degrades rather than failing when the mirror predates the column", () => {
+  // The migration needs a dispatch + human approval, so there is always a window
+  // where merged code runs against an unmigrated mirror. Verified empirically:
+  // without this, every claim dies on `Unknown column 'decided_at_commit'`.
+  const fn = /export async function claimNext[\s\S]*?\n}/.exec(mirror)?.[0] ?? "";
+  assert.match(fn, /Unknown column 'decided_at_commit'/, "must recognise the pre-migration error");
+  assert.match(fn, /warnNoDecidedAtColumn\(\)/, "and say so rather than degrading silently");
+  // Legitimate here, unlike the leases case: omitting provenance costs
+  // reconstructibility, it cannot weaken S1.
+  assert.match(fn, /INSERT INTO claims \(item_id, agent, claimed_at/, "retries without the column");
+});

@@ -163,8 +163,22 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
 
 import { claimNext, readMirrorScheduling, releaseClaim } from "./mirror.ts";
 
-const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; byId: Map<string, { number: number; repository: string; title: string }> }> => {
-  const board = (await readMirrorScheduling()).filter(
+/**
+ * The ranked candidate list a claim latches from.
+ *
+ * Reads through the SAME `reads` seam whats-next uses — not the local clone.
+ * Until 2026-07-28 this called readMirrorScheduling() directly, which meant the
+ * claim path RANKED off a local dolt clone while (since the A2 seam) it LATCHED
+ * on the shared server: two different databases, one decision. It also made
+ * `fds claim` fail outright wherever there is no clone and no dolt CLI — a
+ * cloud session, for instance, where it died on `spawn dolt ENOENT`.
+ *
+ * Returns the commit the ranking was derived from, so the claim can record what
+ * board state it decided against (`claims.decided_at_commit`).
+ */
+const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; at: string | null; byId: Map<string, { number: number; repository: string; title: string }> }> => {
+  const read = await resolveReads().readScheduling();
+  const board = read.items.filter(
     (i) => i.status !== "Done" && !i.leased && (!repo || i.repository === repo),
   );
   const inputs: PriorityInput[] = board.map((i, idx) => ({
@@ -174,7 +188,7 @@ const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; byId: Ma
   const ranked = prioritize(inputs, Number.MAX_SAFE_INTEGER).filter((r) => r.eligible);
   const ids = ranked.map((r) => board[r.number].id);
   const byId = new Map(board.map((i) => [i.id, { number: i.number, repository: i.repository, title: i.title }]));
-  return { ids, byId };
+  return { ids, at: read.at, byId };
 };
 
 const ClaimOutput = z.object({
@@ -198,8 +212,8 @@ export const claimVerb = defineVerb({
   }),
   output: ClaimOutput,
   run: async (input) => {
-    const { ids, byId } = await orderedReadyIds(input.repo);
-    const res = await claimNext(input.agent, ids, input.ttl);
+    const { ids, at, byId } = await orderedReadyIds(input.repo);
+    const res = await claimNext(input.agent, ids, input.ttl, at);
     const meta = res.itemId ? byId.get(res.itemId) : undefined;
     return {
       won: res.won,
