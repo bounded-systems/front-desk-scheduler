@@ -88,10 +88,11 @@ export const SQL = {
   // (one row per held item, PK-enforced), NOT the append-only `claims` history.
   leases:
     "SELECT item_id FROM leases WHERE TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
-  // Pre-migration fallback: the old claims-derived held set, for mirrors where
-  // schema/migrations/2026-07-27-leases.sql has not been applied yet. READ-ONLY
-  // compatibility — the claim WRITE path has no fallback, deliberately: writing
-  // through the old shape would resurrect the unenforced-S1 bug.
+  // The pre-`leases` held set, derived from the claims log. Used when reading at
+  // a historical ref (before 2026-07-28) or from a replica that has not yet
+  // pulled the migration. READ-ONLY compatibility — the claim WRITE path has no
+  // fallback, deliberately: writing through the old shape would resurrect the
+  // unenforced-S1 bug.
   leasesLegacy:
     "SELECT DISTINCT item_id FROM claims WHERE status='active' AND TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
 } as const;

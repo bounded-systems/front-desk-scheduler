@@ -61,8 +61,8 @@ export async function readScheduling(): Promise<SchedulingItem[]> {
     const [items, edges, leased] = await Promise.all([
       q(SQL.items) as Promise<RawItem[]>,
       q(SQL.edges) as Promise<RawEdge[]>,
-      // Pre-migration fallback, same as dolthub.ts — a replica that hasn't
-      // received schema/migrations/2026-07-27-leases.sql has no `leases` yet.
+      // Same fallback as dolthub.ts: a read replica that has not yet pulled the
+      // 2026-07-28 migration has no `leases` table. Read-only.
       (q(SQL.leases) as Promise<{ item_id: string }[]>).catch((e: unknown) =>
         /table not found.*leases|leases.*(doesn't|does not) exist/i.test(String(e))
           ? (q(SQL.leasesLegacy) as Promise<{ item_id: string }[]>)
