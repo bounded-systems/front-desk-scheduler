@@ -58,18 +58,28 @@ async function withConn<T>(fn: (q: (sql: string) => Promise<unknown[]>) => Promi
 
 export async function readScheduling(): Promise<SchedulingItem[]> {
   return withConn(async (q) => {
-    const [items, edges, leased] = await Promise.all([
-      q(SQL.items) as Promise<RawItem[]>,
-      q(SQL.edges) as Promise<RawEdge[]>,
-      // Same fallback as dolthub.ts: a read replica that has not yet pulled the
-      // 2026-07-28 migration has no `leases` table. Read-only.
-      (q(SQL.leases) as Promise<{ item_id: string }[]>).catch((e: unknown) =>
-        /table not found.*leases|leases.*(doesn't|does not) exist/i.test(String(e))
-          ? (q(SQL.leasesLegacy) as Promise<{ item_id: string }[]>)
-          : Promise.reject(e)
-      ),
-    ]);
-    return assembleScheduling(items, edges, leased.map((r) => r.item_id));
+    // Snapshot consistency, same concern as dolthub.ts but by different means:
+    // one transaction pins all three reads to one working-set state, so a
+    // concurrent claim or sync cannot tear the queue between queries. (mysql2
+    // serializes queries per connection, so the Promise.all below runs the
+    // reads sequentially inside this transaction.)
+    await q("START TRANSACTION");
+    try {
+      const [items, edges, leased] = await Promise.all([
+        q(SQL.items) as Promise<RawItem[]>,
+        q(SQL.edges) as Promise<RawEdge[]>,
+        // Same fallback as dolthub.ts: a read replica that has not yet pulled the
+        // 2026-07-28 migration has no `leases` table. Read-only.
+        (q(SQL.leases) as Promise<{ item_id: string }[]>).catch((e: unknown) =>
+          /table not found.*leases|leases.*(doesn't|does not) exist/i.test(String(e))
+            ? (q(SQL.leasesLegacy) as Promise<{ item_id: string }[]>)
+            : Promise.reject(e)
+        ),
+      ]);
+      return assembleScheduling(items, edges, leased.map((r) => r.item_id));
+    } finally {
+      await q("COMMIT").catch(() => {});
+    }
   });
 }
 
