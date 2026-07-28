@@ -30,15 +30,31 @@ name: mirror-migrate
 #      by GitHub so it cannot be forged.
 #   3. (for the projection PR only) Add the same job_workflow_ref to the
 #      broker's GH_APPS allowlist for app `front-desk`, so this workflow can
-#      mint an App installation token and open the PR as the App. Without it
-#      the run falls back to GITHUB_TOKEN, which works because the ORG enables
-#      "Allow GitHub Actions to create and approve pull requests" (set
-#      2026-07-28). The App token is still preferred: the PR is authored by the
-#      Front Desk App rather than github-actions[bot], and it does not rely on
-#      an org-wide setting that also grants the APPROVE half. Worth knowing
-#      before turning on branch protection — verify whether an Actions approval
-#      can satisfy a required CODEOWNERS review in your configuration, rather
-#      than assuming either way.
+#      mint an App installation token and open the PR as the App.
+#
+#      STATUS 2026-07-28 — allowlist DONE, App permission NOT. Run 30373059795
+#      minted the App token successfully (broker side works), then `gh pr create`
+#      failed with:
+#        GraphQL: Resource not accessible by integration (createPullRequest)
+#      That is the App installation lacking `Pull requests: write` on this repo.
+#      The migration applied and pushed; only the PR step degraded, and the
+#      branch was pushed so a human could open it (PR #27).
+#
+#      ⚠ Note the fallback below is NOT a retry. `GH_TOKEN` is
+#      `${{ steps.apptoken.outputs.token || github.token }}`, which resolves at
+#      expression-evaluation time — when the App token EXISTS, GITHUB_TOKEN is
+#      never tried, even if the App token is then rejected. So "App token, else
+#      GITHUB_TOKEN" describes token SELECTION, not failure recovery. A true
+#      retry would need a second `gh pr create` under `github.token`. Left as
+#      selection deliberately for now: the org setting that would make the
+#      GITHUB_TOKEN path work bundles "approve" with "create" and would let any
+#      workflow self-approve PRs, which is worse than opening one PR by hand.
+#
+#      The App token remains preferred: the PR is authored by the Front Desk App
+#      rather than github-actions[bot], and it does not rely on an org-wide
+#      setting that also grants the APPROVE half. Worth knowing before turning on
+#      branch protection — verify whether an Actions approval can satisfy a
+#      required CODEOWNERS review in your configuration, rather than assuming.
 on:
   workflow_dispatch:
     inputs:
@@ -46,8 +62,23 @@ on:
         description: "Migration file in schema/migrations/ (e.g. 2026-07-27-leases.sql)"
         required: true
         type: string
+      # WHAT A DRY RUN ACTUALLY VERIFIES — it does NOT produce a plan.
+      #
+      # Every mutating step below is gated on `dry_run == false`, so a dry run
+      # does exactly four things: validates the migration file exists (and cats
+      # it), installs dolt, FETCHES THE DOLTHUB CREDENTIAL FROM THE BROKER, and
+      # clones the mirror. There is no simulation, no diff, no "rows affected" —
+      # nothing to compare against expectations. Do not read a green dry run as
+      # "the migration will do what I want"; it cannot tell you that.
+      #
+      # What it IS uniquely good for: the credential step carries no dry_run
+      # guard, so a green dry run proves the whole OIDC path works end to end —
+      # the job_workflow_ref is on the broker's allowlist and a real credential
+      # came back — WITHOUT touching production. That makes it the cheapest way
+      # to confirm a newly-added allowlist entry is live. Used exactly that way
+      # on 2026-07-28 to confirm the entry before applying.
       dry_run:
-        description: "Parse and print the migration without applying it"
+        description: "Validate the file + broker credential path without applying (produces NO plan)"
         required: false
         default: true
         type: boolean
@@ -274,12 +305,22 @@ jobs:
             echo "::notice::projection PR opened"
           else
             echo "::warning::could not open the projection PR."
-            echo "::warning::Neither the broker App token nor GITHUB_TOKEN could create it."
             echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only the PR step failed."
             echo "::warning::Open it by hand from the pushed branch: $branch"
             echo "::warning::  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
-            echo "::warning::Or enable: Settings → Actions → General → Workflow permissions →"
-            echo "::warning::  'Allow GitHub Actions to create and approve pull requests'."
+            echo "::warning::"
+            echo "::warning::WHICH credential failed — GH_TOKEN above is ONE of these, not both:"
+            echo "::warning::  '${{ steps.apptoken.outputs.token && 'App token' || 'GITHUB_TOKEN' }}' was used."
+            echo "::warning::The '||' in GH_TOKEN resolves at expression time, so if the App token"
+            echo "::warning::step succeeded, GITHUB_TOKEN was NEVER TRIED. Only one attempt happened."
+            echo "::warning::"
+            echo "::warning::Read the gh error above — the two failure modes need opposite fixes:"
+            echo "::warning::  'Resource not accessible by integration' → the Front Desk App lacks"
+            echo "::warning::     'Pull requests: write' on this repo. Fix it on the App installation."
+            echo "::warning::     Enabling the Actions checkbox below will NOT help."
+            echo "::warning::  'GitHub Actions is not permitted to create or approve pull requests'"
+            echo "::warning::     → the org/repo setting. Prefer fixing the App instead: that checkbox"
+            echo "::warning::     bundles 'approve' with 'create' and would let workflows self-approve."
             {
               echo "### ⚠ projection PR not opened"
               echo "The migration applied and pushed. Open the PR manually:"
