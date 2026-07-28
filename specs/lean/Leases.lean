@@ -16,8 +16,9 @@
   So this file is written to make the assumption impossible to lose. Everything
   below is a theorem about a state machine, and the two facts that state machine
   needs from the world are stated as A1 and A2 rather than quietly used. The
-  theorems are only as good as A1 and A2, and A2 is currently NOT met by the
-  deployment (see the note on it).
+  theorems are only as good as A1 and A2. A2 is now a DEPLOYMENT property —
+  met when claims route through a shared server, not when they do not — rather
+  than a latent assumption nobody could see (see the note on it).
 
   Mirrors src/mirror.ts (claimNext / releaseClaim) and schema/mirror.sql.
   No mathlib — core `Nat`/`List` + `decide`/`omega` — so it builds from the
@@ -52,11 +53,19 @@ abbrev Agent := Nat
      believe they hold the item, and the conflict surfaces at merge time — long
      after both agents have started working.
 
-     ⚠ AS OF THIS COMMIT A2 IS NOT MET. src/mirror.ts `dsql` shells out to
-     `dolt sql -q` against a LOCAL clone (MIRROR_DIR), so claim writes are
-     per-worker. The theorems below hold of the protocol and say nothing about
-     that deployment. Closing A2 means routing every claim through one
-     `dolt sql-server` (or one Durable Object) — see the PR discussion.
+     STATUS: the SEAM exists, the DEPLOYMENT decides. Since 2026-07-28 the three
+     concurrent claim writes (claimNext / renewLease / releaseClaim) route
+     through `claimWrite`/`claimRows` in src/mirror.ts, which send them to a
+     shared `dolt sql-server` when DOLT_HOST is set — one database, so the
+     PRIMARY KEY is globally authoritative and A2 holds. With DOLT_HOST unset
+     they fall back to the local clone, where A2 does NOT hold; that path warns
+     at runtime rather than failing silently.
+
+     So A2 is now a deployment property, checkable by looking at one variable,
+     rather than a latent assumption nobody could see. It is still an assumption:
+     Lean cannot observe DOLT_HOST. The sync/push writes were never in scope —
+     they run only from Actions under one concurrency group, so they are already
+     single-writer.
 -/
 
 /-! ## Design B — the lease cell (current)

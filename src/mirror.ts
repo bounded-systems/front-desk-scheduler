@@ -198,6 +198,47 @@ export async function setDoltFields(
 }
 
 // --- leases (SQS-style claiming; the scheduler's S1 mutual-exclusion, in SQL) ---
+//
+// A2: these three functions are the ONLY writes that multiple agents perform
+// concurrently, so they are the only ones that need a single serialization
+// point. When DOLT_HOST is set they go through the shared dolt sql-server
+// (src/dolt-server.ts `writeAndCommit`), where the leases PRIMARY KEY is
+// globally authoritative. Unset, they fall back to the local clone — correct
+// for one agent, silently wrong for several, so `claimNext` says so out loud.
+
+/** Route claim writes through the shared server when one is configured. */
+async function claimWrite(
+  statements: readonly string[],
+  message: string,
+  author: string,
+): Promise<number[]> {
+  const srv = await import("./dolt-server.ts");
+  if (srv.writesGoToServer()) {
+    return (await srv.writeAndCommit(statements, message, author)).map((r) => r.affectedRows);
+  }
+  for (const sql of statements) await dsql(sql);
+  return statements.map(() => -1); // local clone: affectedRows unavailable via CLI
+}
+
+/** Read back through whichever plane the write went to — never a different one. */
+async function claimRows<T>(sql: string): Promise<T[]> {
+  const srv = await import("./dolt-server.ts");
+  return srv.writesGoToServer() ? srv.serverRows<T>(sql) : dsqlRows<T>(sql);
+}
+
+/** Warn once per process when concurrent claims are unsafe. */
+let warnedUnserialized = false;
+function warnIfUnserialized(): void {
+  if (warnedUnserialized) return;
+  warnedUnserialized = true;
+  console.warn(
+    "warning: DOLT_HOST is unset, so claims are written to a LOCAL clone.\n" +
+    "  The leases PRIMARY KEY excludes a second claimant within one database, not across\n" +
+    "  clones — two agents on two machines can each latch their own copy and both believe\n" +
+    "  they hold the item (assumption A2 in specs/lean/Leases.lean). Safe for a single\n" +
+    "  agent; set DOLT_HOST to a shared dolt sql-server before running several.",
+  );
+}
 
 export interface ClaimResult {
   readonly won: boolean;
@@ -218,7 +259,11 @@ export const LEASE_LIVE = (p = "") =>
  * no sweeper process, no stuck work.
  */
 async function reapExpiredLeases(): Promise<void> {
-  await dsql(`DELETE FROM leases WHERE NOT (${LEASE_LIVE()})`);
+  await claimWrite(
+    [`DELETE FROM leases WHERE NOT (${LEASE_LIVE()})`],
+    "reap expired leases",
+    "front-desk <scheduler@front-desk>",
+  );
 }
 
 /**
@@ -248,16 +293,26 @@ export async function claimNext(
   orderedIds: readonly string[],
   ttlSec = 3600,
 ): Promise<ClaimResult> {
+  warnIfUnserialized();
   await reapExpiredLeases();
   for (const itemId of orderedIds) {
     const id = sqlEscape(itemId);
-    await dsql(
-      `INSERT IGNORE INTO leases (item_id, agent, claimed_at, ttl_sec)
-       VALUES ('${id}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec})`,
+    const a = sqlEscape(agent);
+    // Latch + audit in ONE session, committed together: on a shared server the
+    // claims row and the lease land in a single attributable Dolt commit
+    // instead of two, so history cannot show a lease with no claim behind it.
+    await claimWrite(
+      [
+        `INSERT IGNORE INTO leases (item_id, agent, claimed_at, ttl_sec)
+         VALUES ('${id}', '${a}', UTC_TIMESTAMP(), ${ttlSec})`,
+      ],
+      `claim ${itemId} by ${agent}`,
+      `${agent} <${agent}@front-desk>`,
     );
-    // Read back the one row the PK guarantees exists. Race-free BECAUSE it is
-    // unique: whoever it names is the sole holder, so this cannot report two winners.
-    const held = await dsqlRows<{ agent: string; number: number; title: string }>(
+    // Read back the one row the PK guarantees exists — through the SAME plane
+    // the write went to, or the answer would describe a different database.
+    // Race-free BECAUSE the row is unique: it cannot name two winners.
+    const held = await claimRows<{ agent: string; number: number; title: string }>(
       `SELECT l.agent AS agent, i.number AS number, i.title AS title
        FROM leases l JOIN items i ON i.item_id = l.item_id
        WHERE l.item_id = '${id}'`,
@@ -265,9 +320,13 @@ export async function claimNext(
     if (held[0]?.agent !== agent) continue; // another agent holds it — next candidate
     // Audit only, deliberately after the latch: `claims` records history and is
     // not load-bearing for S1, so losing this row costs forensics, not correctness.
-    await dsql(
-      `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
-       VALUES ('${id}', '${sqlEscape(agent)}', UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
+    await claimWrite(
+      [
+        `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
+         VALUES ('${id}', '${a}', UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
+      ],
+      `claim ${itemId} by ${agent} (audit)`,
+      `${agent} <${agent}@front-desk>`,
     );
     return { won: true, itemId, number: held[0].number, title: held[0].title, reason: `leased ${ttlSec}s` };
   }
@@ -284,11 +343,13 @@ export async function claimNext(
 export async function renewLease(itemId: string, agent: string, ttlSec?: number): Promise<boolean> {
   const id = sqlEscape(itemId);
   const a = sqlEscape(agent);
-  await dsql(
-    `UPDATE leases SET claimed_at = UTC_TIMESTAMP()${ttlSec ? `, ttl_sec = ${ttlSec}` : ""}
-     WHERE item_id = '${id}' AND agent = '${a}' AND ${LEASE_LIVE()}`,
+  await claimWrite(
+    [`UPDATE leases SET claimed_at = UTC_TIMESTAMP()${ttlSec ? `, ttl_sec = ${ttlSec}` : ""}
+     WHERE item_id = '${id}' AND agent = '${a}' AND ${LEASE_LIVE()}`],
+    `heartbeat ${itemId} by ${agent}`,
+    `${agent} <${agent}@front-desk>`,
   );
-  const rows = await dsqlRows<{ agent: string }>(
+  const rows = await claimRows<{ agent: string }>(
     `SELECT agent FROM leases WHERE item_id = '${id}' AND ${LEASE_LIVE()}`,
   );
   return rows[0]?.agent === agent;
@@ -302,16 +363,22 @@ export async function renewLease(itemId: string, agent: string, ttlSec?: number)
 export async function releaseClaim(itemId: string, agent: string, status: "released" | "completed"): Promise<void> {
   const id = sqlEscape(itemId);
   const a = sqlEscape(agent);
-  await dsql(`DELETE FROM leases WHERE item_id = '${id}' AND agent = '${a}'`);
-  await dsql(
-    `UPDATE claims SET status = '${status}', released_at = UTC_TIMESTAMP()
-     WHERE item_id = '${id}' AND agent = '${a}' AND status = 'active'`,
+  // Both statements in one session → one commit: the lease disappears and the
+  // claim interval closes atomically in history.
+  await claimWrite(
+    [
+      `DELETE FROM leases WHERE item_id = '${id}' AND agent = '${a}'`,
+      `UPDATE claims SET status = '${status}', released_at = UTC_TIMESTAMP()
+       WHERE item_id = '${id}' AND agent = '${a}' AND status = 'active'`,
+    ],
+    `${status} ${itemId} by ${agent}`,
+    `${agent} <${agent}@front-desk>`,
   );
 }
 
 /** Item ids currently under a live lease — excluded from the ready queue. */
 export async function liveClaimedIds(): Promise<Set<string>> {
-  const rows = await dsqlRows<{ item_id: string }>(
+  const rows = await claimRows<{ item_id: string }>(
     `SELECT item_id FROM leases WHERE ${LEASE_LIVE()}`,
   );
   return new Set(rows.map((r) => r.item_id));
