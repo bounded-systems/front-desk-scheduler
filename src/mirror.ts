@@ -227,6 +227,19 @@ async function claimRows<T>(sql: string): Promise<T[]> {
   return srv.writesGoToServer() ? srv.serverRows<T>(sql) : dsqlRows<T>(sql);
 }
 
+/** Warn once when the mirror predates the decided_at_commit column. */
+let warnedNoDecidedAt = false;
+function warnNoDecidedAtColumn(): void {
+  if (warnedNoDecidedAt) return;
+  warnedNoDecidedAt = true;
+  console.warn(
+    "note: this mirror has no `claims.decided_at_commit` column, so claims are\n" +
+    "  recorded without the board state they were decided against. Apply\n" +
+    "  schema/migrations/2026-07-28-decided-at-commit.sql (mirror-migrate) to\n" +
+    "  make claim decisions reconstructible. Claiming itself is unaffected.",
+  );
+}
+
 /** Warn once per process when concurrent claims are unsafe. */
 let warnedUnserialized = false;
 function warnIfUnserialized(): void {
@@ -293,6 +306,7 @@ export async function claimNext(
   agent: string,
   orderedIds: readonly string[],
   ttlSec = 3600,
+  decidedAtCommit: string | null = null,
 ): Promise<ClaimResult> {
   await reapExpiredLeases();
   for (const itemId of orderedIds) {
@@ -320,14 +334,45 @@ export async function claimNext(
     if (held[0]?.agent !== agent) continue; // another agent holds it — next candidate
     // Audit only, deliberately after the latch: `claims` records history and is
     // not load-bearing for S1, so losing this row costs forensics, not correctness.
-    await claimWrite(
-      [
-        `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
-         VALUES ('${id}', '${a}', UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
-      ],
-      `claim ${itemId} by ${agent} (audit)`,
-      `${agent} <${agent}@front-desk>`,
-    );
+    // decided_at_commit answers "what board was this decided against" — the
+    // ranking is a pure function of the board, so without it a claim is not
+    // reproducible and a bad pick cannot be told apart from stale data.
+    // Shape-checked before interpolation; NULL when the adapter could not pin.
+    const dac = decidedAtCommit && /^[a-z0-9]{32}$/.test(decidedAtCommit)
+      ? `'${sqlEscape(decidedAtCommit)}'`
+      : "NULL";
+    // Degrade if the mirror predates 2026-07-28-decided-at-commit.sql. A
+    // migration needs a dispatch and a human approval, so there is always a
+    // window where merged code runs against an unmigrated mirror — and losing
+    // provenance is strictly better than failing every claim in that window.
+    //
+    // Note this fallback is legitimate where the leases one is NOT: omitting
+    // decided_at_commit costs only reconstructibility, whereas writing claims
+    // through the pre-leases shape would resurrect the unenforced-S1 bug. A
+    // write fallback is fine exactly when it cannot weaken an invariant.
+    const auditMsg = `claim ${itemId} by ${agent} (audit)`;
+    const auditAuthor = `${agent} <${agent}@front-desk>`;
+    try {
+      await claimWrite(
+        [
+          `INSERT INTO claims (item_id, agent, decided_at_commit, claimed_at, ttl_sec, status)
+           VALUES ('${id}', '${a}', ${dac}, UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
+        ],
+        auditMsg,
+        auditAuthor,
+      );
+    } catch (e) {
+      if (!/Unknown column 'decided_at_commit'/i.test(String((e as { sqlMessage?: string }).sqlMessage ?? e))) throw e;
+      warnNoDecidedAtColumn();
+      await claimWrite(
+        [
+          `INSERT INTO claims (item_id, agent, claimed_at, ttl_sec, status)
+           VALUES ('${id}', '${a}', UTC_TIMESTAMP(), ${ttlSec}, 'active')`,
+        ],
+        auditMsg,
+        auditAuthor,
+      );
+    }
     return { won: true, itemId, number: held[0].number, title: held[0].title, reason: `leased ${ttlSec}s` };
   }
   return { won: false, reason: "no unleased eligible item" };
