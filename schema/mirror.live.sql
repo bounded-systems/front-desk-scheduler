@@ -23,6 +23,7 @@ CREATE TABLE `claims` (
   `agent` varchar(128) NOT NULL,
   `claimed_at` datetime NOT NULL,
   `ttl_sec` int NOT NULL,
+  `released_at` datetime,
   `status` enum('active','released','completed','expired') NOT NULL DEFAULT '1',
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`,`status`),
@@ -58,6 +59,23 @@ CREATE TABLE `items` (
   CONSTRAINT `chk_effort` CHECK (((`effort` >= 0) AND (`effort` <= 10))),
   CONSTRAINT `chk_value` CHECK (((`value` >= 0) AND (`value` <= 100))),
   CONSTRAINT `chk_number` CHECK ((`number` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+CREATE TABLE `leases` (
+  `item_id` varchar(64) NOT NULL,
+  `agent` varchar(128) NOT NULL,
+  `claimed_at` datetime NOT NULL,
+  `ttl_sec` int NOT NULL,
+  PRIMARY KEY (`item_id`),
+  KEY `idx_lease_agent` (`agent`),
+  CONSTRAINT `fk_lease_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_ttl` CHECK ((`ttl_sec` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+CREATE TABLE `schema_migrations` (
+  `filename` varchar(255) NOT NULL,
+  `applied_at` datetime NOT NULL,
+  PRIMARY KEY (`filename`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 CREATE TABLE `sync_log` (
