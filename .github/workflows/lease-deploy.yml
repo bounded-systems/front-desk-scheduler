@@ -1,0 +1,192 @@
+name: lease-deploy
+# Deploy worker/lease, publish its URL, and prove it excludes.
+#
+# WHY THIS IS A WORKFLOW AND NOT `npx wrangler deploy` ON SOMEONE'S LAPTOP
+# -----------------------------------------------------------------------
+# Same argument as mirror-migrate. A hand-run deploy needs a Cloudflare API
+# token on a developer machine, and the broker exists precisely so that no such
+# credential is stored anywhere: a workflow proves its identity with a
+# GitHub-signed OIDC JWT and receives a short-lived, least-privilege token in
+# exchange. Telling an operator to run wrangler by hand would trade that
+# property away for a shorter sentence in a README.
+#
+# So the session does not deploy. It dispatches this, which runs with its own
+# pinned identity behind a reviewer gate and leaves the audit trail in Actions.
+#
+# NOTE the org's site-deploy.yml uses a STORED `secrets.CLOUDFLARE_API_TOKEN`.
+# That predates the broker and is the pattern being moved away from; it is not
+# the model here.
+#
+# ⚠ SETUP REQUIRED — BOTH FAIL CLOSED, DELIBERATELY
+#
+#   1. The broker must mint a Cloudflare token that can DEPLOY A WORKER, i.e. a
+#      policy including "Workers Scripts: Edit" at ACCOUNT scope. The public
+#      cf-oidc-token-broker template's `policyFor` mints DNS tokens plus
+#      OPTIONAL Workers *read* — there is no Workers-edit tier in it. The
+#      deployed broker's policy lives in bounded-systems/infra, which is outside
+#      this session's repo scope, so I could not verify what it currently grants.
+#      Until it grants Workers Scripts Edit, the credential step below fails and
+#      nothing is deployed. That is the correct outcome, not a bug.
+#
+#   2. `FRONT_DESK_CF_BROKER_PATH` must name the broker route that serves it.
+#      mirror-migrate uses `/dolthub/front-desk-mirror` and `/github/front-desk`,
+#      so the deployed broker is path-routed; I have NOT guessed the Cloudflare
+#      one. Set the variable to whatever it actually serves. The default below is
+#      a placeholder that will 404 loudly rather than silently do something else.
+#
+#   3. The `lease-deploy` GitHub Environment with REQUIRED REVIEWERS. Dispatch
+#      alone must not be able to replace the mechanism that enforces mutual
+#      exclusion for the whole scheduler.
+#
+# WHY THIS ALSO SETS THE REPO VARIABLE
+# ------------------------------------
+# The endpoint is an OUTPUT of deploying, so a human copying it into
+# `gh variable set` by hand is a step that can be skipped, mistyped, or done
+# against the wrong repo — and the failure mode is `production-a2` staying red
+# while everyone believes it was deployed. The workflow already knows the URL;
+# it publishes it with a broker-minted App token, closing the loop in the same
+# run that produced it.
+on:
+  workflow_dispatch:
+    inputs:
+      race_after_deploy:
+        description: "After deploying, race the new endpoint and require exactly one winner"
+        required: false
+        default: true
+        type: boolean
+concurrency:
+  group: lease-deploy # never two deploys of the serialization point at once
+  cancel-in-progress: false
+permissions:
+  id-token: write # OIDC → broker
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: lease-deploy
+    env:
+      BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+      CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/cloudflare/front-desk-lease' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      - name: Cloudflare credential (via OIDC broker)
+        id: cfcred
+        run: |
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=cf-oidc-token-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          if ! body="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+                 "${BROKER_URL%/}${CF_BROKER_PATH}" 2>&1)"; then
+            echo "::error::broker refused at ${CF_BROKER_PATH}: ${body}"
+            echo "::error::Either this workflow's job_workflow_ref is not on the broker's allowlist,"
+            echo "::error::or the route is wrong (set FRONT_DESK_CF_BROKER_PATH), or the broker's"
+            echo "::error::policy has no Workers Scripts Edit tier — see this file's header."
+            exit 1
+          fi
+          tok="$(jq -r '.token // empty' <<<"$body")"
+          [ -n "$tok" ] || { echo "::error::broker returned no Cloudflare token"; exit 1; }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy worker/lease
+        id: deploy
+        working-directory: worker/lease
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.cfcred.outputs.token }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 deploy 2>&1 | tee deploy.log
+          # The URL is what the rest of this workflow publishes, so parse it and
+          # FAIL if it is absent rather than proceeding with an empty variable.
+          url="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1 || true)"
+          if [ -z "$url" ]; then
+            echo "::error::deploy succeeded but no workers.dev URL was found in the output."
+            echo "::error::Refusing to publish an empty FDS_CLAIM_ENDPOINT — that would leave"
+            echo "::error::production-a2 red while looking deployed. Set the variable by hand."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "::notice::deployed $url"
+
+      - name: Verify the deployment answers before publishing it
+        # Publishing a URL that does not serve the lease API would point every
+        # claimant at nothing. Cheap to check, and the alternative is discovering
+        # it from a claim-race failure whose cause looks like the DO being wrong.
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            if body="$(curl -fsS "${URL}/health" 2>/dev/null)" && [ "$(jq -r '.ok' <<<"$body")" = "true" ]; then
+              echo "::notice::health ok"; exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::${URL}/health did not answer ok — not publishing this endpoint"
+          exit 1
+
+      - name: Front Desk App token (via OIDC broker)
+        id: apptoken
+        run: |
+          set -euo pipefail
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token for the App broker"; exit 1; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')"
+          [ -n "$tok" ] || { echo "::error::broker returned no App token"; exit 1; }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
+      - name: Publish FDS_CLAIM_ENDPOINT
+        # Needs the App to hold `Variables: write` AND the broker's GH_APPS map to
+        # ASK for it. Those are two different things — see mirror-migrate.yml's
+        # header: a mint that succeeds followed by a 403 means the broker did not
+        # request the scope (fix in infra), while a mint that fails outright means
+        # the installation lacks it (fix on the App, then accept the update).
+        env:
+          GH_TOKEN: ${{ steps.apptoken.outputs.token }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+          if ! gh variable set FDS_CLAIM_ENDPOINT --repo "${{ github.repository }}" --body "$URL"; then
+            echo "::error::could not set FDS_CLAIM_ENDPOINT. THE WORKER IS DEPLOYED at $URL —"
+            echo "::error::only publication failed. Set it by hand and production-a2 will pick it up:"
+            echo "::error::  gh variable set FDS_CLAIM_ENDPOINT -R ${{ github.repository }} -b '$URL'"
+            exit 1
+          fi
+          echo "::notice::FDS_CLAIM_ENDPOINT = $URL"
+
+      - name: Prove it excludes
+        # The deploy is not the deliverable; the evidence is. This races the
+        # endpoint that was just published and requires exactly one winner —
+        # the acceptance criterion from docs/queue-vs-log.md, run here so a
+        # deploy cannot be reported as success without it.
+        if: ${{ inputs.race_after_deploy }}
+        env:
+          FDS_CLAIM_ENDPOINT: ${{ steps.deploy.outputs.url }}
+          RACE_ITEM: ${{ vars.FDS_CLAIM_RACE_ITEM || 'race#1' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y
+          "$HOME/.deno/bin/deno" install --frozen
+          node scripts/claim-race.ts
+          RACE_AGENTS=32 node scripts/claim-race.ts
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### lease-deploy"
+            echo "- endpoint: \`${{ steps.deploy.outputs.url || 'not deployed' }}\`"
+            echo "- raced: ${{ inputs.race_after_deploy && 'yes' || 'no' }}"
+            echo ""
+            echo "A2 is discharged only by \`production-a2\` going green against this"
+            echo "endpoint — deploying is not the same as proving."
+          } >> "$GITHUB_STEP_SUMMARY"
