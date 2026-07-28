@@ -105,10 +105,19 @@ export class LeaseObject {
           return json({ error: "not found" }, 404);
       }
     } catch (e) {
-      // TypeError/RangeError from the core are caller errors (bad agent, bad
-      // ttl). Anything else is ours and should not be reported as a 400.
-      const bad = e instanceof TypeError || e instanceof RangeError;
-      return json({ error: String(e?.message ?? e) }, bad ? 400 : 500);
+      // TypeError/RangeError from the core are CALLER errors — bad agent, bad
+      // ttl — and their messages are authored in lease-core.mjs for exactly
+      // this audience. "ttl_sec must be a positive number" is the useful reply.
+      if (e instanceof TypeError || e instanceof RangeError) {
+        return json({ error: e.message }, 400);
+      }
+      // Anything else is OUR bug, and its message is not the caller's business:
+      // echoing it hands them our internals (CodeQL: information exposure
+      // through a stack trace) and is not actionable for them either. Log it
+      // where an operator can see it; return a reply whose content does not
+      // vary with the shape of the failure.
+      console.error("lease: unhandled error", e);
+      return json({ error: "internal error" }, 500);
     }
   }
 }
