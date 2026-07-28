@@ -86,3 +86,37 @@ test("only the claim path is routed — sync/push stays on the local clone", () 
   );
   assert.ok(!beforeLeases.includes("claimWrite("), "sync path must not use the claim seam");
 });
+
+// ── snapshot-consistent reads (the head SHA as identity) ─────────────────────
+// readScheduling assembles the queue from three queries. Unpinned, they race
+// the syncer: a delta landing between the item read and the edge read hands
+// assembly two different board states. The Dolt head SHA makes "one board
+// state" a checkable identity: resolve it once, pin every query with AS OF.
+
+import { pinTables } from "../src/dolthub.ts";
+
+test("pinTables pins every mirror-table FROM to one commit", () => {
+  const h = "v0110csl2jph0aeeij7rhhurrbjcft6g";
+  assert.equal(
+    pinTables("SELECT x FROM items WHERE status <> 'Done'", h),
+    `SELECT x FROM items AS OF '${h}' WHERE status <> 'Done'`,
+  );
+  assert.equal(pinTables("SELECT a FROM item_deps", h), `SELECT a FROM item_deps AS OF '${h}'`);
+  // the legacy fallback reads claims — it must pin too, or the fallback tears
+  assert.match(pinTables("SELECT DISTINCT item_id FROM claims WHERE 1", h), /FROM claims AS OF/);
+  // non-mirror identifiers are untouched
+  assert.equal(pinTables("SELECT * FROM dolt_log", h), "SELECT * FROM dolt_log");
+});
+
+test("dolthub readScheduling resolves a head and pins with it", () => {
+  const src = readFileSync(new URL("../src/dolthub.ts", import.meta.url), "utf8");
+  const fn = /export async function readScheduling[\s\S]*?\n}/.exec(src)?.[0] ?? "";
+  assert.match(fn, /resolveHead\(/, "must resolve the snapshot identity once");
+  assert.match(fn, /pinTables/, "and pin every query with it");
+});
+
+test("server readScheduling wraps its reads in one transaction", () => {
+  const fn = /export async function readScheduling[\s\S]*?\n}/.exec(server)?.[0] ?? "";
+  assert.match(fn, /START TRANSACTION/, "reads must share one snapshot");
+  assert.match(fn, /COMMIT/, "and release it");
+});

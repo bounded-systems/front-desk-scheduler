@@ -53,14 +53,41 @@ export async function meta(): Promise<{ syncedAt: string; commit: string } | nul
   return { syncedAt: rows[0].synced_at, commit: head[0]?.commit_hash?.slice(0, 12) ?? "?" };
 }
 
+/** Latest commit on `branch` — the snapshot identity a pinned read is made against. */
+export async function resolveHead(branch = "main"): Promise<string | null> {
+  const rows = await query<{ commit_hash: string }>(
+    "SELECT commit_hash FROM dolt_log ORDER BY date DESC LIMIT 1",
+    branch,
+  ).catch(() => []);
+  const h = rows[0]?.commit_hash;
+  // Defensive: the hash is interpolated into SQL below. It comes from our own
+  // dolt_log, but pin the shape anyway so a surprise can't become an injection.
+  return h && /^[a-z0-9]{32}$/.test(h) ? h : null;
+}
+
+/** Pin every mirror-table FROM in `sql` to one commit. Dolt's `AS OF` is
+ *  per-table-reference, so each FROM gets the same snapshot. */
+export function pinTables(sql: string, head: string): string {
+  return sql.replace(/FROM (items|item_deps|leases|claims)\b/g, `FROM $1 AS OF '${head}'`);
+}
+
 /**
  * The `bd ready` read over DoltHub's public HTTP API — zero budget, no clone.
  * Reads NON-Done items only (stays under the 1000-row API cap); shared assembly.
+ *
+ * SNAPSHOT-CONSISTENT: the three queries are pinned to ONE commit (`AS OF` the
+ * resolved head). Unpinned, they race the syncer — a delta sync landing between
+ * the item read and the edge read hands assembly two different board states (a
+ * torn read). The Dolt head SHA is what makes "one board state" a checkable
+ * identity rather than a hope. If the head cannot be resolved, reads fall back
+ * to unpinned `main` — availability over strictness for a read plane.
  */
 export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
+  const head = await resolveHead(ref);
+  const at = (sql: string) => (head ? pinTables(sql, head) : sql);
   const [items, edges, leasedRows] = await Promise.all([
-    query<RawItem>(SQL.items, ref),
-    query<RawEdge>(SQL.edges, ref),
+    query<RawItem>(at(SQL.items), ref),
+    query<RawEdge>(at(SQL.edges), ref),
     // `leases` has existed on main since 2026-07-28, but this is NOT dead code:
     // `ref` can name any historical Dolt commit, and reading the board as it
     // stood before the migration is a permanent capability of a versioned
@@ -68,8 +95,8 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
     // held set keeps historical reads working. READ-ONLY — the claim WRITE path
     // deliberately has no fallback, since writing through the old shape would
     // resurrect the unenforced-S1 bug.
-    query<{ item_id: string }>(SQL.leases, ref).catch((e: unknown) =>
-      /table not found: leases/.test(String(e)) ? query<{ item_id: string }>(SQL.leasesLegacy, ref) : Promise.reject(e)
+    query<{ item_id: string }>(at(SQL.leases), ref).catch((e: unknown) =>
+      /table not found: leases/.test(String(e)) ? query<{ item_id: string }>(at(SQL.leasesLegacy), ref) : Promise.reject(e)
     ),
   ]);
   return assembleScheduling(items, edges, leasedRows.map((r) => r.item_id));
