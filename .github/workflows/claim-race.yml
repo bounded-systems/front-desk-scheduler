@@ -59,7 +59,7 @@ on:
   workflow_dispatch:
     inputs:
       endpoint:
-        description: "Serialization endpoint to race (host:port). Overrides the FDS_CLAIM_ENDPOINT variable."
+        description: "Serialization endpoint to race (a worker/lease URL). Overrides the FDS_CLAIM_ENDPOINT variable."
         required: false
         default: ""
         type: string
@@ -172,8 +172,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          echo "host=${ep%%:*}" >> "$GITHUB_OUTPUT"
-          echo "port=${ep##*:}" >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ep" >> "$GITHUB_OUTPUT"
           echo "::notice::racing against $ep"
 
       - name: Install deno + deps from the lock
@@ -182,12 +181,14 @@ jobs:
           "$HOME/.deno/bin/deno" install --frozen
 
       - name: "Race the real endpoint: 16 agents, then 32"
+        # FDS_CLAIM_ENDPOINT, not DOLT_HOST. This job originally passed the
+        # endpoint as a MySQL host because it was written before the Durable
+        # Object was chosen — which would have produced a connection failure
+        # against an HTTP DO, i.e. red for the WRONG REASON. A red that cannot
+        # distinguish "A2 undischarged" from "wrong protocol" is worth about as
+        # much as the green that came from CI provisioning its own server.
         env:
-          DOLT_HOST: ${{ steps.endpoint.outputs.host }}
-          DOLT_PORT: ${{ steps.endpoint.outputs.port }}
-          DOLT_DB: ${{ vars.FDS_CLAIM_DB || 'mirror' }}
-          DOLT_USER: ${{ vars.FDS_CLAIM_USER || 'root' }}
-          DOLT_PASSWORD: ${{ secrets.FDS_CLAIM_PASSWORD }}
+          FDS_CLAIM_ENDPOINT: ${{ steps.endpoint.outputs.endpoint }}
           RACE_ITEM: ${{ vars.FDS_CLAIM_RACE_ITEM || 'race#1' }}
         run: |
           set -euo pipefail
