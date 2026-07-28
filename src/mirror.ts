@@ -19,6 +19,8 @@ import { fetchBoardItems } from "./board.ts";
 import { budgetGate, type Budget, type CapacityReport } from "./policy.ts";
 import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
 import { type RawItem, type RawTypedEdge, SQL } from "./scheduling.ts";
+import { type ClaimPlaneName, resolveClaimPlane, warnIfPlaneCannotExclude } from "./claim-plane.ts";
+import { claimLease, releaseLeaseRemote, renewLeaseRemote } from "./lease-client.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -227,6 +229,24 @@ async function claimRows<T>(sql: string): Promise<T[]> {
   return srv.writesGoToServer() ? srv.serverRows<T>(sql) : dsqlRows<T>(sql);
 }
 
+/**
+ * Warn once that a release on the lease plane drops its `status`.
+ *
+ * scripts/estimate.ts reads released-vs-completed to calibrate effort. Until the
+ * projection writer lands there is nowhere to put it, and losing a calibration
+ * input quietly is how a metric starts lying without anyone noticing.
+ */
+let warnedLeaseStatus = false;
+function warnLeasePlaneDropsStatus(): void {
+  if (warnedLeaseStatus) return;
+  warnedLeaseStatus = true;
+  console.warn(
+    "warning: releasing on the lease plane discards `status` (released|completed).\n" +
+      "  The Durable Object records exclusion, not history, and the Dolt projection that\n" +
+      "  would carry it does not exist yet — so effort calibration loses this interval.",
+  );
+}
+
 /** Warn once when the mirror predates the decided_at_commit column. */
 let warnedNoDecidedAt = false;
 function warnNoDecidedAtColumn(): void {
@@ -260,6 +280,18 @@ export interface ClaimResult {
   readonly number?: number;
   readonly title?: string;
   readonly reason: string;
+  /**
+   * The fencing token, on a plane that supplies one — currently only `lease`.
+   *
+   * NULL on the Dolt planes, and that null is information rather than an
+   * omission: they have nothing to put here. A commit hash is content-addressed,
+   * an identity and never an ordering, and AUTO_INCREMENT totally orders only
+   * within one server — the assumption the whole design is trying to stop
+   * depending on. A holder without a token cannot be fenced out by a sink.
+   */
+  readonly fencing?: number | null;
+  /** Which plane adjudicated this. See src/claim-plane.ts. */
+  readonly plane?: ClaimPlaneName;
 }
 
 /** Predicate: this lease row has not yet lapsed. `p` qualifies the columns. */
@@ -308,6 +340,32 @@ export async function claimNext(
   ttlSec = 3600,
   decidedAtCommit: string | null = null,
 ): Promise<ClaimResult> {
+  const plane = resolveClaimPlane();
+  warnIfPlaneCannotExclude(plane);
+
+  // The lease plane adjudicates elsewhere: the DO is ground truth for exclusion
+  // and Dolt is a derived projection (docs/queue-vs-log.md). No `leases` row is
+  // written here, and `plane.projected` is false so nothing downstream reads the
+  // absence as a lost record. Walk the SAME ranked candidate list and take the
+  // first grant — the ordering is the scheduler's, only the adjudication moves.
+  if (plane.name === "lease") {
+    for (const itemId of orderedIds) {
+      const attempt = await claimLease(itemId, agent, ttlSec);
+      if (!attempt.granted) continue; // held by someone else — next candidate
+      return {
+        won: true,
+        itemId,
+        fencing: attempt.fencing,
+        plane: plane.name,
+        // The DO stores exclusion state, not the board, so it cannot supply
+        // number/title. Callers that need them read the board they already
+        // ranked from rather than being handed a fabricated blank.
+        reason: `leased ${ttlSec}s (fencing ${attempt.fencing})`,
+      };
+    }
+    return { won: false, plane: plane.name, reason: "no unleased eligible item" };
+  }
+
   await reapExpiredLeases();
   for (const itemId of orderedIds) {
     const id = sqlEscape(itemId);
@@ -373,9 +431,14 @@ export async function claimNext(
         auditAuthor,
       );
     }
-    return { won: true, itemId, number: held[0].number, title: held[0].title, reason: `leased ${ttlSec}s` };
+    // fencing: null — the Dolt planes have no total order to offer. That null
+    // is the honest answer, not a missing field.
+    return {
+      won: true, itemId, number: held[0].number, title: held[0].title,
+      fencing: null, plane: plane.name, reason: `leased ${ttlSec}s`,
+    };
   }
-  return { won: false, reason: "no unleased eligible item" };
+  return { won: false, plane: plane.name, reason: "no unleased eligible item" };
 }
 
 /**
@@ -385,7 +448,26 @@ export async function claimNext(
  * the new holder. Renewing on a shorter TTL than the job's runtime is the point:
  * a worker that dies stops heartbeating and the item returns to the queue fast.
  */
-export async function renewLease(itemId: string, agent: string, ttlSec?: number): Promise<boolean> {
+export async function renewLease(
+  itemId: string,
+  agent: string,
+  ttlSec?: number,
+  fencing?: number | null,
+): Promise<boolean> {
+  const plane = resolveClaimPlane();
+  if (plane.name === "lease") {
+    // The token is not optional here. Renewing without one would ask the DO to
+    // take our word that we are still the holder, which is the entire thing
+    // fencing exists to stop — and a lapsed holder is exactly the caller most
+    // likely to have lost track of it.
+    if (typeof fencing !== "number") {
+      throw new Error(
+        "renewLease on the lease plane requires the fencing token from claimNext — " +
+          "renewing without it cannot distinguish the holder from a zombie",
+      );
+    }
+    return renewLeaseRemote(itemId, agent, fencing, ttlSec ?? 3600);
+  }
   const id = sqlEscape(itemId);
   const a = sqlEscape(agent);
   await claimWrite(
@@ -405,7 +487,28 @@ export async function renewLease(itemId: string, agent: string, ttlSec?: number)
  * `agent` predicate matters: a straggler whose lease already lapsed and was
  * re-latched by someone else must not free the new holder's lease.
  */
-export async function releaseClaim(itemId: string, agent: string, status: "released" | "completed"): Promise<void> {
+export async function releaseClaim(
+  itemId: string,
+  agent: string,
+  status: "released" | "completed",
+  fencing?: number | null,
+): Promise<void> {
+  const plane = resolveClaimPlane();
+  if (plane.name === "lease") {
+    if (typeof fencing !== "number") {
+      throw new Error(
+        "releaseClaim on the lease plane requires the fencing token from claimNext — " +
+          "a release without one is how a zombie frees the NEW holder's lease",
+      );
+    }
+    // `status` has nowhere to go: the DO records exclusion, not history, and
+    // the Dolt projection that would carry released/completed does not exist
+    // yet. Dropping it silently would lose the released-vs-completed
+    // distinction that effort calibration reads, so say so once.
+    warnLeasePlaneDropsStatus();
+    await releaseLeaseRemote(itemId, agent, fencing);
+    return;
+  }
   const id = sqlEscape(itemId);
   const a = sqlEscape(agent);
   // Both statements in one session → one commit: the lease disappears and the
