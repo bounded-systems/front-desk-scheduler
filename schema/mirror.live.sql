@@ -31,6 +31,26 @@ CREATE TABLE `claims` (
   CONSTRAINT `fk_claim_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
+CREATE TABLE `commit_attestations` (
+  `dolt_commit` varchar(32) NOT NULL,
+  `attested_at` datetime NOT NULL,
+  `jwt_sha256` varchar(64) NOT NULL,
+  `iss` varchar(255) NOT NULL,
+  `sub` varchar(255) NOT NULL,
+  `aud` varchar(255) NOT NULL,
+  `repository` varchar(255) NOT NULL,
+  `repository_owner` varchar(255) NOT NULL,
+  `job_workflow_ref` varchar(512) NOT NULL,
+  `run_id` varchar(32) NOT NULL,
+  `run_attempt` varchar(8) NOT NULL,
+  `jti` varchar(64),
+  `issued_at` datetime NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `receipt` text,
+  PRIMARY KEY (`dolt_commit`),
+  KEY `idx_attest_workflow` (`job_workflow_ref`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
 CREATE TABLE `item_deps` (
   `item_id` varchar(64) NOT NULL,
   `dep_item_id` varchar(64) NOT NULL,
