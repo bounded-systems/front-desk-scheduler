@@ -10,7 +10,7 @@
   },
   "bin": { "fds": "scripts/fds.ts" },
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts worker/lease/src/*.test.mjs",
     "sim": "node scripts/demo.ts",
     "whats-next": "node scripts/fds.ts whats-next",
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",

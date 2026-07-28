@@ -1,0 +1,44 @@
+{
+  // front-desk-lease — the scheduler's serialization point (A2).
+  //
+  // Deploy:  npx wrangler deploy      (from worker/lease/)
+  //
+  // Then set the repo variable so claim-race can actually measure production:
+  //   gh variable set FDS_CLAIM_ENDPOINT -R bounded-systems/front-desk-scheduler \
+  //      -b "https://front-desk-lease.<subdomain>.workers.dev"
+  //
+  // Turning `production-a2` green is the acceptance criterion for this Worker
+  // (docs/queue-vs-log.md). Deploying it is not the same as discharging A2 —
+  // that takes N agents racing the real endpoint with exactly one grant.
+  //
+  // NO SECRET LIVES HERE. This Worker holds no credential: it stores lease state
+  // and hands out fencing tokens. Authentication is a separate concern and is
+  // deliberately NOT solved by copying the broker's OIDC pins — the broker
+  // authenticates WORKFLOWS (job_workflow_ref@refs/heads/main), and a claimant
+  // is an interactive agent, which is a different caller shape. Widening the
+  // broker's trust boundary to cover it would have been the easy wrong move.
+  // See "Authentication" in README.md; until that lands, deploy this only where
+  // an unauthenticated claim is acceptable.
+  "name": "front-desk-lease",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-06-21",
+  "workers_dev": true,
+  // Don't leave old versions of the exclusion mechanism publicly reachable: a
+  // stale preview backed by its own DO namespace is a SECOND serialization
+  // point, which is precisely the failure this Worker exists to remove.
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LEASE",
+        "class_name": "LeaseObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LeaseObject"]
+    }
+  ]
+}

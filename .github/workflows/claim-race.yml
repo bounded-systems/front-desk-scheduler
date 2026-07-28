@@ -28,6 +28,10 @@ name: claim-race
 # ACCEPTANCE CRITERION for the Durable Object work (docs/queue-vs-log.md):
 # production-a2 goes green — N agents against the real endpoint, exactly one
 # grant. Until that run happens, "the DO enforces exclusion" is a design claim.
+#
+# `worker/**` is in the path filter for that reason: the DO is this test's
+# SUBJECT. It was missing when the DO first landed, so edits to the
+# serialization mechanism did not trigger the test meant to gate it.
 on:
   pull_request:
     # NB: duplicated below rather than shared with a YAML anchor — GitHub
@@ -38,6 +42,7 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "worker/**"
       - ".github/workflows/claim-race.yml"
   push:
     branches: [main]
@@ -47,6 +52,7 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "worker/**"
       - ".github/workflows/claim-race.yml"
   schedule:
     - cron: "23 6 * * *" # daily; production-a2 is a standing signal, not a one-off
