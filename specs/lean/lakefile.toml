@@ -1,5 +1,5 @@
 name = "FrontDesk"
-defaultTargets = ["FrontDesk", "Leases"]
+defaultTargets = ["FrontDesk", "Leases", "Delegation"]
 
 # Pure-core proofs: no mathlib dependency, they build from the toolchain alone.
 [[lean_lib]]
@@ -9,4 +9,9 @@ srcDir = "."
 # S1 (mutual exclusion) — the lease cell vs. the predicate-guarded log.
 [[lean_lib]]
 name = "Leases"
+srcDir = "."
+
+# The credential chain (D1-D3 under C1/C2) — why authority only flows down it.
+[[lean_lib]]
+name = "Delegation"
 srcDir = "."

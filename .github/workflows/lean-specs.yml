@@ -1,0 +1,70 @@
+name: lean-specs
+# Build the Lean proofs, so a PR cannot break them silently.
+#
+# Until 2026-07-28 nothing in CI compiled specs/lean — the proofs were checked
+# by whoever remembered to run `lake build`, which is the same hole the 69 unit
+# tests sat in until test.yml. A proof that does not build is prose with extra
+# steps, and worse: it keeps the AUTHORITY of a proof while carrying none.
+#
+# Path-filtered, unlike test.yml: the toolchain download is heavy, the proofs
+# change rarely, and this is not intended as a required check. The trade is the
+# skipped-required-check problem, accepted deliberately here and not there.
+on:
+  pull_request:
+    paths:
+      - "specs/lean/**"
+      - ".github/workflows/lean-specs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "specs/lean/**"
+      - ".github/workflows/lean-specs.yml"
+  workflow_dispatch: {}
+concurrency:
+  group: lean-specs-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install elan (pinned toolchain comes from lean-toolchain)
+        run: |
+          set -euo pipefail
+          curl -fsSL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Build all proof libraries
+        working-directory: specs/lean
+        run: |
+          set -euo pipefail
+          lake build
+      - name: No sorry may reach main
+        # `lake build` accepts `sorry` with a warning. A sorried theorem is an
+        # assumption wearing a theorem's name — the exact confusion the A1/A2
+        # and C1/C2 conventions exist to prevent. Statements, not prose: strip
+        # comments first, or this gate would fire on its own documentation.
+        working-directory: specs/lean
+        run: |
+          set -euo pipefail
+          if python3 - <<'PY'
+          import re, sys, pathlib
+          found = False
+          for p in pathlib.Path(".").glob("*.lean"):
+              src = p.read_text()
+              src = re.sub(r"/-.*?-/", "", src, flags=re.S)   # block comments
+              src = re.sub(r"--.*", "", src)                   # line comments
+              for i, line in enumerate(src.splitlines(), 1):
+                  if re.search(r"\bsorry\b", line):
+                      print(f"{p}:{i}: sorry in a statement")
+                      found = True
+          sys.exit(0 if found else 1)
+          PY
+          then
+            echo "::error::a 'sorry' reached the proof code — see above"
+            exit 1
+          fi
+          echo "no sorries"
