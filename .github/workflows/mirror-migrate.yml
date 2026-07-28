@@ -40,6 +40,13 @@ name: mirror-migrate
 #      The migration applied and pushed; only the PR step degraded, and the
 #      branch was pushed so a human could open it (PR #27).
 #
+#      PR #27 then hit a SECOND, unrelated wall: `Commits must have verified
+#      signatures` blocked the merge, because the projection commit was made with
+#      `git commit` on the runner. It was merged with a rule bypass. The
+#      publication step below now writes through the Contents API so GitHub
+#      constructs (and can sign) the commit — see that step's header, including
+#      why it verifies the result rather than trusting the endpoint.
+#
 #      ⚠ Note the fallback below is NOT a retry. `GH_TOKEN` is
 #      `${{ steps.apptoken.outputs.token || github.token }}`, which resolves at
 #      expression-evaluation time — when the App token EXISTS, GITHUB_TOKEN is
@@ -257,27 +264,111 @@ jobs:
           echo "::add-mask::$tok"
           echo "token=$tok" >> "$GITHUB_OUTPUT"
 
-      - name: Open the PR that records the new reality
+      - name: Publish the projection and open the PR that records the new reality
+        # WHY THE COMMIT IS WRITTEN THROUGH THE API AND NOT WITH `git commit`
+        # -----------------------------------------------------------------
+        # This step used to `git config user.*`, `git commit`, `git push`. That
+        # produces an UNSIGNED commit, because Actions hands a job a token, not a
+        # signing key — there is nothing on the runner to sign with. When the
+        # `Commits must have verified signatures` rule was turned on for main,
+        # PR #27 was blocked and had to be merged with a rule bypass.
+        #
+        # A commit created through the Contents API is CONSTRUCTED SERVER-SIDE,
+        # which is the precondition for GitHub signing it with its own key. Same
+        # content, same branch, same PR — the difference is who assembles the
+        # commit object.
+        #
+        # ⚠ "written through the API" does NOT by itself imply "signed". Verified
+        # on 2026-07-28 from a session whose Contents API write came back
+        # `%G? = N` (no signature at all) while GitHub's own squash-merges on the
+        # same repo are signed as `GitHub <noreply@github.com>`. Signing depends
+        # on the authenticating identity, not merely on the endpoint. So this
+        # step CHECKS the resulting commit's verification instead of assuming it
+        # — the whole point is not to ship another proof whose precondition the
+        # implementation quietly fails to satisfy.
         if: ${{ inputs.dry_run == false }}
         env:
           # Prefer the App token; fall back to GITHUB_TOKEN (which works only if
           # the repo checkbox is enabled). Either way the step degrades to a
           # warning rather than failing a migration that already succeeded.
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          MIGRATION: ${{ inputs.migration }}
+          BASE_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          # NOT `-e`: every failure past this point must degrade to a warning.
+          # The migration has ALREADY applied and pushed, so a red run here would
+          # misreport succeeded work — the "green run that did nothing" confusion
+          # in reverse.
+          set -uo pipefail
+
           if git diff --quiet -- schema/mirror.live.sql; then
             echo "::notice::projection unchanged — no PR needed"
             exit 0
           fi
-          branch="schema/live-after-${{ inputs.migration }}"
-          branch="${branch%.sql}"
-          git config user.name "front-desk-mirror-migrate"
-          git config user.email "1240090+bdelanghe@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add schema/mirror.live.sql
-          git commit -m "schema: regenerate projection after ${{ inputs.migration }}"
-          git push -u origin "$branch"
+          branch="schema/live-after-${MIGRATION%.sql}"
+
+          degrade() {
+            echo "::warning::$1"
+            echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only publication failed."
+            echo "::warning::Regenerate locally with 'node scripts/schema-export.ts' and open the PR by hand."
+            {
+              echo "### ⚠ projection not published"
+              echo "The migration applied and pushed. \`schema/mirror.live.sql\` is stale on main"
+              echo "until someone regenerates it, so \`schema-drift\` will be red."
+              echo ""
+              echo "- reason: $1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+
+          # 1. The branch. Point it at the commit this run checked out, so the
+          #    projection diff is against the same tree the export ran on.
+          if ! gh api -X POST "repos/$REPO/git/refs" \
+                 -f ref="refs/heads/$branch" -f sha="$BASE_SHA" >/dev/null 2>&1; then
+            echo "::notice::branch $branch already exists — writing onto it"
+          fi
+
+          # 2. The Contents API needs the blob sha it is replacing, read from the
+          #    branch (not from main — they differ once the branch exists).
+          blob="$(gh api "repos/$REPO/contents/schema/mirror.live.sql?ref=$branch" --jq .sha)" \
+            || degrade "could not read the current projection blob on $branch"
+          [ -n "${blob:-}" ] || degrade "empty blob sha for schema/mirror.live.sql on $branch"
+
+          # 3. The write. GitHub assembles this commit, so GitHub can sign it.
+          commit="$(gh api -X PUT "repos/$REPO/contents/schema/mirror.live.sql" \
+            -f message="schema: regenerate projection after $MIGRATION" \
+            -f branch="$branch" \
+            -f sha="$blob" \
+            -f content="$(base64 -w0 schema/mirror.live.sql)" \
+            --jq .commit.sha)" \
+            || degrade "Contents API write failed"
+          # A 2xx with no commit sha would mean "wrote nothing" while looking
+          # like success — the exact failure shape this workflow already got
+          # burned by once, in the migration guard.
+          [ -n "${commit:-}" ] || degrade "Contents API returned no commit sha"
+          echo "::notice::wrote projection as $commit on $branch"
+
+          # 4. Verify, do not assume. An unsigned commit here is not fatal — the
+          #    content is right and a human can still merge with a bypass — but it
+          #    must be VISIBLE, because the symptom otherwise appears much later
+          #    as an unexplained blocked merge.
+          v="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.verified')"
+          if [ "$v" = "true" ]; then
+            echo "::notice::$commit is signed and verified — mergeable under the signature rule"
+          else
+            why="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.reason')"
+            echo "::warning::$commit is NOT verified (reason: ${why:-unknown})."
+            echo "::warning::A 'Commits must have verified signatures' rule will BLOCK this PR."
+            echo "::warning::Signing depends on the identity that authenticated, so check which"
+            echo "::warning::credential this step ran under: '${{ steps.apptoken.outputs.token && 'App token' || 'GITHUB_TOKEN' }}'."
+            {
+              echo "### ⚠ projection commit is unsigned"
+              echo "\`$commit\` came back \`verified: false\` (\`${why:-unknown}\`)."
+              echo "If main requires verified signatures this PR cannot merge without a bypass."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           cat > /tmp/pr-body.md <<'BODY'
           Generated by `mirror-migrate` after applying a migration to the deployed mirror.
 
@@ -298,8 +389,14 @@ jobs:
           # in which case gh exits non-zero with
           #   GraphQL: GitHub Actions is not permitted to create or approve
           #   pull requests (createPullRequest)
-          # The branch is pushed regardless, so a human can open the PR.
+          # The branch exists regardless, so a human can open the PR.
+          #
+          # --head/--base are REQUIRED here. gh infers them from the checked-out
+          # branch, and since the commit is now written through the API this job
+          # never checks the branch out — it is still sitting on the commit that
+          # actions/checkout left. Without --head, gh would target main.
           if gh pr create --draft \
+               --head "$branch" --base "${{ github.ref_name }}" \
                --title "schema: projection after ${{ inputs.migration }}" \
                --body-file /tmp/pr-body.md; then
             echo "::notice::projection PR opened"
