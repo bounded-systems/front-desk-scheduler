@@ -143,6 +143,30 @@ export interface WriteResult {
  * an INSERT IGNORE that collided — the difference between winning and losing a
  * latch.
  */
+/**
+ * Dolt is OPTIMISTICALLY concurrent: under contention a statement can fail with
+ * SQLSTATE 40001 ("serialization failure ... try restarting transaction")
+ * rather than blocking. The engine still adjudicates atomically — it asks the
+ * loser to retry instead of queueing it. Retrying preserves S1 because each
+ * retry is itself atomic against the PRIMARY KEY; an INSERT IGNORE that reruns
+ * after someone else won simply ignores, and the read-back names the winner.
+ * The race test surfaced this on its first contended run (16 claimants).
+ */
+async function withSerializationRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let delay = 25;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const isRetryable = (e as { sqlState?: string }).sqlState === "40001" ||
+        /serialization failure|try restarting transaction/i.test(String((e as { sqlMessage?: string }).sqlMessage ?? e));
+      if (!isRetryable || attempt >= 7) throw e;
+      await new Promise((r) => setTimeout(r, delay + Math.floor(Math.random() * delay)));
+      delay = Math.min(delay * 2, 400);
+    }
+  }
+}
+
 export async function writeAndCommit(
   statements: readonly string[],
   message: string,
@@ -155,17 +179,32 @@ export async function writeAndCommit(
   try {
     const results: WriteResult[] = [];
     for (const sql of statements) {
-      const [r] = await conn.query(sql);
+      const [r] = await withSerializationRetry(() => conn.query(sql));
       results.push({ affectedRows: (r as { affectedRows?: number }).affectedRows ?? 0 });
     }
-    // Commit only if this session actually changed something; DOLT_COMMIT errors
-    // on an empty diff, and a lost latch legitimately changes nothing.
-    const [dirty] = await conn.query("SELECT COUNT(*) AS n FROM dolt_status");
-    if (Number((dirty as { n: number }[])[0]?.n ?? 0) > 0) {
-      await conn.query("CALL DOLT_ADD('-A')");
-      await conn.query(
-        `CALL DOLT_COMMIT('-m', ${conn.escape(message)}, '--author', ${conn.escape(author)})`,
-      );
+    // Attempt the commit and treat "nothing to commit" as benign — NOT a
+    // pre-check. The obvious guard (read dolt_status, commit if dirty) is
+    // itself a check-then-act race: on a sql-server the WORKING SET IS SHARED
+    // across sessions, so N racing claimants all observe "dirty", one commit
+    // sweeps the set clean, and the rest die on 'nothing to commit'. The race
+    // test caught exactly that on its first run. A lost latch also legitimately
+    // changes nothing. Either way, an empty commit is a non-event, not an error.
+    //
+    // Known blur under contention, accepted deliberately: a commit can sweep up
+    // another session's concurrent uncommitted rows, so the COMMIT author is
+    // "whoever committed first", not necessarily who wrote each row. Row-level
+    // attribution is intact regardless — leases.agent / claims.agent carry it —
+    // and the alternative (a branch per session + merge) buys precision the
+    // audit does not need at the price of a merge protocol.
+    try {
+      await withSerializationRetry(async () => {
+        await conn.query("CALL DOLT_ADD('-A')");
+        await conn.query(
+          `CALL DOLT_COMMIT('-m', ${conn.escape(message)}, '--author', ${conn.escape(author)})`,
+        );
+      });
+    } catch (e) {
+      if (!/nothing to commit/i.test(String((e as { sqlMessage?: string }).sqlMessage ?? e))) throw e;
     }
     return results;
   } finally {

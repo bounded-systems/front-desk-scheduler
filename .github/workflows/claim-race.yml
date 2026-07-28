@@ -1,0 +1,83 @@
+name: claim-race
+# The empirical A1/A2 gate: race real concurrent claimants against a real
+# dolt sql-server and require exactly one winner.
+#
+# Three proof systems (TLA+, loom, Lean) establish that an ATOMIC latch upholds
+# S1 — and all three ASSUME the engine supplies the atomicity. The original S1
+# bug was precisely an implementation quietly failing a proof's precondition,
+# and this test's first-ever run caught two more bugs of the same species in the
+# A2 seam (a TOCTOU commit guard; unhandled optimistic-concurrency retries).
+# Models bound the design; only an experiment binds the deployment.
+#
+# Scratch server, not the GHCR image: the race needs a WRITABLE database seeded
+# from schema/mirror.sql, whereas the image serves a read replica of the public
+# mirror. No credential, no network beyond installs.
+on:
+  pull_request:
+    paths:
+      - "src/mirror.ts"
+      - "src/dolt-server.ts"
+      - "src/scheduling.ts"
+      - "schema/**"
+      - "scripts/claim-race.ts"
+      - ".github/workflows/claim-race.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/mirror.ts"
+      - "src/dolt-server.ts"
+      - "src/scheduling.ts"
+      - "schema/**"
+      - "scripts/claim-race.ts"
+      - ".github/workflows/claim-race.yml"
+  workflow_dispatch: {}
+concurrency:
+  group: claim-race-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      - name: Install deno + deps from the lock
+        run: |
+          curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y
+          "$HOME/.deno/bin/deno" install --frozen
+      - name: Install dolt
+        run: |
+          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          dolt version
+      - name: Seed a scratch mirror and start a sql-server
+        run: |
+          set -euo pipefail
+          dolt config --global --add user.name "claim-race"
+          dolt config --global --add user.email "race@front-desk"
+          mkdir -p /tmp/race/mirror && cd /tmp/race/mirror
+          dolt init -b main
+          dolt sql < "$GITHUB_WORKSPACE/schema/mirror.sql"
+          dolt sql -q "INSERT INTO items (item_id,number,title,repository,status,kind) VALUES ('race#1',1,'contended item','prx','Todo','task')"
+          cd /tmp/race
+          nohup dolt sql-server --host 127.0.0.1 --port 3311 >server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h127.0.0.1 -P3311 -uroot --silent 2>/dev/null; then break; fi; sleep 1
+          done
+          echo "server up"
+      - name: "Race: 16 agents, then 32"
+        env:
+          DOLT_HOST: 127.0.0.1
+          DOLT_PORT: "3311"
+          DOLT_DB: mirror
+          DOLT_USER: root
+          DOLT_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          node scripts/claim-race.ts
+          RACE_AGENTS=32 node scripts/claim-race.ts
+      - name: Server log on failure
+        if: failure()
+        run: tail -50 /tmp/race/server.log || true

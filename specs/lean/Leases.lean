@@ -46,6 +46,15 @@ abbrev Agent := Nat
      actively breaks. A1 needs one statement to be atomic against a key. That is
      a much smaller thing to be wrong about.
 
+     EMPIRICALLY TESTED since 2026-07-28: scripts/claim-race.ts races N real
+     concurrent claimants against a running dolt sql-server and requires
+     exactly one winner (CI: claim-race.yml). Its first run caught two bugs of
+     exactly the species this file warns about — a TOCTOU commit guard in the
+     seam, and unhandled optimistic-concurrency retries (Dolt surfaces
+     contention as SQLSTATE 40001 rather than blocking; each retry is still
+     atomic, so S1 is preserved). Models bound the design; the experiment
+     binds the deployment.
+
   A2 (SINGLE SERIALIZATION POINT). All claimants must latch against the SAME
      database. A PRIMARY KEY excludes a second row within one database; it says
      nothing across replicas. If two workers each write to their own local Dolt
