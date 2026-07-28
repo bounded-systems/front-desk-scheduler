@@ -32,13 +32,29 @@ name: mirror-migrate
 #      broker's GH_APPS allowlist for app `front-desk`, so this workflow can
 #      mint an App installation token and open the PR as the App.
 #
-#      STATUS 2026-07-28 — allowlist DONE, App permission NOT. Run 30373059795
-#      minted the App token successfully (broker side works), then `gh pr create`
-#      failed with:
+#      STATUS 2026-07-28 — allowlist DONE. Run 30373059795 minted the App token
+#      successfully, then `gh pr create` failed with:
 #        GraphQL: Resource not accessible by integration (createPullRequest)
-#      That is the App installation lacking `Pull requests: write` on this repo.
 #      The migration applied and pushed; only the PR step degraded, and the
 #      branch was pushed so a human could open it (PR #27).
+#
+#      WHERE THAT ERROR ACTUALLY COMES FROM — not the App settings page, which
+#      is where it sends you. The broker scopes the installation token DOWN to
+#      the `permissions` map in its GH_APPS registry (bounded-systems/infra,
+#      cloudflare/broker/wrangler.jsonc); it passes that map as the body of
+#      POST /app/installations/{id}/access_tokens. The front-desk entry listed
+#      organization_projects/issues/metadata and no pull_requests, so the token
+#      could not open a PR no matter what the installation itself holds.
+#      Fixed in bounded-systems/infra#38; takes effect on the next broker deploy.
+#
+#      The two failure modes are cleanly separable, which is worth remembering:
+#        mint SUCCEEDS then the API 403s  → the broker didn't ask for the scope
+#                                           (fix: GH_APPS in infra)
+#        mint FAILS outright (no token)   → the installation doesn't have it
+#                                           (fix: grant it on the App, then
+#                                           ACCEPT the pending permission update
+#                                           on the installation — declaring it
+#                                           on the App alone changes nothing)
 #
 #      ⚠ Note the fallback below is NOT a retry. `GH_TOKEN` is
 #      `${{ steps.apptoken.outputs.token || github.token }}`, which resolves at
@@ -315,9 +331,13 @@ jobs:
             echo "::warning::step succeeded, GITHUB_TOKEN was NEVER TRIED. Only one attempt happened."
             echo "::warning::"
             echo "::warning::Read the gh error above — the two failure modes need opposite fixes:"
-            echo "::warning::  'Resource not accessible by integration' → the Front Desk App lacks"
-            echo "::warning::     'Pull requests: write' on this repo. Fix it on the App installation."
-            echo "::warning::     Enabling the Actions checkbox below will NOT help."
+            echo "::warning::  'Resource not accessible by integration' → the minted token lacks"
+            echo "::warning::     pull_requests. The broker scopes the token DOWN to the permissions"
+            echo "::warning::     map in GH_APPS (bounded-systems/infra, cloudflare/broker/"
+            echo "::warning::     wrangler.jsonc) — fix it THERE, not on the App settings page,"
+            echo "::warning::     then redeploy the broker. Enabling the Actions checkbox below"
+            echo "::warning::     will NOT help. (If instead the MINT failed and no token came"
+            echo "::warning::     back, that is the installation genuinely lacking the grant.)"
             echo "::warning::  'GitHub Actions is not permitted to create or approve pull requests'"
             echo "::warning::     → the org/repo setting. Prefer fixing the App instead: that checkbox"
             echo "::warning::     bundles 'approve' with 'create' and would let workflows self-approve."
