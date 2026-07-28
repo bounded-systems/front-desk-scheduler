@@ -22,7 +22,7 @@ function raw(over: Partial<RawItem> & { item_id: string; number: number }): RawI
 function mockReads(items: RawItem[], edges: RawTypedEdge[]): SchedulerReads {
   return {
     source: "server",
-    readScheduling: async () => [] as SchedulingItem[],
+    readScheduling: async () => ({ items: [] as SchedulingItem[], at: null }),
     readTypedEdges: async () => edges,
     readAllItems: async () => items,
     meta: async () => ({ syncedAt: "2026-07-26T00:00:00Z", commit: "abc", source: "server" }),

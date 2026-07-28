@@ -33,9 +33,9 @@ import {
   readScheduling as serverScheduling,
   readTypedEdges as serverTypedEdges,
 } from "./dolt-server.ts";
-import type { RawItem, RawTypedEdge, SchedulingItem } from "./scheduling.ts";
+import type { RawItem, RawTypedEdge, ScheduleRead, SchedulingItem } from "./scheduling.ts";
 
-export type { SchedulingItem };
+export type { ScheduleRead, SchedulingItem };
 
 export type ReadSource = "local" | "dolthub" | "server";
 
@@ -47,7 +47,8 @@ export interface ReadMeta {
 
 export interface SchedulerReads {
   readonly source: ReadSource;
-  readScheduling(): Promise<SchedulingItem[]>;
+  /** The queue AND the commit it was derived from — see ScheduleRead. */
+  readScheduling(): Promise<ScheduleRead>;
   /** Typed dep edges (with edge_type) — the GH-canonical dep-graph source. */
   readTypedEdges(): Promise<RawTypedEdge[]>;
   /** ALL items incl Done — the `bd list --all` replacement (the `list` verb). */
@@ -68,7 +69,9 @@ export const dolthubReads: SchedulerReads = {
 
 export const localDoltReads: SchedulerReads = {
   source: "local",
-  readScheduling: () => readMirrorScheduling(),
+  // The local clone has no pinning story (dsql is a process per statement), so
+  // it reports `at: null` — honestly "cannot say", not a fabricated stamp.
+  readScheduling: async () => ({ items: await readMirrorScheduling(), at: null }),
   readTypedEdges: () => readMirrorTypedEdges(),
   readAllItems: () => readMirrorAllItems(),
   meta: async () => {
