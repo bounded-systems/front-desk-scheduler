@@ -26,8 +26,10 @@ CREATE TABLE `claims` (
   `ttl_sec` int NOT NULL,
   `released_at` datetime,
   `status` enum('active','released','completed','expired') NOT NULL DEFAULT '1',
+  `fencing` int,
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`,`status`),
+  UNIQUE KEY `uq_claim_item_fencing` (`item_id`,`fencing`),
   CONSTRAINT `fk_claim_item` FOREIGN KEY (`item_id`) REFERENCES `items` (`item_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
