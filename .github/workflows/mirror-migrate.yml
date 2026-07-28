@@ -28,6 +28,14 @@ name: mirror-migrate
 #      Dispatch alone must not be able to mutate the production database; the
 #      reviewer gate is the actual control, and the environment claim is signed
 #      by GitHub so it cannot be forged.
+#   3. (for the projection PR only) Add the same job_workflow_ref to the
+#      broker's GH_APPS allowlist for app `front-desk`, so this workflow can
+#      mint an App installation token and open the PR as the App. Without it
+#      the run still applies and pushes the migration — it only warns and
+#      leaves the branch for a human to open. Never enable the repo checkbox
+#      "Allow GitHub Actions to create and approve pull requests" as a
+#      substitute: it bundles create WITH approve, letting any workflow
+#      self-approve PRs and undercutting the CODEOWNERS gate.
 on:
   workflow_dispatch:
     inputs:
@@ -176,10 +184,52 @@ jobs:
         if: ${{ inputs.dry_run == false }}
         run: node scripts/schema-export.ts
 
+      - name: Front Desk App token (via OIDC broker)
+        # `gh pr create` with the Actions GITHUB_TOKEN is refused when the org
+        # disables "Allow GitHub Actions to create and approve pull requests":
+        #   GraphQL: GitHub Actions is not permitted to create or approve pull
+        #   requests (createPullRequest)
+        # A GitHub App installation token is NOT subject to that restriction, and
+        # it is how mirror-sync.yml already authenticates — so the PR is opened by
+        # the Front Desk App rather than by github-actions[bot], with App identity
+        # in the audit trail. Crucially this ALSO avoids enabling the repo
+        # checkbox, which bundles "create" together with "approve" and would let
+        # any workflow self-approve PRs — undermining the CODEOWNERS gate.
+        #
+        # Minted LATE, immediately before use: the migration has already applied
+        # by this point, so a token failure cannot cost us the write.
+        #
+        # ⚠ Requires this workflow's job_workflow_ref on the broker's GH_APPS
+        # allowlist for app `front-desk`. Until that is deployed the step below
+        # falls back to GITHUB_TOKEN and then to a warning — it never fails the
+        # run, because the migration itself has already succeeded.
+        id: apptoken
+        if: ${{ inputs.dry_run == false }}
+        continue-on-error: true
+        env:
+          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+        run: |
+          set -uo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::warning::FRONT_DESK_BROKER_URL not set"; exit 0; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')" || true
+          [ -n "${jwt:-}" ] || { echo "::warning::could not obtain an OIDC token for the App broker"; exit 0; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')" || true
+          if [ -z "${tok:-}" ]; then
+            echo "::warning::broker returned no App token (is mirror-migrate.yml on the GH_APPS allowlist?)"
+            exit 0
+          fi
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
       - name: Open the PR that records the new reality
         if: ${{ inputs.dry_run == false }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Prefer the App token; fall back to GITHUB_TOKEN (which works only if
+          # the repo checkbox is enabled). Either way the step degrades to a
+          # warning rather than failing a migration that already succeeded.
+          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
         run: |
           set -euo pipefail
           if git diff --quiet -- schema/mirror.live.sql; then
@@ -220,7 +270,8 @@ jobs:
                --body-file /tmp/pr-body.md; then
             echo "::notice::projection PR opened"
           else
-            echo "::warning::could not open the projection PR (Actions may be barred from creating PRs)."
+            echo "::warning::could not open the projection PR."
+            echo "::warning::Neither the broker App token nor GITHUB_TOKEN could create it."
             echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only the PR step failed."
             echo "::warning::Open it by hand from the pushed branch: $branch"
             echo "::warning::  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
