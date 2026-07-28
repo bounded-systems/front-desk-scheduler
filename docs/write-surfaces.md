@@ -123,8 +123,17 @@ fail-closed:
 
 | gate | enforced by | effect if absent |
 |---|---|---|
-| `job_workflow_ref` on the broker allowlist | the broker | 401, no credential |
+| `job_workflow_ref` on the broker's DoltHub allowlist | the broker | 401, no credential |
 | `mirror-write` Environment, required reviewers | GitHub | run waits for approval |
+| `job_workflow_ref` on the broker's GH_APPS allowlist | the broker | migration still applies; the projection PR is not opened, only warned |
+
+The projection PR is opened with a **GitHub App installation token from the
+broker**, not the Actions `GITHUB_TOKEN`. The latter is refused outright when an
+org disables "Allow GitHub Actions to create and approve pull requests" — and
+enabling that checkbox is the wrong fix, because GitHub bundles *create* with
+*approve*, which would let any workflow self-approve PRs and undercut the
+CODEOWNERS gate. An App token sidesteps the restriction and puts App identity in
+the audit trail instead of `github-actions[bot]`.
 
 Every workflow that writes the mirror shares the `mirror-write` concurrency
 group, so a migration cannot interleave with a sync push.
