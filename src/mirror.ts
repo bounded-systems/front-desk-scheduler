@@ -216,6 +216,7 @@ async function claimWrite(
   if (srv.writesGoToServer()) {
     return (await srv.writeAndCommit(statements, message, author)).map((r) => r.affectedRows);
   }
+  warnIfUnserialized(); // warn where the fallback actually engages, not before
   for (const sql of statements) await dsql(sql);
   return statements.map(() => -1); // local clone: affectedRows unavailable via CLI
 }
@@ -293,7 +294,6 @@ export async function claimNext(
   orderedIds: readonly string[],
   ttlSec = 3600,
 ): Promise<ClaimResult> {
-  warnIfUnserialized();
   await reapExpiredLeases();
   for (const itemId of orderedIds) {
     const id = sqlEscape(itemId);
