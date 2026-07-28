@@ -358,9 +358,26 @@ jobs:
 
           # 1. The branch. Point it at the commit this run checked out, so the
           #    projection diff is against the same tree the export ran on.
-          if ! gh api -X POST "repos/$REPO/git/refs" \
-                 -f ref="refs/heads/$branch" -f sha="$BASE_SHA" >/dev/null 2>&1; then
+          #
+          # ONLY "already exists" is benign. The first version of this treated
+          # EVERY failure as "already exists", so when the create actually failed
+          # the run printed "branch already exists — writing onto it" and then
+          # 404'd reading a branch that was never there. Run 30379222054: the
+          # migration applied, the step degraded, the summary said "publication
+          # failed", and the stated reason was the wrong one. Misreporting a
+          # permission error as a benign one is the same failure this file was
+          # already bitten by when a failing `dolt diff` read as an empty one.
+          if create_out="$(gh api -X POST "repos/$REPO/git/refs" \
+                             -f ref="refs/heads/$branch" -f sha="$BASE_SHA" 2>&1)"; then
+            echo "::notice::created branch $branch at $BASE_SHA"
+          elif grep -qi 'Reference already exists' <<<"$create_out"; then
             echo "::notice::branch $branch already exists — writing onto it"
+          else
+            # Most likely the token lacks `contents: write`. Note that the broker
+            # scopes an App token DOWN to its GH_APPS permissions map, so the fix
+            # is usually in bounded-systems/infra, not on the App settings page —
+            # the same discriminator recorded in the header for pull_requests.
+            degrade "could not create branch $branch: ${create_out//$'\n'/ }"
           fi
 
           # 2. The Contents API needs the blob sha it is replacing, read from the

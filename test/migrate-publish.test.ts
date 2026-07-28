@@ -74,3 +74,17 @@ test("every publication failure degrades — the migration has already applied",
   assert.match(step, /\[ -n "\$\{commit:-\}" \]/, "must reject a 2xx that returned no commit sha");
   assert.match(step, /\[ -n "\$\{blob:-\}" \]/, "and no blob sha");
 });
+
+test("a failed branch-create is not reported as 'already exists'", () => {
+  // Run 30379222054: the create-ref POST failed, the step announced "branch
+  // already exists — writing onto it", then 404'd reading a branch that had
+  // never existed. The migration applied, the run went green, and the summary
+  // named the wrong cause. Only the 422 is benign; everything else must degrade
+  // carrying the REAL error, because a misdiagnosis sends the reader elsewhere.
+  const step = publishStep();
+  assert.match(step, /Reference already exists/,
+    "must match on the specific 422 rather than on any failure");
+  assert.match(step, /degrade "could not create branch/,
+    "any other failure must degrade, not be swallowed");
+  assert.match(step, /\$\{create_out/, "and must surface the API's own error text");
+});
