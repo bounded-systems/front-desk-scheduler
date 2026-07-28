@@ -13,9 +13,9 @@
 -- Claiming is reap-then-INSERT-IGNORE-then-read-back; the loser collides on the
 -- key. `claims` keeps the history and is no longer load-bearing.
 --
--- NOT YET APPLIED to bounded-systems/front-desk-mirror. Apply with:
---   cd mirror && dolt sql < ../schema/migrations/2026-07-27-leases.sql \
---     && dolt commit -am "schema: structural S1 via leases table"
+-- APPLIED to bounded-systems/front-desk-mirror on 2026-07-28 11:48:51 UTC,
+-- commit by front-desk-mirror-migrate (see dolt_log). `leases` is live with
+-- PRIMARY KEY (item_id), so S1 is enforced by the engine in production.
 --
 -- Applied at most once: the runner records it in `schema_migrations` and skips
 -- a file already listed there. See .github/workflows/mirror-migrate.yml.

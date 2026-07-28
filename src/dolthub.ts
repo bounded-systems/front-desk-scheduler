@@ -61,8 +61,13 @@ export async function readScheduling(ref = "main"): Promise<SchedulingItem[]> {
   const [items, edges, leasedRows] = await Promise.all([
     query<RawItem>(SQL.items, ref),
     query<RawEdge>(SQL.edges, ref),
-    // Pre-migration mirrors have no `leases` table yet — reads must keep
-    // working on both sides of schema/migrations/2026-07-27-leases.sql.
+    // `leases` has existed on main since 2026-07-28, but this is NOT dead code:
+    // `ref` can name any historical Dolt commit, and reading the board as it
+    // stood before the migration is a permanent capability of a versioned
+    // database, not a transitional concern. Falling back to the claims-derived
+    // held set keeps historical reads working. READ-ONLY — the claim WRITE path
+    // deliberately has no fallback, since writing through the old shape would
+    // resurrect the unenforced-S1 bug.
     query<{ item_id: string }>(SQL.leases, ref).catch((e: unknown) =>
       /table not found: leases/.test(String(e)) ? query<{ item_id: string }>(SQL.leasesLegacy, ref) : Promise.reject(e)
     ),

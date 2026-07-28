@@ -206,9 +206,33 @@ jobs:
             echo "Migration: \`${{ inputs.migration }}\`"
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } >> /tmp/pr-body.md
-          gh pr create --draft \
-            --title "schema: projection after ${{ inputs.migration }}" \
-            --body-file /tmp/pr-body.md
+          # Degrade gracefully. The migration has ALREADY applied and pushed by
+          # this point — failing here would report a red run for work that
+          # actually succeeded, which is exactly the "green run that did
+          # nothing" confusion in reverse. Seen in production: the org may
+          # disable "Allow GitHub Actions to create and approve pull requests",
+          # in which case gh exits non-zero with
+          #   GraphQL: GitHub Actions is not permitted to create or approve
+          #   pull requests (createPullRequest)
+          # The branch is pushed regardless, so a human can open the PR.
+          if gh pr create --draft \
+               --title "schema: projection after ${{ inputs.migration }}" \
+               --body-file /tmp/pr-body.md; then
+            echo "::notice::projection PR opened"
+          else
+            echo "::warning::could not open the projection PR (Actions may be barred from creating PRs)."
+            echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only the PR step failed."
+            echo "::warning::Open it by hand from the pushed branch: $branch"
+            echo "::warning::  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
+            echo "::warning::Or enable: Settings → Actions → General → Workflow permissions →"
+            echo "::warning::  'Allow GitHub Actions to create and approve pull requests'."
+            {
+              echo "### ⚠ projection PR not opened"
+              echo "The migration applied and pushed. Open the PR manually:"
+              echo ""
+              echo "${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Summary
         if: always()
