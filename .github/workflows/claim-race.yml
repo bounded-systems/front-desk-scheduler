@@ -20,6 +20,7 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "worker/**"
       - ".github/workflows/claim-race.yml"
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - "src/scheduling.ts"
       - "schema/**"
       - "scripts/claim-race.ts"
+      - "worker/**"
       - ".github/workflows/claim-race.yml"
   workflow_dispatch: {}
 concurrency:
