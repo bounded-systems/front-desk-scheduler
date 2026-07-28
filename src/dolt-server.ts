@@ -93,3 +93,87 @@ export async function meta(): Promise<{ syncedAt: string; commit: string } | nul
     return { syncedAt: String(rows[0].synced_at), commit: head[0]?.commit_hash?.slice(0, 12) ?? "?" };
   });
 }
+
+// ── write seam (A2: the single serialization point) ──────────────────────────
+//
+// WHY THIS EXISTS
+//
+// `leases.item_id` is a PRIMARY KEY, so at most one lease row per item can
+// exist — WITHIN ONE DATABASE. src/mirror.ts writes by shelling out to
+// `dolt sql -q` against a LOCAL CLONE (MIRROR_DIR), so two agents on two
+// machines each latch their own copy, both read back their own name, and both
+// believe they hold the item. The conflict surfaces as a Dolt merge long after
+// both have started working. That is assumption A2 in specs/lean/Leases.lean,
+// stated there precisely because it is not discharged by the schema.
+//
+// A PRIMARY KEY is necessary and not sufficient: it needs every claimant to be
+// writing to the SAME database. This seam is how the claim path reaches one.
+//
+// SCOPE — deliberately only the claim path. The sync/push writes run solely
+// from GitHub Actions under the `mirror-write` concurrency group, so they are
+// already single-writer; routing them here would add a dependency for no
+// correctness gain. (mirror-sync-delta sits on its own group and can still race
+// the other two — a real but separate bug, not this one.)
+//
+// Unconfigured (no DOLT_HOST), `writesGoToServer()` is false and mirror.ts
+// keeps using the local clone. That is correct for single-agent development and
+// wrong for concurrent agents, which is exactly what the log line says.
+
+/** True when a server is configured — i.e. when claim writes can be serialized. */
+export function writesGoToServer(): boolean {
+  return Boolean(process.env.DOLT_HOST);
+}
+
+export interface WriteResult {
+  readonly affectedRows: number;
+}
+
+/**
+ * Run write statements against the shared server inside ONE connection, then
+ * commit them as a Dolt commit.
+ *
+ * The commit is not optional bookkeeping. On a `dolt sql-server`, a write lands
+ * in the session's working set; without DOLT_ADD + DOLT_COMMIT it never becomes
+ * a commit, and the claim stops being attributable — which is the specific
+ * property that justified putting the queue in Dolt at all. `author` is carried
+ * through so `dolt log` answers "which agent claimed this", not just "something
+ * changed".
+ *
+ * Returns each statement's affectedRows, so a caller can tell a real INSERT from
+ * an INSERT IGNORE that collided — the difference between winning and losing a
+ * latch.
+ */
+export async function writeAndCommit(
+  statements: readonly string[],
+  message: string,
+  author: string,
+): Promise<WriteResult[]> {
+  const c = serverConfig();
+  const conn = await createConnection({
+    host: c.host, port: c.port, user: c.user, password: c.password, database: c.database,
+  });
+  try {
+    const results: WriteResult[] = [];
+    for (const sql of statements) {
+      const [r] = await conn.query(sql);
+      results.push({ affectedRows: (r as { affectedRows?: number }).affectedRows ?? 0 });
+    }
+    // Commit only if this session actually changed something; DOLT_COMMIT errors
+    // on an empty diff, and a lost latch legitimately changes nothing.
+    const [dirty] = await conn.query("SELECT COUNT(*) AS n FROM dolt_status");
+    if (Number((dirty as { n: number }[])[0]?.n ?? 0) > 0) {
+      await conn.query("CALL DOLT_ADD('-A')");
+      await conn.query(
+        `CALL DOLT_COMMIT('-m', ${conn.escape(message)}, '--author', ${conn.escape(author)})`,
+      );
+    }
+    return results;
+  } finally {
+    await conn.end();
+  }
+}
+
+/** Read rows from the shared server (claim path read-back, inside the same seam). */
+export async function serverRows<T>(sql: string): Promise<T[]> {
+  return withConn(async (q) => (await q(sql)) as T[]);
+}
