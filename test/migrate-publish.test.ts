@@ -1,23 +1,24 @@
 /**
  * How mirror-migrate publishes the regenerated projection.
  *
- * Two separate failures shaped this step, and both are invisible in a green run:
+ * The publication logic no longer lives here. It is the org composite action
+ * bounded-systems/.github/.github/actions/signed-commit, pinned by SHA — derive,
+ * not copy. That move is the point of these tests: the ~100 lines this file used
+ * to assert on were a COPY of the action's ancestor, and the duplication was not
+ * theoretical. The "treat every branch-create failure as 'already exists'" bug
+ * had to be found once and fixed twice — here and in the action extracted from
+ * this very code (#31, .github#62).
  *
- *   1. `git commit` on the runner produces an UNSIGNED commit. Actions gives a
- *      job a token, not a signing key, so there is nothing to sign with. Once
- *      main required verified signatures, the projection PR (#27) could only be
- *      merged with a rule bypass. The fix is to have GitHub construct the commit
- *      server-side, via the Contents API.
+ * So what is pinned now is the CONTRACT between workflow and action, plus the
+ * things a caller can still get wrong on its own:
  *
- *   2. "written through the API" does NOT imply "signed" — verified empirically
- *      on 2026-07-28, when a Contents API write came back with no signature at
- *      all. Signing depends on the authenticating identity. So the step must
- *      CHECK the result rather than trust the endpoint; assuming it is the same
- *      class of mistake as a proof whose precondition nothing establishes.
- *
- * These assertions are deliberately about the workflow's SHAPE. There is no way
- * to exercise a GitHub-signed commit from a test, so what is pinned is that the
- * unsignable path is gone and the check that would catch its return is present.
+ *   1. the unsignable path stays gone — no `git commit` on the runner, which
+ *      cannot be signed because a job gets a token, not a signing key (#27)
+ *   2. the action is pinned to a SHA, not a moving ref
+ *   3. the CALLER owns failure policy, because by the time this step runs the
+ *      migration has already applied and pushed
+ *   4. the outcome is REPORTED — including "published nothing", which has twice
+ *      looked exactly like success here
  */
 
 import { strict as assert } from "node:assert";
@@ -29,62 +30,74 @@ const wf = readFileSync(
   "utf8",
 );
 
-/** The publication step: from its `- name:` to the start of the next step. */
-function publishStep(): string {
-  const from = wf.indexOf("      - name: Publish the projection");
-  assert.notEqual(from, -1, "the publication step must exist");
+/** A step, from its `- name:` to the start of the next one. */
+function step(nameStartsWith: string): string {
+  const from = wf.indexOf(`      - name: ${nameStartsWith}`);
+  assert.notEqual(from, -1, `step "${nameStartsWith}" must exist`);
   const to = wf.indexOf("\n      - name: ", from + 1);
   return wf.slice(from, to === -1 ? undefined : to);
 }
 
-test("the projection commit is built by GitHub, not by git on the runner", () => {
-  const step = publishStep();
-  assert.match(step, /gh api -X PUT "repos\/\$REPO\/contents\/schema\/mirror\.live\.sql"/,
-    "must write the projection through the Contents API");
-  // `git commit` is the specific thing that cannot be signed here.
-  assert.doesNotMatch(step, /^\s*git commit/m, "must not create the commit locally — it would be unsigned");
-  assert.doesNotMatch(step, /^\s*git push/m, "must not push a locally-built commit either");
+test("the projection commit is not built by git on the runner", () => {
+  assert.doesNotMatch(wf, /^\s*git commit/m, "must not create the commit locally — it would be unsigned");
+  assert.doesNotMatch(wf, /^\s*git push/m, "must not push a locally-built commit either");
 });
 
-test("the resulting commit's signature is verified, not assumed", () => {
-  const step = publishStep();
-  assert.match(step, /\.commit\.verification\.verified/, "must read back whether GitHub signed it");
-  assert.match(step, /\.commit\.verification\.reason/, "and surface WHY when it did not");
-  assert.match(step, /::warning::.*NOT verified/, "an unsigned result must be loud, not silent");
+test("publication is delegated to the org action, pinned to a SHA", () => {
+  const s = step("Publish the projection");
+  assert.match(
+    s,
+    /uses: bounded-systems\/\.github\/\.github\/actions\/signed-commit@[0-9a-f]{40}\b/,
+    "must use the shared action at a full 40-char SHA — not a branch or tag",
+  );
+  // The inline copy is what made one bug need two fixes.
+  assert.doesNotMatch(s, /gh api -X PUT/, "the inline Contents API write must be gone");
+  assert.doesNotMatch(s, /git\/refs/, "and the inline branch-create with it");
 });
 
-test("the PR names its head and base explicitly", () => {
-  // gh infers head from the checked-out branch. Since the commit is now written
-  // through the API, this job never checks the branch out — it is still on the
-  // commit actions/checkout left. Without --head, gh would target main.
-  const step = publishStep();
-  assert.match(step, /gh pr create[\s\S]*?--head "\$branch"/, "must state the head branch");
-  assert.match(step, /gh pr create[\s\S]*?--base /, "and the base");
+test("the caller owns the failure policy, not the action", () => {
+  // The action fails honestly. Here a failure must NOT fail the job: the
+  // migration has already applied and pushed, so a red run would misreport work
+  // that succeeded. Putting this policy inside the action is how its ancestor
+  // produced a green run that had published nothing.
+  const s = step("Publish the projection");
+  assert.match(s, /continue-on-error: true/, "must not fail an already-applied migration");
+  assert.match(s, /id: publish/, "and must be addressable, or its outcome cannot be reported");
 });
 
-test("every publication failure degrades — the migration has already applied", () => {
-  const step = publishStep();
-  // `set -e` here would turn "the write succeeded but the PR did not open" into
-  // a red run for work that actually landed in production.
-  assert.match(step, /set -uo pipefail/, "must not use -e");
-  assert.doesNotMatch(step, /set -euo/, "a failure here must not fail a migration that succeeded");
-  assert.match(step, /degrade\(\)/, "must define the degrade path");
-  // An empty-but-successful response is the failure shape this repo has already
-  // been bitten by (the guard that read a failing `dolt diff` as an empty one).
-  assert.match(step, /\[ -n "\$\{commit:-\}" \]/, "must reject a 2xx that returned no commit sha");
-  assert.match(step, /\[ -n "\$\{blob:-\}" \]/, "and no blob sha");
+test("what publication did is reported — including doing nothing", () => {
+  // Twice this workflow has produced a green run that published nothing: once
+  // from a guard that read a FAILING `dolt diff` as an empty one, once from a
+  // branch-create failure reported as "already exists". Silence is the bug.
+  const s = step("Report what publication did");
+  assert.match(s, /steps\.publish\.outcome/, "must branch on whether the action failed");
+  assert.match(s, /CHANGED/, "must distinguish 'published nothing' from 'published'");
+  assert.match(
+    s,
+    /THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY/,
+    "a publication failure must say what DID succeed, or it reads as a failed migration",
+  );
+  assert.match(s, /schema-drift/, "and must name the consequence");
 });
 
-test("a failed branch-create is not reported as 'already exists'", () => {
-  // Run 30379222054: the create-ref POST failed, the step announced "branch
-  // already exists — writing onto it", then 404'd reading a branch that had
-  // never existed. The migration applied, the run went green, and the summary
-  // named the wrong cause. Only the 422 is benign; everything else must degrade
-  // carrying the REAL error, because a misdiagnosis sends the reader elsewhere.
-  const step = publishStep();
-  assert.match(step, /Reference already exists/,
-    "must match on the specific 422 rather than on any failure");
-  assert.match(step, /degrade "could not create branch/,
-    "any other failure must degrade, not be swallowed");
-  assert.match(step, /\$\{create_out/, "and must surface the API's own error text");
+test("the signature is reported, not assumed — even though the endpoint guarantees it", () => {
+  // createCommitOnBranch is documented to produce signed commits, so this should
+  // always be true. Checked anyway: a guarantee is a claim about someone else's
+  // system, and the identity here — a broker-minted App token — is one nothing
+  // has exercised. An unsigned result would be real information, not noise.
+  const s = step("Report what publication did");
+  assert.match(s, /VERIFIED/, "must read the action's verified output");
+  assert.match(s, /REASON/, "and the reason");
+  assert.match(s, /::warning::.*NOT verified/, "an unsigned commit must be loud");
+});
+
+test("the PR body's backticks are escaped inside the heredoc", () => {
+  // Unescaped, a backtick in a double-quoted string is COMMAND SUBSTITUTION:
+  // bash runs the migration filename and substitutes its output, so the line
+  // renders as "Migration:" with the value silently gone. Valid syntax, wrong
+  // semantics — `bash -n` cannot catch it, and `set -e` does not fire because
+  // echo succeeds regardless. Caught exactly this way on 2026-07-28.
+  const s = step("Build the PR body");
+  assert.match(s, /echo "Migration: \\`/, "the backtick must be escaped");
+  assert.doesNotMatch(s, /echo "Migration: [^\\]`/, "an unescaped backtick would execute the value");
 });

@@ -298,128 +298,10 @@ jobs:
           echo "::add-mask::$tok"
           echo "token=$tok" >> "$GITHUB_OUTPUT"
 
-      - name: Publish the projection and open the PR that records the new reality
-        # WHY THE COMMIT IS WRITTEN THROUGH THE API AND NOT WITH `git commit`
-        # -----------------------------------------------------------------
-        # This step used to `git config user.*`, `git commit`, `git push`. That
-        # produces an UNSIGNED commit, because Actions hands a job a token, not a
-        # signing key — there is nothing on the runner to sign with. When the
-        # `Commits must have verified signatures` rule was turned on for main,
-        # PR #27 was blocked and had to be merged with a rule bypass.
-        #
-        # A commit created through the Contents API is CONSTRUCTED SERVER-SIDE,
-        # which is the precondition for GitHub signing it with its own key. Same
-        # content, same branch, same PR — the difference is who assembles the
-        # commit object.
-        #
-        # ⚠ "written through the API" does NOT by itself imply "signed". Verified
-        # on 2026-07-28 from a session whose Contents API write came back
-        # `%G? = N` (no signature at all) while GitHub's own squash-merges on the
-        # same repo are signed as `GitHub <noreply@github.com>`. Signing depends
-        # on the authenticating identity, not merely on the endpoint. So this
-        # step CHECKS the resulting commit's verification instead of assuming it
-        # — the whole point is not to ship another proof whose precondition the
-        # implementation quietly fails to satisfy.
+      - name: Build the PR body
         if: ${{ inputs.dry_run == false }}
-        env:
-          # Prefer the App token; fall back to GITHUB_TOKEN (which works only if
-          # the repo checkbox is enabled). Either way the step degrades to a
-          # warning rather than failing a migration that already succeeded.
-          GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
-          REPO: ${{ github.repository }}
-          MIGRATION: ${{ inputs.migration }}
-          BASE_SHA: ${{ github.sha }}
         run: |
-          # NOT `-e`: every failure past this point must degrade to a warning.
-          # The migration has ALREADY applied and pushed, so a red run here would
-          # misreport succeeded work — the "green run that did nothing" confusion
-          # in reverse.
-          set -uo pipefail
-
-          if git diff --quiet -- schema/mirror.live.sql; then
-            echo "::notice::projection unchanged — no PR needed"
-            exit 0
-          fi
-          branch="schema/live-after-${MIGRATION%.sql}"
-
-          degrade() {
-            echo "::warning::$1"
-            echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only publication failed."
-            echo "::warning::Regenerate locally with 'node scripts/schema-export.ts' and open the PR by hand."
-            {
-              echo "### ⚠ projection not published"
-              echo "The migration applied and pushed. \`schema/mirror.live.sql\` is stale on main"
-              echo "until someone regenerates it, so \`schema-drift\` will be red."
-              echo ""
-              echo "- reason: $1"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          }
-
-          # 1. The branch. Point it at the commit this run checked out, so the
-          #    projection diff is against the same tree the export ran on.
-          #
-          # ONLY "already exists" is benign. The first version of this treated
-          # EVERY failure as "already exists", so when the create actually failed
-          # the run printed "branch already exists — writing onto it" and then
-          # 404'd reading a branch that was never there. Run 30379222054: the
-          # migration applied, the step degraded, the summary said "publication
-          # failed", and the stated reason was the wrong one. Misreporting a
-          # permission error as a benign one is the same failure this file was
-          # already bitten by when a failing `dolt diff` read as an empty one.
-          if create_out="$(gh api -X POST "repos/$REPO/git/refs" \
-                             -f ref="refs/heads/$branch" -f sha="$BASE_SHA" 2>&1)"; then
-            echo "::notice::created branch $branch at $BASE_SHA"
-          elif grep -qi 'Reference already exists' <<<"$create_out"; then
-            echo "::notice::branch $branch already exists — writing onto it"
-          else
-            # Most likely the token lacks `contents: write`. Note that the broker
-            # scopes an App token DOWN to its GH_APPS permissions map, so the fix
-            # is usually in bounded-systems/infra, not on the App settings page —
-            # the same discriminator recorded in the header for pull_requests.
-            degrade "could not create branch $branch: ${create_out//$'\n'/ }"
-          fi
-
-          # 2. The Contents API needs the blob sha it is replacing, read from the
-          #    branch (not from main — they differ once the branch exists).
-          blob="$(gh api "repos/$REPO/contents/schema/mirror.live.sql?ref=$branch" --jq .sha)" \
-            || degrade "could not read the current projection blob on $branch"
-          [ -n "${blob:-}" ] || degrade "empty blob sha for schema/mirror.live.sql on $branch"
-
-          # 3. The write. GitHub assembles this commit, so GitHub can sign it.
-          commit="$(gh api -X PUT "repos/$REPO/contents/schema/mirror.live.sql" \
-            -f message="schema: regenerate projection after $MIGRATION" \
-            -f branch="$branch" \
-            -f sha="$blob" \
-            -f content="$(base64 -w0 schema/mirror.live.sql)" \
-            --jq .commit.sha)" \
-            || degrade "Contents API write failed"
-          # A 2xx with no commit sha would mean "wrote nothing" while looking
-          # like success — the exact failure shape this workflow already got
-          # burned by once, in the migration guard.
-          [ -n "${commit:-}" ] || degrade "Contents API returned no commit sha"
-          echo "::notice::wrote projection as $commit on $branch"
-
-          # 4. Verify, do not assume. An unsigned commit here is not fatal — the
-          #    content is right and a human can still merge with a bypass — but it
-          #    must be VISIBLE, because the symptom otherwise appears much later
-          #    as an unexplained blocked merge.
-          v="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.verified')"
-          if [ "$v" = "true" ]; then
-            echo "::notice::$commit is signed and verified — mergeable under the signature rule"
-          else
-            why="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.reason')"
-            echo "::warning::$commit is NOT verified (reason: ${why:-unknown})."
-            echo "::warning::A 'Commits must have verified signatures' rule will BLOCK this PR."
-            echo "::warning::Signing depends on the identity that authenticated, so check which"
-            echo "::warning::credential this step ran under: '${{ steps.apptoken.outputs.token && 'App token' || 'GITHUB_TOKEN' }}'."
-            {
-              echo "### ⚠ projection commit is unsigned"
-              echo "\`$commit\` came back \`verified: false\` (\`${why:-unknown}\`)."
-              echo "If main requires verified signatures this PR cannot merge without a bypass."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
+          set -euo pipefail
           cat > /tmp/pr-body.md <<'BODY'
           Generated by `mirror-migrate` after applying a migration to the deployed mirror.
 
@@ -432,52 +314,80 @@ jobs:
             echo "Migration: \`${{ inputs.migration }}\`"
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } >> /tmp/pr-body.md
-          # Degrade gracefully. The migration has ALREADY applied and pushed by
-          # this point — failing here would report a red run for work that
-          # actually succeeded, which is exactly the "green run that did
-          # nothing" confusion in reverse. Seen in production: the org may
-          # disable "Allow GitHub Actions to create and approve pull requests",
-          # in which case gh exits non-zero with
-          #   GraphQL: GitHub Actions is not permitted to create or approve
-          #   pull requests (createPullRequest)
-          # The branch exists regardless, so a human can open the PR.
-          #
-          # --head/--base are REQUIRED here. gh infers them from the checked-out
-          # branch, and since the commit is now written through the API this job
-          # never checks the branch out — it is still sitting on the commit that
-          # actions/checkout left. Without --head, gh would target main.
-          if gh pr create --draft \
-               --head "$branch" --base "${{ github.ref_name }}" \
-               --title "schema: projection after ${{ inputs.migration }}" \
-               --body-file /tmp/pr-body.md; then
-            echo "::notice::projection PR opened"
-          else
-            echo "::warning::could not open the projection PR."
-            echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY — only the PR step failed."
-            echo "::warning::Open it by hand from the pushed branch: $branch"
-            echo "::warning::  ${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
-            echo "::warning::"
-            echo "::warning::WHICH credential failed — GH_TOKEN above is ONE of these, not both:"
-            echo "::warning::  '${{ steps.apptoken.outputs.token && 'App token' || 'GITHUB_TOKEN' }}' was used."
-            echo "::warning::The '||' in GH_TOKEN resolves at expression time, so if the App token"
-            echo "::warning::step succeeded, GITHUB_TOKEN was NEVER TRIED. Only one attempt happened."
-            echo "::warning::"
-            echo "::warning::Read the gh error above — the two failure modes need opposite fixes:"
-            echo "::warning::  'Resource not accessible by integration' → the minted token lacks"
-            echo "::warning::     pull_requests. The broker scopes the token DOWN to the permissions"
-            echo "::warning::     map in GH_APPS (bounded-systems/infra, cloudflare/broker/"
-            echo "::warning::     wrangler.jsonc) — fix it THERE, not on the App settings page,"
-            echo "::warning::     then redeploy the broker. Enabling the Actions checkbox below"
-            echo "::warning::     will NOT help. (If instead the MINT failed and no token came"
-            echo "::warning::     back, that is the installation genuinely lacking the grant.)"
-            echo "::warning::  'GitHub Actions is not permitted to create or approve pull requests'"
-            echo "::warning::     → the org/repo setting. Prefer fixing the App instead: that checkbox"
-            echo "::warning::     bundles 'approve' with 'create' and would let workflows self-approve."
+
+      - name: Publish the projection and open its PR
+        # The publication logic lives in the org action now — derive, not copy.
+        # It used to be ~100 lines inlined here, and the duplication was not
+        # theoretical: the "treat every branch-create failure as 'already
+        # exists'" bug had to be found once and then fixed TWICE, in this file
+        # and in the action extracted from it (#31, .github#62).
+        #
+        # The action writes via GraphQL createCommitOnBranch — the mutation
+        # GitHub documents as producing SIGNED commits — rather than the Contents
+        # API, which is server-side but promises nothing about signing. That is
+        # what PR #27 ran into: an unsigned projection commit blocked by the
+        # signature rule and merged with a bypass. The action still READS the
+        # signature back, because a documented guarantee is a claim about someone
+        # else's system; `verified` below is the arbiter, not the mechanism.
+        #
+        # continue-on-error, and this is where that policy belongs: by the time
+        # this runs the migration has already applied and pushed, so failing the
+        # job would misreport work that succeeded. The action itself fails
+        # honestly; the caller decides what that costs.
+        id: publish
+        if: ${{ inputs.dry_run == false }}
+        continue-on-error: true
+        uses: bounded-systems/.github/.github/actions/signed-commit@bf15e558da0cb27364fc15090d80fc705e052e43
+        with:
+          path: schema/mirror.live.sql
+          branch: schema/live-after-${{ inputs.migration }}
+          base: ${{ github.ref_name }}
+          message: "schema: regenerate projection after ${{ inputs.migration }}"
+          token: ${{ steps.apptoken.outputs.token || github.token }}
+          pr-title: "schema: projection after ${{ inputs.migration }}"
+          pr-body-file: /tmp/pr-body.md
+          pr-draft: "false"
+
+      - name: Report what publication did
+        # The action degrades into outputs rather than log archaeology, so say
+        # plainly what happened — including the case this file has been bitten by
+        # twice: a step that looks fine while having published nothing.
+        if: ${{ inputs.dry_run == false }}
+        env:
+          CHANGED: ${{ steps.publish.outputs.changed }}
+          COMMIT: ${{ steps.publish.outputs.commit }}
+          VERIFIED: ${{ steps.publish.outputs.verified }}
+          REASON: ${{ steps.publish.outputs.reason }}
+          PR_URL: ${{ steps.publish.outputs.pr-url }}
+          OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "$OUTCOME" != "success" ]; then
+            echo "::warning::publication FAILED — read the action's error above."
+            echo "::warning::THE MIGRATION APPLIED AND PUSHED SUCCESSFULLY. Regenerate with"
+            echo "::warning::'node scripts/schema-export.ts' and open the PR by hand."
             {
-              echo "### ⚠ projection PR not opened"
-              echo "The migration applied and pushed. Open the PR manually:"
-              echo ""
-              echo "${{ github.server_url }}/${{ github.repository }}/compare/$branch?expand=1"
+              echo "### ⚠ projection not published"
+              echo "The migration applied and pushed; \`schema/mirror.live.sql\` is stale on"
+              echo "main until someone regenerates it, so \`schema-drift\` will be red."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${CHANGED:-false}" != "true" ]; then
+            echo "::notice::projection already matched the deployed schema — no PR needed"
+            exit 0
+          fi
+          echo "::notice::published $COMMIT${PR_URL:+ — $PR_URL}"
+          if [ "$VERIFIED" = "true" ]; then
+            echo "::notice::commit is signed and verified ($REASON) — mergeable under the signature rule"
+          else
+            echo "::warning::commit $COMMIT is NOT verified (${REASON:-unknown})."
+            echo "::warning::createCommitOnBranch is supposed to guarantee this, so an unsigned"
+            echo "::warning::result means the guarantee does not hold for the identity behind"
+            echo "::warning::'${{ steps.apptoken.outputs.token && 'the App token' || 'GITHUB_TOKEN' }}'. Worth knowing."
+            {
+              echo "### ⚠ projection commit is unsigned"
+              echo "\`$COMMIT\` came back \`verified: false\` (\`${REASON:-unknown}\`)."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
