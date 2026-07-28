@@ -13,9 +13,11 @@ name: lease-deploy
 # So the session does not deploy. It dispatches this, which runs with its own
 # pinned identity behind a reviewer gate and leaves the audit trail in Actions.
 #
-# NOTE the org's site-deploy.yml uses a STORED `secrets.CLOUDFLARE_API_TOKEN`.
-# That predates the broker and is the pattern being moved away from; it is not
-# the model here.
+# The org's site-deploy.yml took a STORED `secrets.CLOUDFLARE_API_TOKEN`, which
+# predates the broker. It is being migrated in bounded-systems/.github#64 — the
+# secret becomes optional and the broker is opt-in per caller, since it is a
+# reusable workflow whose callers cannot all be enumerated. So this is not a
+# lone exception to a house style; it is the direction both are moving.
 #
 # ⚠ SETUP REQUIRED — BOTH FAIL CLOSED, DELIBERATELY
 #
