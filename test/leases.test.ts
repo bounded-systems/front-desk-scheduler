@@ -144,5 +144,18 @@ test("the read plane derives the held set from leases, not from the claims log",
 test("claims stays an append-only record and carries a close-out column", () => {
   const body = ddlFor("claims");
   assert.match(body, /`released_at` datetime/, "a claim row must record a complete interval");
-  assert.doesNotMatch(body, /UNIQUE/, "claims is a log — uniqueness lives in leases");
+  // Uniqueness for EXCLUSION lives in leases, and nothing here may recreate the
+  // pre-2026-07-27 design (a predicate-shaped unique index over the log). The
+  // ONE permitted unique key is the projection's idempotency key — and it is
+  // harmless to S1 for the same reason the old design was useless for it: SQL
+  // uniqueness ignores NULLs, inline-written rows carry NULL fencing, so this
+  // key cannot exclude anything at claim time. It only stops the projector
+  // writing the same grant interval twice.
+  const uniques = [...body.matchAll(/UNIQUE KEY `([^`]+)` \(([^)]+)\)/g)];
+  assert.deepEqual(uniques.map((m) => m[1]), ["uq_claim_item_fencing"],
+    "exactly one unique key, and it is the projection's idempotency key");
+  assert.match(uniques[0][2], /`fencing`/,
+    "…which must include the NULL-able fencing ordinal, or it could exclude");
+  assert.doesNotMatch(body, /UNIQUE KEY [^(]*\(`item_id`, `status`\)/,
+    "the predicate-shaped index of the broken design must never return");
 });

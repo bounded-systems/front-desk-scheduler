@@ -40,10 +40,13 @@ import {
   decideRelease,
   decideRenew,
   describe,
+  effectiveStatus,
   EMPTY_STATE,
+  historyStep,
 } from "./lease-core.mjs";
 
 const STATE_KEY = "lease";
+const HISTORY_KEY = "history";
 
 export class LeaseObject {
   constructor(ctx) {
@@ -51,18 +54,34 @@ export class LeaseObject {
   }
 
   /**
-   * Load → decide → store, awaiting storage and NOTHING else.
+   * Load → decide → record → store, awaiting storage and NOTHING else.
    *
-   * Introducing any non-storage await between the get and the put would open
+   * Introducing any non-storage await between the get and the puts would open
    * the input gate and let a second request interleave — reintroducing exactly
    * the check-then-act race the whole design exists to remove. Keeping the
    * critical section in one function makes that reviewable in one place.
+   *
+   * The grant HISTORY is folded in the SAME critical section as the decision,
+   * so the record can never disagree with the state it records — the exclusion
+   * transition and its audit entry commit together or not at all. That is the
+   * DO-side half of "the log records decisions rather than being the decision"
+   * (docs/queue-vs-log.md): the record is written where the decision is
+   * serialized, and the Dolt row is derived from it later, idempotently.
    */
-  async applyTransition(decide) {
+  async applyTransition(type, request, decide) {
     const state = (await this.ctx.storage.get(STATE_KEY)) ?? EMPTY_STATE;
+    const history = (await this.ctx.storage.get(HISTORY_KEY)) ?? [];
     const now = Date.now();
     const { state: next, response } = decide(state, now);
-    if (next !== state) await this.ctx.storage.put(STATE_KEY, next);
+    if (next !== state) {
+      const nextHistory = historyStep(
+        history,
+        { type, request, before: state, after: next, response },
+        now,
+      );
+      await this.ctx.storage.put(STATE_KEY, next);
+      await this.ctx.storage.put(HISTORY_KEY, nextHistory);
+    }
     return response;
   }
 
@@ -79,27 +98,38 @@ export class LeaseObject {
 
     try {
       switch (url.pathname) {
-        case "/claim":
-          return json(
-            await this.applyTransition((s, now) =>
-              decideClaim(s, { agent: body.agent, ttlSec: body.ttl_sec }, now)
-            ),
-          );
-        case "/renew":
-          return json(
-            await this.applyTransition((s, now) =>
-              decideRenew(s, { agent: body.agent, fencing: body.fencing, ttlSec: body.ttl_sec }, now)
-            ),
-          );
-        case "/release":
-          return json(
-            await this.applyTransition((s, now) =>
-              decideRelease(s, { agent: body.agent, fencing: body.fencing }, now)
-            ),
-          );
+        case "/claim": {
+          const req = { agent: body.agent, ttlSec: body.ttl_sec, decidedAtCommit: body.decided_at_commit };
+          return json(await this.applyTransition("claim", req, (s, now) => decideClaim(s, req, now)));
+        }
+        case "/renew": {
+          const req = { agent: body.agent, fencing: body.fencing, ttlSec: body.ttl_sec };
+          return json(await this.applyTransition("renew", req, (s, now) => decideRenew(s, req, now)));
+        }
+        case "/release": {
+          const req = { agent: body.agent, fencing: body.fencing, status: body.status };
+          return json(await this.applyTransition("release", req, (s, now) => decideRelease(s, req, now)));
+        }
         case "/status": {
           const state = (await this.ctx.storage.get(STATE_KEY)) ?? EMPTY_STATE;
           return json(describe(state, Date.now()));
+        }
+        case "/history": {
+          // The projection's read surface. `since_fencing` lets a projector
+          // resume from its watermark — which is the PROJECTION ITSELF (max
+          // projected fencing per item), so there is no separate cursor to
+          // lose. `effective_status` is computed as-of-now on read: an
+          // 'active' record past its expiry reads as 'expired' without any
+          // write having happened, because expiry is a fact about the clock.
+          const since = Number(url.searchParams.get("since_fencing") ?? 0);
+          const history = (await this.ctx.storage.get(HISTORY_KEY)) ?? [];
+          const now = Date.now();
+          return json({
+            now,
+            records: history
+              .filter((r) => r.fencing > since)
+              .map((r) => ({ ...r, effective_status: effectiveStatus(r, now) })),
+          });
         }
         default:
           return json({ error: "not found" }, 404);

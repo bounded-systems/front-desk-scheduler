@@ -82,9 +82,18 @@ claim — the same status the PRIMARY KEY had while `DOLT_HOST` was unset.
 ## Order of work
 
 1. ✅ Split `claim-race` so the assumption is a failing test, not a vibe.
-2. Build the DO: claim / renew / release, monotonic fencing counter.
-3. Route `writesGoToServer()`'s successor at it.
-4. Projection writer, idempotent and replayable per the weakening above.
+2. ✅ Build the DO: claim / renew / release, monotonic fencing counter (#34).
+3. ✅ Route the claim path at it — `src/claim-plane.ts`, three named planes (#35).
+4. ✅ Projection writer (2026-07-29). Grants are recorded in the DO's history
+   in the SAME storage transaction as the decision, and projected into
+   `claims` keyed by `(item_id, fencing)` under a UNIQUE index —
+   `INSERT … ON DUPLICATE KEY UPDATE`, verified idempotent against real
+   Dolt before the design was committed. The watermark is THE PROJECTION
+   ITSELF (max projected fencing per item), so there is no cursor to lose
+   and a failed run is a catch-up by construction. Retention is what
+   replayability rests on: the DOs keep every record; pruning waits for a
+   projector acknowledgement design. `claim-race` phase 4 audits that
+   history agrees with the grants the race observed.
 5. Turn `production-a2` green — set `FDS_CLAIM_ENDPOINT` and watch it pass.
 
 Step 1 exists so that steps 2–4 have something to satisfy other than taste.

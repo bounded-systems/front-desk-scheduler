@@ -1,0 +1,148 @@
+name: lease-projection
+# Project the lease DOs' grant history into the Dolt mirror's `claims` table —
+# the derived half of docs/queue-vs-log.md ("the log records decisions rather
+# than being the decision").
+#
+# WHY A SCHEDULED WORKFLOW: same identity argument as mirror-sync/mirror-migrate.
+# Writing the mirror needs the brokered DoltHub credential, which only a pinned
+# workflow can mint. Sessions get a button; this workflow holds the identity.
+#
+# WHY IT IS SAFE TO RUN REPEATEDLY, LATE, OR AFTER A CRASH — the two properties
+# the projection was designed around, both verified against real Dolt before
+# any of this shipped:
+#   idempotent   rows are keyed (item_id, fencing) and upserted, so a re-run
+#                overwrites its own rows with identical truth;
+#   replayable   the watermark IS the projection (max projected fencing per
+#                item), so there is no cursor to lose — a failed run changes
+#                nothing and the next one catches up from the DOs, which retain
+#                every record.
+#
+# HONEST STATES, in the order they will occur:
+#   endpoint unset       → green NOTICE, zero work. Not a false green: no lease
+#                          plane means no lease-plane claims to project. This is
+#                          NOT production-a2 (which asserts a property that
+#                          SHOULD hold and is red until it does); absence of the
+#                          plane genuinely leaves this job nothing to do.
+#   401 from the broker  → RED: this file's job_workflow_ref is not on the
+#                          broker's allowlist yet (same posture as broker-drift).
+#   'Unknown column'     → RED with the named fix: apply
+#                          2026-07-29-claims-fencing.sql via mirror-migrate.
+#   partial DO reads     → RED: an incomplete projection is not committed as if
+#                          complete; the missed grants wait in their DOs.
+on:
+  schedule:
+    - cron: "29 */6 * * *" # offset from mirror-sync's 17 */6
+  workflow_dispatch: {}
+concurrency:
+  group: mirror-write # NEVER race the syncer or a migration on the mirror
+  cancel-in-progress: false
+permissions:
+  id-token: write # OIDC → broker (DoltHub credential)
+  contents: read
+jobs:
+  project:
+    runs-on: ubuntu-latest
+    env:
+      DOLTHUB_DB: bounded-systems/front-desk-mirror
+      FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      - name: Nothing to project without a lease plane
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::notice::FDS_CLAIM_ENDPOINT is unset — no lease plane deployed, no grants to project."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dolt
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: |
+          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          dolt version
+
+      - name: DoltHub credential (via OIDC broker)
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        env:
+          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          # Not `curl -f`: the broker's error body is the diagnosis (see
+          # broker-drift.yml — 401 allowlist, 404 route, 502 mint).
+          code="$(curl -sS -o /tmp/broker.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}/dolthub/front-desk-mirror" || echo 000)"
+          body="$(cat /tmp/broker.json 2>/dev/null || true)"
+          if [ "$code" != "200" ]; then
+            echo "::error::broker returned HTTP ${code}: ${body:0:400}"
+            [ "$code" = "401" ] && echo "::error::  → add THIS file's job_workflow_ref to the broker allowlist (audience dolthub-cred-broker)"
+            exit 1
+          fi
+          jwk="$(jq -r '.jwk // empty' <<<"$body")"
+          [ -n "$jwk" ] || { echo "::error::broker returned no DoltHub credential"; exit 1; }
+          umask 077; printf '%s' "$jwk" > /tmp/cred.jwk
+          dolt creds import /tmp/cred.jwk
+          rm -f /tmp/cred.jwk
+          dolt config --global --add user.name "front-desk-lease-projection"
+          dolt config --global --add user.email "1240090+bdelanghe@users.noreply.github.com"
+
+      - name: Force IPv4 for DoltHub remote API
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: |
+          set -euo pipefail
+          ip="$(dig +short A doltremoteapi.dolthub.com | grep -E '^[0-9.]+$' | head -1)"
+          [ -n "$ip" ] || { echo "::error::could not resolve doltremoteapi.dolthub.com"; exit 1; }
+          echo "$ip doltremoteapi.dolthub.com" | sudo tee -a /etc/hosts
+
+      - name: Clone mirror
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: dolt clone "$DOLTHUB_DB" mirror
+
+      - name: Project grant history into the clone
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        # No dependency install: the script imports only lease-client (fetch)
+        # and lease-projection (node:crypto via attest) — Node 24 strips the
+        # types natively, same as schema-drift.
+        run: node scripts/project-leases.ts --dir mirror
+
+      - name: Commit, attest, push
+        if: ${{ steps.gate.outputs.run == 'true' }}
+        run: |
+          set -euo pipefail
+          cd mirror
+          dolt add -A
+          # Empty-diff guard by NUMBERS, not by parsing diff output under
+          # pipefail — the guard that once read a failing diff as an empty one.
+          changed="$(dolt sql -r csv -q 'SELECT COUNT(*) AS n FROM dolt_status' | tail -1)"
+          if [ "${changed:-0}" -eq 0 ] 2>/dev/null; then
+            echo "::notice::projection already current — nothing to commit"
+            exit 0
+          fi
+          dolt commit -m "projection: lease grants from the DO plane"
+          cd ..
+          # Attest BEFORE push so the data commit and its attestation travel
+          # together — same ordering as mirror-migrate, same non-fatal posture:
+          # losing the row costs provenance, not correctness.
+          node scripts/attest.ts --dir mirror --audience dolthub-cred-broker || true
+          cd mirror && dolt push origin main
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### lease-projection"
+            echo "- lease plane: ${{ steps.gate.outputs.run == 'true' && 'configured' || 'not deployed (nothing to do)' }}"
+            echo ""
+            echo "Idempotent by (item_id, fencing); replayable because the DOs retain"
+            echo "every record and the watermark is the projection itself."
+          } >> "$GITHUB_STEP_SUMMARY"

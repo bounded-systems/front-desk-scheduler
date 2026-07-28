@@ -39,11 +39,15 @@ export interface ClaimPlane {
   /** True when this plane supplies a monotonic fencing token. Only `lease` does. */
   readonly fenced: boolean;
   /**
-   * True when a claim on this plane leaves a `leases`/`claims` row behind.
+   * True when a claim on this plane leaves a `leases`/`claims` row behind
+   * SYNCHRONOUSLY, at claim time.
    *
-   * False on `lease` until the projection writer exists: the DO is ground truth
-   * for exclusion and Dolt is a derived projection that nothing writes yet. The
-   * flag exists so an absent audit row cannot be mistaken for a lost one.
+   * False on `lease` — and stays false now that the projection writer exists,
+   * because that is not what the writer does: grants are recorded in the DO at
+   * claim time and PROJECTED into Dolt later (lease-projection.yml),
+   * idempotently. The flag keeps meaning "the row exists the moment claimNext
+   * returns", so a reader checking Dolt immediately after a lease-plane claim
+   * still learns the row may not be there YET — absent-so-far, not lost.
    */
   readonly projected: boolean;
   /** One line, for a human, about what this plane does and does not guarantee. */
@@ -55,8 +59,9 @@ export const LEASE_PLANE: ClaimPlane = {
   fenced: true,
   projected: false,
   guarantee:
-    "A2 by construction (one Durable Object per item). Fenced. NO Dolt audit row " +
-    "until the projection writer lands — exclusion is enforced, its history is not yet recorded.",
+    "A2 by construction (one Durable Object per item). Fenced. The Dolt audit row is " +
+    "NOT written at claim time — grants are recorded in the DO and projected to claims " +
+    "asynchronously (lease-projection), so Dolt lags the truth by up to one projection run.",
 };
 
 export const SERVER_PLANE: ClaimPlane = {
