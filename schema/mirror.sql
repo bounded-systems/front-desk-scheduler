@@ -130,6 +130,64 @@ CREATE TABLE IF NOT EXISTS `claims` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
 
 -- ---------------------------------------------------------------------------
+-- commit_attestations — WHO produced a commit, as opposed to who said they did.
+--
+-- `dolt commit --author` is self-asserted: the author is a string the writer
+-- typed. So the audit trail that justified putting the queue in Dolt answers
+-- "who decided this" with an unbacked claim. `claims.decided_at_commit` fixed
+-- the other half of that question (against what version of the board); this is
+-- the identity half.
+--
+-- A GitHub Actions OIDC JWT is a GitHub-signed assertion of workflow identity —
+-- repository, repository_owner, job_workflow_ref (which carries `@refs/heads/…`).
+-- The broker already trusts exactly these claims to release credentials. One
+-- row per attested commit, so PRIMARY KEY (dolt_commit): a commit has exactly
+-- one producer, and a second attestation is a re-run, not new information.
+--
+-- ⚠ WHAT A READER MAY CONCLUDE. The raw JWT is NOT stored, because this mirror
+-- is PUBLIC — that is the whole point of the zero-credential read plane — and a
+-- GitHub OIDC token is a BEARER credential for the broker. Publishing one inside
+-- its validity window would hand any reader the credential. `jwt_sha256` is a
+-- commitment to the token instead. The consequence is that these claims are
+-- ASSERTED BY THE WRITER, not a signature a reader can check: the row is exactly
+-- as trustworthy as write access to the mirror. Broker-gated, so not nothing —
+-- but NOT third-party verifiable. See src/attest.ts for the full argument.
+--
+-- The digest is still load-bearing: the broker sees every JWT it verifies, so a
+-- broker-side (digest → claims) log and this table are two independently written
+-- records that must agree. A forged row has no matching broker entry.
+--
+-- `receipt` is the upgrade to real verifiability — a broker-SIGNED JWS binding
+-- the claims it verified to this commit hash. A receipt carries no audience and
+-- no privileges, so unlike the JWT it is safe in a public database. NULL until
+-- that broker endpoint exists.
+--
+-- Deliberately absent: a row for commits made outside Actions. An interactive
+-- session cannot mint an OIDC token (by design — see mirror-migrate.yml), and
+-- writing a self-asserted row for it would erase the only distinction this
+-- table exists to draw. The ABSENCE of a row is the signal.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `commit_attestations` (
+  `dolt_commit`      varchar(32)  NOT NULL,  -- the commit this attests
+  `attested_at`      datetime     NOT NULL,
+  `jwt_sha256`       varchar(64)  NOT NULL,  -- digest of the token, never the token
+  `iss`              varchar(255) NOT NULL,
+  `sub`              varchar(255) NOT NULL,
+  `aud`              varchar(255) NOT NULL,
+  `repository`       varchar(255) NOT NULL,
+  `repository_owner` varchar(255) NOT NULL,
+  `job_workflow_ref` varchar(512) NOT NULL,  -- ← the claim that pins WHICH workflow, at WHICH ref
+  `run_id`           varchar(32)  NOT NULL,
+  `run_attempt`      varchar(8)   NOT NULL,
+  `jti`              varchar(64),
+  `issued_at`        datetime     NOT NULL,
+  `expires_at`       datetime     NOT NULL,
+  `receipt`          text,                   -- broker-signed JWS; NULL until that ships
+  PRIMARY KEY (`dolt_commit`),
+  KEY `idx_attest_workflow` (`job_workflow_ref`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+-- ---------------------------------------------------------------------------
 -- schema_migrations — the applied-migrations ledger.
 --
 -- Idempotency belongs HERE, not inside each migration file. Dolt cannot express

@@ -215,6 +215,24 @@ jobs:
 
           dolt commit -m "schema: apply $M"
 
+      - name: Attest the migration commit
+        # Records WHICH workflow identity produced the commit just made, from
+        # the Actions OIDC claims (repository, repository_owner and above all
+        # job_workflow_ref, which carries `@refs/heads/main`). `dolt commit
+        # --author` alone is self-asserted — a string this job typed.
+        #
+        # Between commit and push, so the data commit and its attestation travel
+        # to DoltHub together. Writes a SECOND commit, since a hash cannot be
+        # known inside the commit it names; that tail commit is itself
+        # unattested, which is inherent to any in-band ledger.
+        #
+        # NOT fatal. Losing the row costs provenance, not correctness, and the
+        # migration has already been applied and committed by this point — the
+        # same call made for claims.decided_at_commit.
+        if: ${{ inputs.dry_run == false }}
+        continue-on-error: true
+        run: node scripts/attest.ts --dir mirror --audience dolthub-cred-broker
+
       - name: Push mirror → DoltHub
         if: ${{ inputs.dry_run == false }}
         run: cd mirror && dolt push origin main
