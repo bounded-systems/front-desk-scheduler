@@ -1,0 +1,70 @@
+name: test
+# The unit suite and the type gate.
+#
+# WHY THIS IS A REPO-LOCAL WORKFLOW AND NOT THE ORG `standard.yml` CALLER
+# ----------------------------------------------------------------------
+# The org pattern is a thin caller into the reusable
+# bounded-systems/.github/.github/workflows/repo-standard.yml — derive, not copy.
+# Its `test` job takes ONE `runtime` input (bun | deno | node | nix | none), and
+# this repo needs two: `deno install --frozen` materialises node_modules from the
+# tracked deno.lock (deno.json sets nodeModulesDir: auto), and the suite then runs
+# under NODE, because the code is Node-targeted (mysql2, node:test).
+#
+# Faking that with a curl-installed toolchain inside `test-command` would be a
+# copy pretending to be a derive. The honest fix is an input on repo-standard for
+# a second runtime; until then this stays local and says why.
+#
+# WHY IT DID NOT ALREADY EXIST
+# ----------------------------
+# The only workflow injected org-wide is required-baseline.yml (OSV +
+# dependency-review), via an org ruleset. That is a SECURITY floor by design and
+# runs no tests. repo-standard is opt-in per repo, and its `test` input defaults
+# to false — so a repo that never adopted the caller has no suite in CI and
+# nothing anywhere reports that. This repo was in exactly that state: 69 tests,
+# zero of them gating a merge.
+#
+# NOT path-filtered, deliberately — same reasoning as schema-drift.yml. A check
+# that is skipped on some PRs cannot be made a required check without the
+# skipped-required-check problem.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          # package.json requires >=22.18 (the version that strips TypeScript
+          # types without a flag). 24 matches schema-drift.yml.
+          node-version: "24"
+      # Same pin the org's repo-standard.yml uses, so there is one SHA to bump.
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies (frozen)
+        # --frozen FAILS if resolution would differ from the tracked deno.lock,
+        # rather than quietly rewriting it. The lock is the single pin for what
+        # this repo runs, so CI must not be the thing that drifts it.
+        run: deno install --frozen
+
+      - name: Type gate (deno check)
+        # deno.json is this repo's manifest and `deno check` is its type gate.
+        # It was RED before 2026-07-28 — 17 errors, all in test/whats-next.test.ts,
+        # which passed at runtime while never typechecking. A gate nobody runs
+        # decays exactly like that, silently and only in one direction.
+        run: deno check
+
+      - name: Unit suite
+        run: npm test
