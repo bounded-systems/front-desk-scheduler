@@ -1,0 +1,153 @@
+name: broker-drift
+# The experiment behind specs/lean/Delegation.lean — as claim-race is to
+# Leases.lean, this is to the credential chain. The theorems there (D1-D3) hold
+# under two named assumptions, and assumptions are tested, not trusted:
+#
+#   C1 (mint is subset-capped)     — tested by minting each tier the repo
+#       depends on. A 502+9109 is DRIFT between the broker's requested policy
+#       and its parent's scopes (or, under the R4 reading, a policy-resource
+#       bug — either way, red here before some deploy finds it at 2am).
+#   C2 (nothing below L0 manages the root) — probed by asking a MINTED token,
+#       read-only, for authority it must not have. A probe that SUCCEEDS is the
+#       alarm; refusal is the pass.
+#
+# PROBES ARE GET-ONLY, BY CONSTRUCTION. A negative test that "tries a forbidden
+# write to see if it fails" performs the write when the scope is accidentally
+# broad — the test becomes the incident. Read-only probes detect overscope
+# without exercising it. test/credential-chain.test.ts pins this property.
+#
+# EXPECTED STATE ON FIRST MERGE: every tier RED with 401 — this workflow's
+# job_workflow_ref is not on the broker's allowlists yet. That is honest signal,
+# same as production-a2: the monitor exists first, infra config turns it green
+# tier by tier. The output discriminates so red always says WHICH fix:
+#   401/403      → allowlist (add this file's job_workflow_ref, per audience)
+#   404          → route (fix the *_PATH variable)
+#   502 + 9109   → parent scopes vs requested policy (infra / dashboard)
+#   200          → tier healthy
+on:
+  schedule:
+    - cron: "47 6 * * *" # daily, offset from claim-race's 23 6
+  workflow_dispatch: {}
+concurrency:
+  group: broker-drift
+  cancel-in-progress: true
+permissions:
+  id-token: write # OIDC → broker; the ONLY capability this job holds
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+      CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/cloudflare/front-desk-lease' }}
+    steps:
+      - name: Mint each tier (C1 consistency)
+        id: mint
+        run: |
+          set -uo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          failures=0
+
+          mint_tier() { # name audience path -> writes /tmp/tok.$name on 200
+            local name="$1" audience="$2" path="$3"
+            local jwt code body
+            jwt="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" | jq -r '.value // empty')"
+            if [ -z "$jwt" ]; then
+              echo "::error::[$name] could not obtain an OIDC token from GitHub"; return 1
+            fi
+            # Not `curl -f`: the broker's error body (cf_errors + token_check)
+            # is the diagnosis, and -f discards bodies on HTTP errors.
+            code="$(curl -sS -o "/tmp/broker.$name.json" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${path}" || echo 000)"
+            body="$(cat "/tmp/broker.$name.json" 2>/dev/null || true)"
+            case "$code" in
+              200)
+                jq -r '.token // .jwk // empty' <<<"$body" | tr -d '\n' > "/tmp/tok.$name"
+                if [ -s "/tmp/tok.$name" ]; then
+                  echo "::notice::[$name] tier healthy — mint succeeded"
+                else
+                  echo "::error::[$name] HTTP 200 but no token in the body"; return 1
+                fi ;;
+              401|403) echo "::error::[$name] $code — this workflow's job_workflow_ref is not on the broker allowlist for audience '$audience'"; return 1 ;;
+              404)     echo "::error::[$name] 404 — route '$path' absent; fix the *_PATH variable or the broker's routing"; return 1 ;;
+              502)
+                echo "::error::[$name] 502 — Cloudflare/GitHub refused the MINT. Body: ${body:0:400}"
+                if grep -q '9109' <<<"$body"; then
+                  echo "::error::[$name] cf 9109: requested policy exceeds what the parent can issue — DRIFT (see docs/credential-chain.md)"
+                fi
+                return 1 ;;
+              *)       echo "::error::[$name] unexpected HTTP $code: ${body:0:200}"; return 1 ;;
+            esac
+          }
+
+          mint_tier dolthub    dolthub-cred-broker "/dolthub/front-desk-mirror" || failures=$((failures+1))
+          mint_tier github-app github-app-broker   "/github/front-desk"         || failures=$((failures+1))
+          mint_tier cloudflare cf-oidc-token-broker "${CF_BROKER_PATH}"         || failures=$((failures+1))
+
+          echo "failures=$failures" >> "$GITHUB_OUTPUT"
+          [ "$failures" -eq 0 ] || exit 1
+
+      - name: Overscope probes (C2) — read-only, refusal is the pass
+        # Runs even when a tier failed to mint: probe whatever DID mint.
+        if: always()
+        run: |
+          set -uo pipefail
+          alarms=0
+
+          if [ -s /tmp/tok.github-app ]; then
+            tok="$(cat /tmp/tok.github-app)"
+            # In-scope control first: a probe suite where everything 403s might
+            # just be a dead token, so prove the token works before trusting
+            # the refusals to mean anything.
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $tok" \
+              "https://api.github.com/repos/${{ github.repository }}")"
+            if [ "$code" != "200" ]; then
+              echo "::warning::App token failed its IN-SCOPE control (HTTP $code) — overscope refusals below prove nothing this run"
+            fi
+            # The C2 probe: repo administration. The GH_APPS map must not grant
+            # it; a 200 here means a minted token reaches management surfaces.
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $tok" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/permissions")"
+            if [ "$code" = "200" ]; then
+              echo "::error::OVERSCOPE: the minted App token can read Actions admin settings. The GH_APPS map grants more than the tiers document — C2 is violated in practice."
+              alarms=$((alarms+1))
+            else
+              echo "::notice::App token refused admin read (HTTP $code) — C2 probe passes"
+            fi
+          else
+            echo "::notice::no App token minted this run — C2 probe skipped"
+          fi
+
+          # The Cloudflare tier's C2 probe: a minted deploy token must not reach
+          # token management. GET /user/tokens requires API Tokens Read — the
+          # scope whose presence on a CHILD would put self-escalation in reach.
+          if [ -s /tmp/tok.cloudflare ]; then
+            tok="$(cat /tmp/tok.cloudflare)"
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $tok" \
+              "https://api.cloudflare.com/client/v4/user/tokens")"
+            if [ "$code" = "200" ]; then
+              echo "::error::OVERSCOPE: the minted Cloudflare token can LIST TOKENS — token management is reachable from below L1. C2 is violated in practice."
+              alarms=$((alarms+1))
+            else
+              echo "::notice::Cloudflare token refused token-management read (HTTP $code) — C2 probe passes"
+            fi
+          else
+            echo "::notice::no Cloudflare token minted this run — C2 probe skipped"
+          fi
+
+          [ "$alarms" -eq 0 ] || exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### broker-drift"
+            echo "Tests C1/C2 from specs/lean/Delegation.lean against the live broker."
+            echo "- red mint = drift or missing allowlist (the log names which)"
+            echo "- red probe = a minted token holds authority the tiers do not document"
+            echo ""
+            echo "The theorems bound the design; this run binds the deployment."
+          } >> "$GITHUB_STEP_SUMMARY"
