@@ -21,26 +21,21 @@ name: lease-deploy
 #
 # ⚠ SETUP REQUIRED — BOTH FAIL CLOSED, DELIBERATELY
 #
-#   1. The broker's OWN CF_BROKER_TOKEN must be able to DELEGATE a Workers
-#      deploy scope. OBSERVED 2026-07-28 against the live broker:
+#   1. The broker's Workers-edit tier must be LIVE. It is: bounded-systems/infra
+#      #66 activated CF_PG_WORKERS_SCRIPTS_EDIT + the WORKERS_DEPLOY registry
+#      (with a `lease` target pinned to THIS workflow ref), and #67 proved the
+#      end-to-end mint (an account-owned parent CAN delegate Workers:Edit it
+#      does not itself hold — the earlier 502/9109 was the parent lacking the
+#      scope, now fixed). If a mint 9109s again, it is an infra-side scope
+#      regression, not a problem here.
 #
-#        HTTP 502  {"error":"mint failed",
-#                   "cf_errors":[{"code":9109,"message":"Unauthorized to access
-#                                 requested resource"}],
-#                   "token_check":{"ok":true,...}}
-#
-#      Read that pair carefully, because it is the discriminator: token_check
-#      OK means the broker's parent credential is alive and authenticated, and
-#      9109 on the mint means Cloudflare refused to ISSUE the requested policy.
-#      A token can only mint permissions it itself holds — so this is not a
-#      broker-code problem and not an allowlist problem. The parent token needs
-#      Workers Scripts: Edit at ACCOUNT scope, set in bounded-systems/infra,
-#      which is outside this session's repo scope.
-#
-#   2. `FRONT_DESK_CF_BROKER_PATH` must name the broker route. The live broker
-#      IS path-routed and reachable (it answered above rather than 404ing), so
-#      this is a matter of pointing at the right one, not of the route being
-#      absent.
+#   2. This job hits the broker at `/deploy/lease` with audience
+#      `cloudflare-workers-deploy-broker` — the Workers-edit tier's route and
+#      audience (NOT the general `/cloudflare/*` Cloudflare-token path). Both are
+#      the defaults below; `FRONT_DESK_CF_BROKER_PATH` can override the route.
+#      The broker mints ONLY for this exact workflow ref that entered the
+#      `lease-deploy` Environment. The infra registry's `script` hint is
+#      `front-desk-lease` (this Worker's wrangler name).
 #
 #   3. The `lease-deploy` GitHub Environment with REQUIRED REVIEWERS. Dispatch
 #      alone must not be able to replace the mechanism that enforces mutual
@@ -74,7 +69,7 @@ jobs:
     environment: lease-deploy
     env:
       BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
-      CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/cloudflare/front-desk-lease' }}
+      CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/deploy/lease' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -121,7 +116,7 @@ jobs:
           set -euo pipefail
           [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=cf-oidc-token-broker" | jq -r '.value // empty')"
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=cloudflare-workers-deploy-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
           # NOT `curl -f`. `-f` DISCARDS THE RESPONSE BODY on an HTTP error, and
           # the broker's error body is the most useful thing in the whole
