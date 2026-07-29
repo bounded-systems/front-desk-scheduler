@@ -10,6 +10,13 @@
     "@bounded-systems/verbspec-mcp": "jsr:@bounded-systems/verbspec-mcp@^0.1.0",
     "zod": "npm:zod@^4.4.3"
   },
+  "// exclude": [
+    "wrangler dev writes generated bundles under worker/lease/.wrangler/tmp.",
+    "They are gitignored, but `deno check` walks them anyway and dies on them —",
+    "so running scripts/lease-integration.sh once would break the type gate in",
+    "your working tree while CI (a fresh checkout) stayed green."
+  ],
+  "exclude": ["**/.wrangler"],
   "tasks": {
     "fds": "deno run -A scripts/fds.ts",
     "mcp": "deno run -A scripts/mcp.ts",
