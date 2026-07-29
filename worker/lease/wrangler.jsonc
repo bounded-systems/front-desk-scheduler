@@ -12,13 +12,12 @@
   // that takes N agents racing the real endpoint with exactly one grant.
   //
   // NO SECRET LIVES HERE. This Worker holds no credential: it stores lease state
-  // and hands out fencing tokens. Authentication is a separate concern and is
-  // deliberately NOT solved by copying the broker's OIDC pins — the broker
-  // authenticates WORKFLOWS (job_workflow_ref@refs/heads/main), and a claimant
-  // is an interactive agent, which is a different caller shape. Widening the
-  // broker's trust boundary to cover it would have been the easy wrong move.
-  // See "Authentication" in README.md; until that lands, deploy this only where
-  // an unauthenticated claim is acceptable.
+  // and hands out fencing tokens. Writes are authenticated by VALIDATING a
+  // GitHub token the caller already holds (see AUTH_MODE below and
+  // "Authentication" in README.md) — not by copying the broker's OIDC pins. The
+  // broker authenticates WORKFLOWS (job_workflow_ref@refs/heads/main) and a
+  // claimant is often an interactive agent, a different caller shape; widening
+  // the broker's trust boundary to cover it would have been the easy wrong move.
   "name": "front-desk-lease",
   "main": "src/index.mjs",
   "compatibility_date": "2026-06-21",
