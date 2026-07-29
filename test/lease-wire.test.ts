@@ -197,3 +197,45 @@ test("an old worker that ignores `status` trips the skew warning once", withWork
   assert.equal(seen.length, 1, "warned exactly once");
   assert.match(seen[0], /predates status recording/);
 }));
+
+// ── client auth: send what we already hold, name the fix when refused ────────
+
+test("the client attaches the ambient GitHub token to writes", withWorker(async () => {
+  const saved = { FDS_CLAIM_TOKEN: process.env.FDS_CLAIM_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+  const seen: (string | null)[] = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    seen.push(new Request(input as never, init).headers.get("authorization"));
+    return inner(input as never, init);
+  }) as typeof fetch;
+  try {
+    process.env.GH_TOKEN = "ghp_ambient";
+    delete process.env.FDS_CLAIM_TOKEN;
+    await claimLease("prx#12", "alice", 60);
+    assert.equal(seen[0], "Bearer ghp_ambient", "the session's own credential rides the write");
+
+    process.env.FDS_CLAIM_TOKEN = "ghp_override";
+    await claimLease("prx#12", "bob", 60);
+    assert.equal(seen[1], "Bearer ghp_override", "FDS_CLAIM_TOKEN overrides the ambient identity");
+  } finally {
+    globalThis.fetch = inner;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k as keyof typeof saved];
+      else process.env[k] = v;
+    }
+  }
+}));
+
+test("a 403 from the worker names the caller-side fix", withWorker(async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: "authentication failed: stranger has no push permission" }), { status: 403 })) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => claimLease("prx#12", "alice", 60),
+      (e: Error) => /refused this identity/.test(e.message) && /GH_TOKEN/.test(e.message),
+    );
+  } finally {
+    globalThis.fetch = real;
+  }
+}));

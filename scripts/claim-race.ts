@@ -152,8 +152,12 @@ if (PLANE.fenced) {
   for (const [agent, f] of fenceOf) {
     if (typeof f !== "number") continue;
     const rec = byFencing.get(f);
-    if (rec?.agent === agent) matched++;
-    else check(false, `audit: grant ${f} (${agent}) missing or misattributed in history`);
+    // On an authenticated worker the recorded agent is NAMESPACED under the
+    // verified identity ("login/alias") — the alias this race asserted is the
+    // suffix. Accept either exact (mode none) or namespaced (mode github);
+    // anything else is a misattribution.
+    if (rec && (rec.agent === agent || rec.agent.endsWith(`/${agent}`))) matched++;
+    else check(false, `audit: grant ${f} (${agent}) missing or misattributed in history (got ${rec?.agent})`);
   }
   check(matched === [...fenceOf.values()].filter((f) => typeof f === "number").length,
     `audit: every observed grant appears in history exactly as granted (${matched} matched)`);

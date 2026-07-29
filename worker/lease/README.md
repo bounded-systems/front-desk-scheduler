@@ -81,16 +81,43 @@ Neither is established by the unit tests, and they don't pretend to be. S1 is a
 property of the mechanism. The experiment that binds it is `production-a2` in
 `.github/workflows/claim-race.yml`.
 
-## Authentication — not solved here
+## Authentication
 
-This Worker holds no credential, but it currently accepts unauthenticated
-claims. **Deploy it only where that is acceptable.**
+Writes (`/claim`, `/renew`, `/release`) require `Authorization: Bearer` with a
+**GitHub token the caller already holds** — a session's `GH_TOKEN`, a
+workflow's `github.token`, a broker-minted App token. The worker validates it
+against GitHub in the **router** (never the DO — validation awaits the network,
+and A1′ forbids non-storage awaits in the critical section):
 
-The obvious move is to reuse the broker's OIDC pins, and it is the wrong one:
-the broker authenticates *workflows* (`job_workflow_ref@refs/heads/main`), and a
-claimant is an interactive agent — a different caller shape. Widening the
-broker's trust boundary to cover it would trade the property that makes "no
-stored secret" true for convenience.
+| token kind | check |
+|---|---|
+| user token | `GET /user` → login, then `permissions.push` on the repo |
+| installation token | installation's repo list must cover the repo |
+
+**The public-repo trap is the design's spine**: this repo is public, so *"the
+token can read the repo"* authenticates everyone on GitHub. The `permissions`
+field / installation coverage is the real check, absence of evidence is
+refusal, and the test suite pins a stranger's *valid* token being turned away.
+
+No new secret exists anywhere — the house rule holds. The broker's trust
+boundary is untouched: it keeps authenticating *workflows*; this authenticates
+*whoever GitHub will vouch for*, which is the right shape for interactive
+claimants.
+
+**Attribution bonus:** the `agent` field was the last self-asserted string in
+the system. Verified callers get their alias **namespaced under their
+identity** (`bdelanghe/r1-3`, `gha/worker-2`), so history, projection, and
+effort calibration attribute work to a proven identity while race tests keep
+synthetic multi-agent names. Aliases containing `/` are refused — nesting would
+blur which part was verified.
+
+Reads (`/status`, `/history`) stay open: their content reaches the public Dolt
+mirror through the projection anyway, so a gate would protect nothing and break
+the projector.
+
+`AUTH_MODE=none` (wrangler var) disables the gate for scratch deployments —
+deliberately a **visible, reviewable config choice**, and unset fails closed to
+`github`.
 
 ## Deploy
 
@@ -105,7 +132,9 @@ agents racing the real endpoint, exactly one grant.
 
 ## Status
 
-Not deployed. The scheduler client adapter is not written — `writesGoToServer()`
-still chooses between MySQL-wire and a local clone, and this is neither, so
-`src/reads.ts` / `src/mirror.ts` need a third adapter that also surfaces the
-fencing token to the effect side.
+Not yet deployed (blocked on the broker's Workers-edit tier — see
+`lease-deploy.yml`). The client adapter exists (`src/lease-client.ts`, the
+`lease` plane in `src/claim-plane.ts`), grants are recorded in the DO and
+projected to Dolt (`lease-projection.yml`), and writes are authenticated. The
+first deploy exercises all of it at once, which is what `lease-deploy`'s
+race-after-deploy step is for.
