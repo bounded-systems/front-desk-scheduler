@@ -190,6 +190,10 @@ jobs:
         env:
           FDS_CLAIM_ENDPOINT: ${{ steps.endpoint.outputs.endpoint }}
           RACE_ITEM: ${{ vars.FDS_CLAIM_RACE_ITEM || 'race#1' }}
+          # The worker authenticates writes (worker/lease/src/auth.mjs). This
+          # job's own github.token is an installation token covering this repo,
+          # which is exactly the grant the worker checks — no new secret.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           node scripts/claim-race.ts

@@ -27,6 +27,17 @@
   // stale preview backed by its own DO namespace is a SECOND serialization
   // point, which is precisely the failure this Worker exists to remove.
   "preview_urls": false,
+  "vars": {
+    // Auth for WRITES (claim/renew/release): "github" validates the caller's
+    // GitHub token against the repo (push permission for user tokens,
+    // installation coverage for App/Actions tokens) and namespaces the agent
+    // under the verified identity. Unset defaults to "github" in code — the
+    // fail-closed direction. Set "none" ONLY for a scratch deployment where
+    // unauthenticated claims are an accepted property; putting that word here
+    // is what makes the acceptance reviewable.
+    "AUTH_MODE": "github",
+    "ALLOWED_REPO": "bounded-systems/front-desk-scheduler"
+  },
   "durable_objects": {
     "bindings": [
       {

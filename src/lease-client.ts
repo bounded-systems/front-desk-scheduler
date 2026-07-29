@@ -66,6 +66,20 @@ export function leaseEndpoint(): string | null {
   }
 }
 
+/** The credential for lease WRITES: whichever GitHub token this caller already
+ *  holds. Sessions carry GH_TOKEN, workflows github.token — no new secret is
+ *  introduced anywhere, which is the entire design of the worker's auth
+ *  (worker/lease/src/auth.mjs). FDS_CLAIM_TOKEN exists as an explicit override
+ *  for the caller that wants a different identity than its ambient one. */
+function leaseAuthToken(): string | null {
+  return (
+    process.env.FDS_CLAIM_TOKEN?.trim() ||
+    process.env.GH_TOKEN?.trim() ||
+    process.env.GITHUB_TOKEN?.trim() ||
+    null
+  );
+}
+
 async function call(
   path: string,
   itemId: string,
@@ -74,11 +88,14 @@ async function call(
   const base = leaseEndpoint();
   if (base === null) throw new LeaseClientError("FDS_CLAIM_ENDPOINT is unset — the lease plane is not configured");
   const url = `${base}${path}?item_id=${encodeURIComponent(itemId)}`;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const tok = leaseAuthToken();
+  if (tok) headers.authorization = `Bearer ${tok}`;
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (e) {
@@ -93,6 +110,16 @@ async function call(
     parsed = JSON.parse(text);
   } catch {
     throw new LeaseClientError(`lease endpoint returned non-JSON (${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (res.status === 401 || res.status === 403) {
+    // Auth failures get their fix named, because "403" alone sends a caller
+    // hunting through the worker instead of at their own environment.
+    const msg = (parsed as { error?: string })?.error ?? text.slice(0, 200);
+    throw new LeaseClientError(
+      `lease endpoint refused this identity (${res.status}): ${msg}\n` +
+        `  Writes need a GitHub token with push permission on the repo — set GH_TOKEN\n` +
+        `  (or FDS_CLAIM_TOKEN to use a different identity than the ambient one).`,
+    );
   }
   if (!res.ok) {
     const msg = (parsed as { error?: string })?.error ?? text.slice(0, 200);

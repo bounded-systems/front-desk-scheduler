@@ -34,6 +34,7 @@
  * correctness property rather than a style choice.
  */
 
+import { authenticate, namespaceAgent } from "./auth.mjs";
 import {
   canonicalItemId,
   decideClaim,
@@ -159,6 +160,11 @@ function json(obj, status = 200) {
   });
 }
 
+/** Positive auth results, per isolate. Bounded by eviction below; keyed by a
+ *  hash of the token, never the token (see auth.mjs). */
+const authCache = new Map();
+const AUTH_CACHE_MAX = 512;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -178,7 +184,60 @@ export default {
       return json({ error: `item_id: ${e.message}` }, 400);
     }
 
+    // ── auth: WRITES prove a GitHub identity; reads stay open ────────────────
+    //
+    // Reads (/status, /history) are open because their content ends up in the
+    // PUBLIC Dolt mirror via the projection anyway — gating them would protect
+    // nothing while breaking the projector. Writes are the mutations that S1
+    // exists to arbitrate, so they carry the gate.
+    //
+    // This runs HERE, in the router, and never in the DO: authenticate() awaits
+    // the GitHub API, and a non-storage await inside the DO's critical section
+    // would open the input gate (A1′). By the time the DO sees the request, the
+    // identity work is done and serialized-world rules hold again.
+    //
+    // AUTH_MODE unset means "github" — the fail-CLOSED default. "none" must be
+    // written into the deployment's config on purpose, for a scratch/race
+    // deployment where unauthenticated claims are an accepted property, and it
+    // is visible in wrangler.jsonc precisely so that acceptance is reviewable.
+    let body = null;
+    if (request.method === "POST") {
+      const mode = env.AUTH_MODE ?? "github";
+      if (mode !== "none") {
+        const m = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "");
+        if (!m) {
+          return json({
+            error: "writes require `Authorization: Bearer <github token>` — a session's GH_TOKEN " +
+              "or a workflow's github.token; the token must have push permission on the repo",
+          }, 401);
+        }
+        if (authCache.size > AUTH_CACHE_MAX) authCache.clear();
+        const verdict = await authenticate(m[1], {
+          repo: env.ALLOWED_REPO ?? "bounded-systems/front-desk-scheduler",
+          cache: authCache,
+        });
+        if (!verdict.ok) return json({ error: `authentication failed: ${verdict.reason}` }, 403);
+        // Bind the last self-asserted string in the system: the alias survives
+        // only namespaced under the identity that proved itself.
+        try {
+          body = await request.json().catch(() => ({}));
+          body.agent = namespaceAgent(verdict.identity, body.agent);
+        } catch (e) {
+          return json({ error: e instanceof TypeError ? e.message : "bad request" }, 400);
+        }
+      }
+    }
+
     const id = env.LEASE.idFromName(name);
-    return env.LEASE.get(id).fetch(request);
+    const stub = env.LEASE.get(id);
+    if (body !== null) {
+      // Re-serialize with the namespaced agent; everything else passes through.
+      return stub.fetch(new Request(request.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    }
+    return stub.fetch(request);
   },
 };

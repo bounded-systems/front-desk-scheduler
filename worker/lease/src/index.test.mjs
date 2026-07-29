@@ -142,3 +142,127 @@ test("the renew/release round trip works through the shell", async () => {
   assert.equal(after.body.live, false);
   assert.equal(after.body.fencing, f, "the counter survives release");
 });
+
+// ── the router: auth gates writes, reads stay open ───────────────────────────
+
+import worker from "./index.mjs";
+
+/** env stub: one LeaseObject per DO name + scripted GitHub for auth. */
+function makeEnv(mode) {
+  const objects = new Map();
+  const env = {
+    AUTH_MODE: mode,
+    LEASE: {
+      idFromName: (n) => n,
+      get: (id) => {
+        if (!objects.has(id)) objects.set(id, new LeaseObject(fakeCtx()));
+        return objects.get(id);
+      },
+    },
+  };
+  return env;
+}
+
+function scriptGitHub(routes) {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url, init) => {
+    const u = String(url);
+    for (const [prefix, r] of Object.entries(routes)) {
+      if (u.startsWith(prefix)) return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
+    }
+    return new Response("{}", { status: 404 });
+  });
+  return () => { globalThis.fetch = real; };
+}
+
+const routerPost = (path, body, headers = {}) =>
+  new Request(`https://lease.example${path}?item_id=prx%2312`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+test("github mode: a write without a token is 401, and reads stay open", async () => {
+  const env = makeEnv(undefined); // unset AUTH_MODE = github — the fail-closed default
+  const denied = await worker.fetch(routerPost("/claim", { agent: "a", ttl_sec: 60 }), env);
+  assert.equal(denied.status, 401);
+  assert.match((await denied.json()).error, /Authorization: Bearer/);
+
+  const status = await worker.fetch(new Request("https://lease.example/status?item_id=prx%2312"), env);
+  assert.equal(status.status, 200, "reads carry no gate — their content is public via the mirror anyway");
+});
+
+test("github mode: a verified writer claims, and the agent lands NAMESPACED", async () => {
+  const restore = scriptGitHub({
+    "https://api.github.com/user": { body: { login: "bdelanghe" } },
+    "https://api.github.com/repos/": { body: { permissions: { push: true } } },
+  });
+  try {
+    const env = makeEnv("github");
+    const res = await worker.fetch(
+      routerPost("/claim", { agent: "r1-3", ttl_sec: 60 }, { authorization: "Bearer ghp_ok" }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const grant = await res.json();
+    assert.equal(grant.granted, true);
+    assert.equal(grant.holder, "bdelanghe/r1-3",
+      "the self-asserted alias survives only under the verified identity");
+
+    // The bound name is what the whole lifecycle speaks: renew with the same
+    // alias works, and history attributes to the namespaced identity.
+    const renew = await worker.fetch(
+      routerPost("/renew", { agent: "r1-3", fencing: grant.fencing, ttl_sec: 60 }, { authorization: "Bearer ghp_ok" }),
+      env,
+    );
+    assert.equal((await renew.json()).renewed, true);
+
+    const hist = await worker.fetch(new Request("https://lease.example/history?item_id=prx%2312"), env);
+    const { records } = await hist.json();
+    assert.equal(records[0].agent, "bdelanghe/r1-3");
+  } finally {
+    restore();
+  }
+});
+
+test("github mode: a stranger's valid token is 403 with the reason", async () => {
+  const restore = scriptGitHub({
+    "https://api.github.com/user": { body: { login: "stranger" } },
+    "https://api.github.com/repos/": { body: { permissions: { push: false } } },
+  });
+  try {
+    const res = await worker.fetch(
+      routerPost("/claim", { agent: "x", ttl_sec: 60 }, { authorization: "Bearer ghp_no" }),
+      makeEnv("github"),
+    );
+    assert.equal(res.status, 403);
+    assert.match((await res.json()).error, /no push permission/);
+  } finally {
+    restore();
+  }
+});
+
+test("mode none passes writes through unchanged — an explicit, reviewable choice", async () => {
+  const env = makeEnv("none");
+  const res = await worker.fetch(routerPost("/claim", { agent: "raw-name", ttl_sec: 60 }), env);
+  const grant = await res.json();
+  assert.equal(grant.granted, true);
+  assert.equal(grant.holder, "raw-name", "no namespacing without an identity to namespace under");
+});
+
+test("an alias with '/' is rejected at the door in github mode", async () => {
+  const restore = scriptGitHub({
+    "https://api.github.com/user": { body: { login: "gha" } },
+    "https://api.github.com/repos/": { body: { permissions: { push: true } } },
+  });
+  try {
+    const res = await worker.fetch(
+      routerPost("/claim", { agent: "fake/alice", ttl_sec: 60 }, { authorization: "Bearer ghs_x" }),
+      makeEnv("github"),
+    );
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /without '\/'/);
+  } finally {
+    restore();
+  }
+});
