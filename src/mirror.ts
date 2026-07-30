@@ -4,12 +4,17 @@
  *
  *   GitHub (write plane) ──budget-gated sync──▶ Dolt mirror ──▶ all reads
  *
- * The syncer is the ONLY reader that touches the GitHub API; every consumer
- * (whats-next, agents, CI) queries the mirror at a pinned Dolt commit and needs
- * no GitHub credential. API spend is METERED (measured by diffing the live
- * rate-limit around the call, not guessed) into `api_spend`, and each sync is
- * gated through the same verified `budgetGate` that gates agent labor —
- * the scheduler's budget model applied to itself.
+ * The syncer is the only reader IN THIS REPO that touches the GitHub API; every
+ * consumer (whats-next, agents, CI) queries the mirror at a pinned Dolt commit
+ * and needs no GitHub credential. It is NOT the only consumer of the rate limit:
+ * the App installation token is minted per-workflow from the broker and shared
+ * across every workflow using the front-desk App (lease-projection, claim-race,
+ * broker-drift, other repos), which all draw on the same hourly bucket. That is
+ * why capacity is read live rather than assumed — see `apiCapacity`.
+ *
+ * API spend is METERED (measured by diffing the live rate-limit around the call,
+ * not guessed) into `api_spend`, and each sync is gated through the same verified
+ * `budgetGate` that gates agent labor — the scheduler's budget model applied to itself.
  */
 
 import { execFile } from "node:child_process";
@@ -26,7 +31,14 @@ const pexecFile = promisify(execFile);
 
 export const MIRROR_DIR = new URL("../mirror", import.meta.url).pathname;
 
-/** The GitHub GraphQL rate limit, modeled as a Budget in our own contract. */
+/**
+ * The GitHub GraphQL rate limit, modeled as a Budget in our own contract.
+ *
+ * `capacityPoints` is a FLOOR, not the limit: 5,000/hr is the documented minimum
+ * for an App installation, but the real ceiling scales with org size (up to
+ * 12,500) and is only knowable at runtime. `apiCapacity` derives capacity from
+ * the live limit and uses this constant solely as a fallback — see the note there.
+ */
 export const GITHUB_GRAPHQL_BUDGET: Budget = {
   id: "github-graphql-hourly",
   window: { kind: "rolling", durationHours: 1, label: "1h" },
@@ -64,13 +76,31 @@ export async function fetchGraphqlLimit(): Promise<GraphqlLimit> {
   return JSON.parse(stdout) as GraphqlLimit;
 }
 
-/** Capacity report for the API budget, from the LIVE limit (consumed = limit - remaining). */
+/**
+ * Capacity report for the API budget, from the LIVE limit.
+ *
+ * Both sides of the ratio MUST come from the same scale. `consumed` is measured
+ * against GitHub's real ceiling (`limit - remaining`), so capacity has to be that
+ * same `limit` — not a hardcoded constant. Grading a real-scale `consumed`
+ * against a fixed 5,000 is what made the syncer refuse with "exhausted" while
+ * thousands of real points were still available: an App installation token whose
+ * ceiling is ~8,350+ reports `remaining` values LARGER than the old constant, so
+ * the gate blocked at a phantom wall (measured 2026-07-27: remaining 7,036 with
+ * a modeled capacity of 5,000).
+ *
+ * The constant survives only as a floor for the case where `limit` is missing or
+ * nonsensical (a malformed rate_limit payload), so a bad reading fails closed to
+ * the documented minimum rather than to Infinity.
+ */
 export function apiCapacity(live: GraphqlLimit): CapacityReport {
-  const consumed = live.limit - live.remaining;
-  const cap = GITHUB_GRAPHQL_BUDGET.capacityPoints;
+  const cap = Number.isFinite(live.limit) && live.limit > 0
+    ? live.limit
+    : GITHUB_GRAPHQL_BUDGET.capacityPoints;
+  // Clamp: a stale/al-limit reading must never present as negative consumption.
+  const consumed = Math.min(Math.max(cap - live.remaining, 0), cap);
   const burnRatio = cap > 0 ? consumed / cap : Infinity;
   return {
-    budget: GITHUB_GRAPHQL_BUDGET,
+    budget: { ...GITHUB_GRAPHQL_BUDGET, capacityPoints: cap },
     plannedPoints: 0,
     plannedFits: true,
     consumedPoints: consumed,
@@ -96,6 +126,10 @@ export interface SyncGated {
   readonly gated: true;
   readonly reason: string;
   readonly resetAt: string;
+  /** The live numbers behind the refusal — a bare "exhausted" hid a bad model. */
+  readonly remaining: number;
+  readonly limit: number;
+  readonly estimatePoints: number;
 }
 
 function sqlEscape(s: string): string {
@@ -836,17 +870,48 @@ export async function detectFieldDrift(
   return drift;
 }
 
+/** Headroom over the last measured pull — the board grows between syncs. */
+const SYNC_ESTIMATE_HEADROOM = 1.1;
+/** Used only until `api_spend` has a measured `sync-pull` to learn from. */
+export const SYNC_ESTIMATE_FALLBACK = 1600;
+
+/**
+ * Estimate the next full pull's cost from what the last few actually cost.
+ *
+ * A hardcoded estimate goes stale in the dangerous direction: it was set to 1400
+ * when a 1,253-item pull cost 1,314, and by the time the board reached 1,330
+ * items the real cost was 1,415 — the gate was reserving LESS than the sync
+ * would spend. Reading `api_spend` keeps the reservation ahead of the true cost
+ * as the board grows.
+ */
+export async function estimateSyncCost(): Promise<number> {
+  const rows = await dsqlRows<{ points: number }>(
+    "SELECT points FROM api_spend WHERE verb = 'sync-pull' AND points > 0 ORDER BY at DESC LIMIT 5",
+  ).catch(() => [] as { points: number }[]);
+  const measured = rows.map((r) => Number(r.points)).filter((p) => Number.isFinite(p) && p > 0);
+  if (measured.length === 0) return SYNC_ESTIMATE_FALLBACK;
+  return Math.ceil(Math.max(...measured) * SYNC_ESTIMATE_HEADROOM);
+}
+
 /**
  * Pull the live board into the mirror as one Dolt commit. Fail-closed: if the
- * API budget can't afford an estimated sync (~`estimatePoints`), refuse and say
- * when it resets — instead of running into the wall like a blind retry.
+ * API budget can't afford an estimated sync (~`estimatePoints`, derived from
+ * recent measured cost when not given), refuse and say when it resets — instead
+ * of running into the wall like a blind retry.
  */
-export async function syncPull(estimatePoints = 1400): Promise<SyncResult | SyncGated> {
-  // 1400 ≈ measured: a full 1,253-item pull cost 1,314 GraphQL points (2026-07-25).
+export async function syncPull(estimatePoints?: number): Promise<SyncResult | SyncGated> {
+  const estimate = estimatePoints ?? await estimateSyncCost();
   const before = await fetchGraphqlLimit();
-  const gate = budgetGate(apiCapacity(before), estimatePoints);
+  const gate = budgetGate(apiCapacity(before), estimate);
   if (!gate.allow) {
-    return { gated: true, reason: gate.reason, resetAt: before.resetAt };
+    return {
+      gated: true,
+      reason: gate.reason,
+      resetAt: before.resetAt,
+      remaining: before.remaining,
+      limit: before.limit,
+      estimatePoints: estimate,
+    };
   }
 
   const items = await fetchBoardItems(undefined, undefined, undefined, 0); // live, no cache
@@ -908,6 +973,13 @@ export interface DeltaResult {
  * the full pull reconciles.
  */
 export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResult> {
+  // Metered, not assumed. This path is believed to spend no GraphQL (Search is a
+  // separate budget), but it runs ~10x more often than the full pull, and it used
+  // to record `0`/`-1` as literals — so 174 of the last 192 runs told the ledger
+  // nothing. When points DID disappear between full syncs (2026-07-25: remaining
+  // fell to 935) there was no row to attribute them to. Measuring costs one free
+  // rate_limit call and turns "we assume this is free" into a checkable claim.
+  const before = await fetchGraphqlLimit().catch(() => null);
   const last = await dsqlRows<{ synced_at: string }>(
     "SELECT synced_at FROM sync_log ORDER BY id DESC LIMIT 1",
   );
@@ -941,10 +1013,15 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
     await dsql(`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(id)}'`);
     changed++;
   }
+  const after = before ? await fetchGraphqlLimit().catch(() => null) : null;
+  // -1 stays the "not sampled" sentinel, so a failed reading is distinguishable
+  // from a genuine zero-cost run rather than silently logging as free.
+  const cost = before && after ? Math.max(before.remaining - after.remaining, 0) : 0;
+  const remaining = after ? after.remaining : -1;
   await dsql(
-    `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${changed}, 0, -1)`,
+    `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${changed}, ${cost}, ${remaining})`,
   );
-  await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'delta-search', 0)`);
+  await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'delta-search', ${cost})`);
   return { changed, newSeen, since };
 }
 
