@@ -95,19 +95,22 @@ jobs:
       # pass on this plan (the rule 422s; see the header). Same spirit, working mechanism:
       # pause HERE, before any credential exists, until an approver signs off on an issue.
       # A denied or ignored (60-min timeout) approval fails the run without minting anything.
+      #
+      # The IN-HOUSE shared composite (infra#62, infra#79) — no third-party code in the gate;
+      # only allowlisted logins can release OR cancel it. SHA-pinned like every other cross-repo
+      # ref (CodeQL flagged @main; first-party-on-protected-main is equal trust, a pin is
+      # stricter — bump the SHA when infra's action changes). Requires infra's Actions access
+      # set to organization-accessible, else this step fails loud at resolve.
       - name: Await approval (before any mint)
-        uses: trstringer/manual-approval@662b3ddbc7685f897992051e87e1b4b58c07dc03 # v1.9.1
+        uses: bounded-systems/infra/.github/actions/await-approval@7b8b2d8040d84296c4790c068bbdee08ab400378 # main @ infra#79
         with:
-          secret: ${{ github.token }}
           approvers: bdelanghe
-          minimum-approvals: 1
           issue-title: "Approve lease-deploy (deploys the scheduler's serialization point)"
           issue-body: >
             A lease-deploy run wants to mint a short-lived Workers:Edit token (broker
             /deploy/lease), deploy the front-desk-lease Worker, and publish
             FDS_CLAIM_ENDPOINT. This replaces the mechanism that enforces mutual exclusion
-            for the whole scheduler — approve only if that is intended. Comment
-            "approved"/"approve"/"lgtm" to proceed, or "denied"/"deny" to cancel.
+            for the whole scheduler — approve only if that is intended.
 
       - name: Cloudflare credential (via OIDC broker)
         id: cfcred
