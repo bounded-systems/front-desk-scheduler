@@ -1,0 +1,29 @@
+name: self-test
+
+# ci-workflows carries no lockfiles of its own, so this does not prove much about
+# vulnerability detection. It proves the two things that actually break in the field and
+# that would otherwise break for ~87 callers at once:
+#
+#   1. the release URL still serves, and the pinned digest still matches
+#      (an upstream re-tag or a silently replaced asset fails here first, not downstream);
+#   2. the `--allow-no-lockfiles` path exits 0 rather than red-lining a repo with
+#      nothing scannable — the common case across this org.
+#
+# The weekly schedule is the point: a digest drift discovered on a Monday cron is one
+# red check here, whereas the same drift discovered organically is every adopting repo
+# going red on the same morning.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    uses: ./.github/workflows/osv-scan.yml
