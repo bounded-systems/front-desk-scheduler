@@ -1,0 +1,48 @@
+name: deps
+# Dependency scanning, via the org's shared lane (infra#104).
+#
+# WHY THIS IS A CALLER AND NOT A LOCAL COPY
+# -----------------------------------------
+# The scanner version and its sha256 are a matched pair pinned inside the reusable
+# workflow. Copying the job here would mean a second place to bump them, and the two
+# would drift — which is exactly the shape infra-test.yml's inline `deps` job is in
+# today. One definition, many callers.
+#
+# WHY NOT THE ORG'S required-baseline.yml
+# ---------------------------------------
+# bounded-systems/.github/required-baseline.yml claims to be "the enforced security
+# FLOOR for every repo", injected on every PR by an org ruleset's `workflows` rule.
+# It is NOT injected and has never run: the only org rulesets reaching this repo are
+# `default-branch-protection` and `protect important repos`, neither of which carries
+# a `workflows` rule, and `required-baseline` appears zero times in this repo's run
+# history. Ruleset-injected required workflows are an Enterprise feature and this org
+# is on Free — the same class of limit that already blocked environment
+# required-reviewers (infra/github-admin/README.md). So until the plan changes,
+# adoption has to be an explicit `uses:` like this one.
+#
+# WHAT THIS ACTUALLY COVERS HERE — READ BEFORE TRUSTING A GREEN CHECK
+# -------------------------------------------------------------------
+# This repo's real dependency surface is deno.lock, and osv-scanner 2.4.0 has NO
+# extractor for it (`--lockfile=deno.lock` fails outright). What gets scanned is
+# specs/rust/Cargo.lock and specs/shacl/requirements.txt. Both are real, neither is
+# the main graph. A green check here does NOT mean the JSR/npm dependencies were
+# examined. Tracked in infra#104.
+#
+# NOT path-filtered, deliberately — same reasoning as test.yml and schema-drift.yml:
+# a check that is skipped on some PRs cannot be made a required check without the
+# skipped-required-check problem.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+concurrency:
+  group: deps-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  osv:
+    # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
+    # reviewer can tell an intentional bump from a drifted one.
+    uses: bounded-systems/ci-workflows/.github/workflows/osv-scan.yml@a1d80703367afeda42f5cdd09bf8e66093ff2e59 # main
