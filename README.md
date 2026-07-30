@@ -34,7 +34,6 @@ machinery, verified.
 
 ```
 src/board.ts        the live-board seam: reads Front Desk via gh, maps items → PriorityInput (read-only)
-scripts/whats-next.ts  the Concierge interaction — "what should I pick up?" over the live board
 src/policy.ts       vendored PURE policy (prioritize/score/budgetGate) — provenance: gh-project-room
 src/contract.ts     the scheduler state machine (WorkItem, Agent, Budget, World) over machine-schema's pattern
 src/invariants.ts   the spec: S1..L2 as a catalog + assertInvariants(world) → InvariantReport
