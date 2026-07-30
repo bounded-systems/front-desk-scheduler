@@ -14,26 +14,23 @@
  */
 
 import { existsSync } from "node:fs";
-import {
-  MIRROR_DIR,
-  mirrorMeta,
-  readMirrorAllItems,
-  readMirrorScheduling,
-  readMirrorTypedEdges,
-} from "./mirror.ts";
+import { MIRROR_DIR } from "./mirror-dir.ts";
 import {
   meta as dolthubMeta,
   readAllItems as dolthubAllItems,
   readScheduling as dolthubScheduling,
   readTypedEdges as dolthubTypedEdges,
 } from "./dolthub.ts";
-import {
-  meta as serverMeta,
-  readAllItems as serverAllItems,
-  readScheduling as serverScheduling,
-  readTypedEdges as serverTypedEdges,
-} from "./dolt-server.ts";
 import type { RawItem, RawTypedEdge, ScheduleRead, SchedulingItem } from "./scheduling.ts";
+
+// `mirror.ts` and `dolt-server.ts` are loaded ON DEMAND, from inside the adapter
+// methods below — never at module scope. They are the expensive half of this
+// seam: `mirror.ts` reaches `node:child_process`, `board.ts` and the GitHub CLI
+// path, the claim planes and the lease client; `dolt-server.ts` pulls `mysql2`.
+// A static import of either meant that choosing the DoltHub adapter — the
+// zero-infra default, and the only one a cloud session can use — still paid for
+// both. Every method here is already async, so the `await import()` costs a
+// resolved promise and changes no signature.
 
 export type { ScheduleRead, SchedulingItem };
 
@@ -67,15 +64,18 @@ export const dolthubReads: SchedulerReads = {
   },
 };
 
+const mirror = () => import("./mirror.ts");
+const doltServer = () => import("./dolt-server.ts");
+
 export const localDoltReads: SchedulerReads = {
   source: "local",
   // The local clone has no pinning story (dsql is a process per statement), so
   // it reports `at: null` — honestly "cannot say", not a fabricated stamp.
-  readScheduling: async () => ({ items: await readMirrorScheduling(), at: null }),
-  readTypedEdges: () => readMirrorTypedEdges(),
-  readAllItems: () => readMirrorAllItems(),
+  readScheduling: async () => ({ items: await (await mirror()).readMirrorScheduling(), at: null }),
+  readTypedEdges: async () => (await mirror()).readMirrorTypedEdges(),
+  readAllItems: async () => (await mirror()).readMirrorAllItems(),
   meta: async () => {
-    const m = await mirrorMeta();
+    const m = await (await mirror()).mirrorMeta();
     return m ? { ...m, source: "local" } : null;
   },
 };
@@ -83,11 +83,11 @@ export const localDoltReads: SchedulerReads = {
 /** A running `dolt sql-server` over the MySQL protocol (the "dolt image"). */
 export const serverReads: SchedulerReads = {
   source: "server",
-  readScheduling: () => serverScheduling(),
-  readTypedEdges: () => serverTypedEdges(),
-  readAllItems: () => serverAllItems(),
+  readScheduling: async () => (await doltServer()).readScheduling(),
+  readTypedEdges: async () => (await doltServer()).readTypedEdges(),
+  readAllItems: async () => (await doltServer()).readAllItems(),
   meta: async () => {
-    const m = await serverMeta();
+    const m = await (await doltServer()).meta();
     return m ? { ...m, source: "server" } : null;
   },
 };
