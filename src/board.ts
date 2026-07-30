@@ -230,6 +230,24 @@ export async function fetchBoardItemsCheapRaw(
   return raws;
 }
 
+/**
+ * Does the cheap response look like a field-name mismatch rather than a board?
+ *
+ * `fieldValueByName` answers a renamed field with null, and `normalize` defaults
+ * a null Status to "Todo". Since `upsertItems` treats status as github-owned, a
+ * renamed Status field would quietly rewrite EVERY row to Todo — the one failure
+ * the malformed/empty checks can't see, because the response is well-formed and
+ * full. A real board always has Status set on some items, so zero across a
+ * populated board means the name is wrong, not that the board is untriaged.
+ *
+ * Only Status is checked. Effort/Value/Depends-on are legitimately unset board-wide
+ * (that emptiness is why the ranking degenerates today), so they cannot be signals.
+ */
+export function looksLikeFieldMismatch(raws: readonly RawBoardItem[]): boolean {
+  if (raws.length < 10) return false; // too few to conclude anything
+  return raws.every((r) => r.status === undefined || r.status === null);
+}
+
 /** `fetchBoardItemsCheapRaw`, normalized. Null propagates so callers can fall back. */
 export async function fetchBoardItemsCheap(
   org = DEFAULT_ORG,
@@ -263,12 +281,19 @@ export async function fetchBoardItems(
     const cheap = raws?.map(normalize).filter((x): x is BoardItem => x !== null);
     // Fall back on a structurally bad response OR a suspiciously empty board:
     // committing zero items would delete every github-origin row in the mirror.
-    if (raws && cheap && cheap.length > 0) {
+    const mismatch = raws ? looksLikeFieldMismatch(raws) : false;
+    if (raws && cheap && cheap.length > 0 && !mismatch) {
       // Cache the RAW shape — parseItems reads this file back on the cache hit above.
       try { writeFileSync(CACHE_PATH, JSON.stringify({ items: raws })); } catch { /* best-effort */ }
       return cheap;
     }
-    console.error("board: cheap query returned nothing usable — falling back to gh project item-list");
+    console.error(
+      mismatch
+        ? `board: cheap query returned ${raws?.length} items but NONE has a "${BOARD_FIELDS.status}" ` +
+          `value — the project field was probably renamed. Falling back to gh project item-list; ` +
+          `update BOARD_FIELDS in src/board.ts and run \`npm run board:parity\`.`
+        : "board: cheap query returned nothing usable — falling back to gh project item-list",
+    );
   }
   const { stdout } = await pexecFile("gh", [
     "project", "item-list", String(project),

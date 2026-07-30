@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { BOARD_FIELDS, cheapNodeToRaw, normalize } from "../src/board.ts";
+import { BOARD_FIELDS, cheapNodeToRaw, looksLikeFieldMismatch, normalize } from "../src/board.ts";
 
 const full = {
   id: "PVTI_abc",
@@ -69,6 +69,46 @@ test("a PullRequest node maps like an Issue", () => {
   assert.ok(item);
   assert.equal(item.number, 99);
   assert.equal(item.repository, "prx");
+});
+
+test("a board-wide null Status is caught as a field rename, not accepted as Todo", () => {
+  // The severe case: a renamed Status field is well-formed and full, so the
+  // malformed/empty checks pass. normalize would default all 1,330 rows to
+  // "Todo", and upsertItems treats status as github-owned — so the mirror would
+  // be rewritten wholesale. This must trip the fallback instead.
+  const renamed = Array.from({ length: 50 }, (_, i) =>
+    cheapNodeToRaw({ ...full, id: `PVTI_${i}`, content: { ...full.content, number: i }, status: null }));
+  assert.equal(looksLikeFieldMismatch(renamed), true);
+  // And confirm the damage it prevents: every one of them would have read as Todo.
+  assert.ok(renamed.map(normalize).every((it) => it?.status === "Todo"));
+});
+
+test("a healthy board is not mistaken for a rename", () => {
+  const healthy = Array.from({ length: 50 }, (_, i) =>
+    cheapNodeToRaw({ ...full, id: `PVTI_${i}`, content: { ...full.content, number: i } }));
+  assert.equal(looksLikeFieldMismatch(healthy), false);
+  // One lone status among many untriaged items is still a working field name.
+  const mostlyUnset = healthy.map((r, i) => (i === 0 ? r : { ...r, status: undefined }));
+  assert.equal(looksLikeFieldMismatch(mostlyUnset), false);
+});
+
+test("a tiny board never trips the rename heuristic", () => {
+  // Under 10 items there isn't enough signal; falling back on a genuinely small
+  // or brand-new board would be a false alarm that costs the old 1,415 points.
+  const tiny = Array.from({ length: 9 }, (_, i) =>
+    cheapNodeToRaw({ ...full, id: `PVTI_${i}`, content: { ...full.content, number: i }, status: null }));
+  assert.equal(looksLikeFieldMismatch(tiny), false);
+});
+
+test("Effort/Value/Depends-on being empty board-wide is NOT a mismatch signal", () => {
+  // These are legitimately unset across the whole board today — that emptiness is
+  // why the ranking degenerates. Only Status can carry the signal.
+  const noScheduling = Array.from({ length: 50 }, (_, i) =>
+    cheapNodeToRaw({
+      ...full, id: `PVTI_${i}`, content: { ...full.content, number: i },
+      effort: null, value: null, dependsOn: null,
+    }));
+  assert.equal(looksLikeFieldMismatch(noScheduling), false);
 });
 
 test("BOARD_FIELDS names the fields the mirror actually consumes", () => {
