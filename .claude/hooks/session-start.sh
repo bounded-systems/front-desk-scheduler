@@ -76,7 +76,17 @@ if ! command -v dolt >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 && doc
 fi
 
 # --- deno: `deno check` is this repo's type gate (deno.json is the manifest) --
-if ! command -v deno >/dev/null 2>&1 && [ ! -x "$HOME/.deno/bin/deno" ]; then
+# Resolve the interpreter ONCE and reuse it everywhere below. deno can arrive
+# two ways — already on PATH (an image that ships it) or at $HOME/.deno from a
+# previous session — and every site downstream has to agree on which one was
+# found. Testing `-x $HOME/.deno/bin/deno` while this guard also accepts PATH
+# would skip the deps block entirely on a system deno, leaving no node_modules
+# and a "no deno" summary line that makes the skip look expected.
+DENO="$(command -v deno 2>/dev/null || true)"
+if [ -z "$DENO" ] && [ -x "$HOME/.deno/bin/deno" ]; then
+  DENO="$HOME/.deno/bin/deno"
+fi
+if [ -z "$DENO" ]; then
   echo "session-start: installing deno ..."
   # Run the installer from $HOME, not the repo: its shell-setup step invokes
   # deno, which resolves jsr:@deno/installer-shell-setup against whatever
@@ -84,9 +94,16 @@ if ! command -v deno >/dev/null 2>&1 && [ ! -x "$HOME/.deno/bin/deno" ]; then
   # installer's own dependency to the PROJECT lockfile.
   (cd "$HOME" && curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y >/dev/null 2>&1) \
     || echo "session-start: WARN deno install failed; type checking unavailable"
+  if [ -x "$HOME/.deno/bin/deno" ]; then
+    DENO="$HOME/.deno/bin/deno"
+  fi
 fi
-if [ -x "$HOME/.deno/bin/deno" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  echo "export PATH=\"\$HOME/.deno/bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+if [ -n "$DENO" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  # Only prepend the installer's bin dir when that is actually where deno lives;
+  # a system deno is on PATH already.
+  if [ "$DENO" = "$HOME/.deno/bin/deno" ]; then
+    echo "export PATH=\"\$HOME/.deno/bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
+  fi
   # Fail rather than silently rewrite deno.lock. If a deno command wants to
   # change the lockfile, that is a real dependency-resolution change and should
   # be an explicit `deno install` + commit — not working-tree noise that every
@@ -106,9 +123,9 @@ fi
 # Node's test runner only needs node_modules to exist, so this covers it.
 # If it fails, do NOT fall back to `npm install`: a lock mismatch is a real
 # dependency change and wants an explicit `deno install` + commit.
-if [ -f deno.json ] && [ -x "$HOME/.deno/bin/deno" ]; then
+if [ -f deno.json ] && [ -n "$DENO" ]; then
   echo "session-start: deno install --frozen ..."
-  "$HOME/.deno/bin/deno" install --frozen || {
+  "$DENO" install --frozen || {
     echo "session-start: WARN deno install --frozen failed."
     echo "  If resolution differs from deno.lock: run \`deno install\` and COMMIT"
     echo "  the lockfile — do not paper over it with npm install."
@@ -131,6 +148,6 @@ if [ -x "$HOME/.elan/bin/lake" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
 fi
 
 echo "session-start: ready — $(command -v dolt >/dev/null 2>&1 && echo dolt || echo 'no dolt')," \
-     "$([ -x "$HOME/.deno/bin/deno" ] && echo deno || echo 'no deno')," \
+     "$([ -n "$DENO" ] && echo deno || echo 'no deno')," \
      "$([ -x "$HOME/.elan/bin/lake" ] && echo lean || echo 'no lean')"
 exit 0
