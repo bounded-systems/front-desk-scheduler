@@ -82,7 +82,7 @@ jobs:
     environment: lease-deploy
     timeout-minutes: 60 # bound a forgotten approval — the wait doesn't hang a runner forever
     env:
-      BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+      BROKER_URL: ${{ vars.CF_BROKER_URL }}
       CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/deploy/lease' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -118,7 +118,7 @@ jobs:
         id: cfcred
         run: |
           set -euo pipefail
-          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::CF_BROKER_URL not set"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=cloudflare-workers-deploy-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }

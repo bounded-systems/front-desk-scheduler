@@ -37,14 +37,14 @@ jobs:
   drift:
     runs-on: ubuntu-latest
     env:
-      BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+      BROKER_URL: ${{ vars.CF_BROKER_URL }}
       CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/cloudflare/front-desk-lease' }}
     steps:
       - name: Mint each tier (C1 consistency)
         id: mint
         run: |
           set -uo pipefail
-          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::CF_BROKER_URL not set"; exit 1; }
           failures=0
 
           mint_tier() { # name audience path -> writes /tmp/tok.$name on 200

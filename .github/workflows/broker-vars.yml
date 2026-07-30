@@ -1,0 +1,90 @@
+name: broker-vars
+# One name for one broker — enforced, not remembered. (bounded-systems/infra#41)
+#
+# WHAT THIS CATCHES
+# -----------------
+# Every broker caller in this repo reads the ORG variable CF_BROKER_URL. This
+# repo is PUBLIC and infra is PRIVATE, so the variable only reaches here if its
+# visibility is "All repositories" — a setting no file in either repo records and
+# nobody is notified about when it changes. Without it every lane here fails
+# closed on its next scheduled run, which is a bad way to find out.
+#
+# `vars.CF_BROKER_URL` resolving in a run IS the visibility check. No credential,
+# no org-admin API call, no App permission: the observable effect is the thing we
+# actually care about, and it is free to assert.
+#
+# It also holds the retirement of FRONT_DESK_BROKER_URL open as a visible state
+# rather than a checklist item someone has to remember. Two org variables named
+# this one Worker; that duplication already cost a month of falsely-green
+# broker-e2e runs in infra when a stale repo-level value shadowed the org one.
+# Until the old variable is deleted this job says so on every run; after, it
+# turns into a green assertion that it stays deleted.
+#
+# WHY A HARD FAILURE ON DISAGREEMENT
+# ----------------------------------
+# Two names holding the SAME value is untidy. Two names holding DIFFERENT values
+# is the incident: half the lanes mint against one Worker and half against
+# another, and every liveness check stays green because both are running broker
+# code. That case fails the build.
+#
+# NOT path-filtered, deliberately — same reasoning as test.yml and
+# schema-drift.yml. A check skipped on some PRs cannot become a required check.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * *" # daily — org variables change out of band, with no webhook
+  workflow_dispatch: {}
+concurrency:
+  group: broker-vars-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  vars:
+    # Fork PRs cannot see org variables, so an empty value there would be
+    # indistinguishable from a real visibility misconfiguration. Skip rather than
+    # report a false red on a contributor's PR.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    env:
+      CF_BROKER_URL: ${{ vars.CF_BROKER_URL }}
+      LEGACY_BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+    steps:
+      - name: The broker URL resolves, and exactly one variable names it
+        run: |
+          set -uo pipefail
+          fail=0
+
+          # The comparison prints lengths, not values — though the runner's own
+          # `env:` block echoes both above this step, so treat that as cosmetic.
+          # These are non-secret org variables (infra#41 quotes the value), so no
+          # masking is warranted; the point is only that this job adds no new
+          # place the URL has to be corrected when it moves.
+          if [ -z "${CF_BROKER_URL:-}" ]; then
+            echo "::error::org variable CF_BROKER_URL does not resolve in this repository."
+            echo "::error::  This repo is PUBLIC; infra is private. Set the org variable's visibility to"
+            echo "::error::  'All repositories' (org Settings -> Secrets and variables -> Actions -> Variables)."
+            echo "::error::  Every broker caller here — mirror-sync, mirror-sync-delta, mirror-migrate,"
+            echo "::error::  lease-deploy, broker-drift, lease-projection — fails closed without it."
+            fail=1
+          else
+            echo "✓ CF_BROKER_URL resolves here (${#CF_BROKER_URL} chars) — org visibility reaches this public repo"
+          fi
+
+          if [ -n "${LEGACY_BROKER_URL:-}" ]; then
+            if [ "${LEGACY_BROKER_URL}" != "${CF_BROKER_URL:-}" ]; then
+              echo "::error::FRONT_DESK_BROKER_URL is still set AND disagrees with CF_BROKER_URL."
+              echo "::error::  Two names for one broker, now holding two values — this is the shape of the"
+              echo "::error::  incident in infra#41. Reconcile them, then delete FRONT_DESK_BROKER_URL."
+              fail=1
+            else
+              echo "::notice::FRONT_DESK_BROKER_URL still exists (same value). No workflow reads it any more."
+              echo "::notice::  Delete it from the org once a real run has resolved CF_BROKER_URL — infra#41 step 4."
+            fi
+          else
+            echo "✓ FRONT_DESK_BROKER_URL is retired — one name for one broker"
+          fi
+
+          exit "$fail"

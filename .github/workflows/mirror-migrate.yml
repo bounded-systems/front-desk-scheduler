@@ -145,10 +145,10 @@ jobs:
 
       - name: DoltHub credential (via OIDC broker)
         env:
-          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
         run: |
           set -euo pipefail
-          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::CF_BROKER_URL not set"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
@@ -282,10 +282,10 @@ jobs:
         if: ${{ inputs.dry_run == false }}
         continue-on-error: true
         env:
-          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
         run: |
           set -uo pipefail
-          [ -n "${BROKER_URL:-}" ] || { echo "::warning::FRONT_DESK_BROKER_URL not set"; exit 0; }
+          [ -n "${BROKER_URL:-}" ] || { echo "::warning::CF_BROKER_URL not set"; exit 0; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')" || true
           [ -n "${jwt:-}" ] || { echo "::warning::could not obtain an OIDC token for the App broker"; exit 0; }
