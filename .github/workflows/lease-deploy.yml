@@ -96,13 +96,15 @@ jobs:
       # pause HERE, before any credential exists, until an approver signs off on an issue.
       # A denied or ignored (60-min timeout) approval fails the run without minting anything.
       #
-      # The IN-HOUSE shared composite (infra#62, infra#79) — no third-party code in the gate;
-      # only allowlisted logins can release OR cancel it. SHA-pinned like every other cross-repo
-      # ref (CodeQL flagged @main; first-party-on-protected-main is equal trust, a pin is
-      # stricter — bump the SHA when infra's action changes). Requires infra's Actions access
-      # set to organization-accessible, else this step fails loud at resolve.
+      # The IN-HOUSE composite (infra#62/#79), referenced from its canonical public home
+      # bounded-systems/await-approval, SHA-pinned (immutable content) — no third-party
+      # code in the gate; only allowlisted logins can release OR cancel it. It cannot live
+      # in infra: infra is PRIVATE and this repo is PUBLIC, and GitHub never resolves a
+      # private repo's actions from a public caller (proven live 2026-07-30, run 30562621239:
+      # "Unable to resolve action bounded-systems/infra, not found" with access_level=
+      # organization correctly set — a public workflow log must not leak private-repo code).
       - name: Await approval (before any mint)
-        uses: bounded-systems/infra/.github/actions/await-approval@7b8b2d8040d84296c4790c068bbdee08ab400378 # main @ infra#79
+        uses: bounded-systems/await-approval@3eda4124e16463741037ebe8e546419eaaa4824b # main
         with:
           approvers: bdelanghe
           issue-title: "Approve lease-deploy (deploys the scheduler's serialization point)"
