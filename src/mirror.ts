@@ -961,8 +961,11 @@ export interface DeltaResult {
 }
 
 /**
- * Cheap incremental refresh. The full pull costs ~610 GraphQL points because it
- * pages every one of 1,260 items; but most are Done and static. The Search API
+ * Cheap incremental refresh. The full pull measured 1,415 GraphQL points on the
+ * legacy `gh project item-list` path (the "~610" this comment used to claim was
+ * long stale); the `fieldValueByName` query should bring that to ~15 — confirm
+ * with `npm run board:parity`. Most of the 1,330 items are Done and static
+ * either way, so an incremental refresh is still the right shape. The Search API
  * (a SEPARATE rate-limit budget, not GraphQL) returns only issues updated since
  * the last sync — usually a handful. We refresh github-owned fields (title,
  * status via open/closed) on the rows we already have; brand-new issues are left

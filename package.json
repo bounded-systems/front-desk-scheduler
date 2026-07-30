@@ -16,6 +16,7 @@
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
     "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
     "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg",
+    "board:parity": "node scripts/board-parity.ts",
     "schema:export": "node scripts/schema-export.ts",
     "schema:check": "node scripts/schema-export.ts --check",
     "triage:coverage": "node scripts/triage-coverage.ts",
