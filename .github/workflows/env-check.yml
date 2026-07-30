@@ -1,0 +1,45 @@
+name: env-check
+# Drift gate for the vendored cloud-environment checker (infra#122).
+#
+# STANDARDIZED ORG-WIDE CALLER — copy this file byte-identical to
+# .github/workflows/env-check.yml in the adopting repo. Same rationale as
+# templates/deps.yml: identical callers everywhere means the next canonical bump is
+# one review of one diff, applied fleet-wide by the same sed.
+#
+# What this gates: .claude/hooks/cloud-env-check.mjs in THIS repo, against the
+# canonical copy in ci-workflows. The script is repo-agnostic on purpose — everything
+# repo-specific lives in the handshake block of .claude/cloud-environment.json — so a
+# local edit to the script is almost always a change every other adopter also needs,
+# and belongs in ci-workflows instead.
+#
+# Adoption is FOUR things, not two. The script's own header undercounts it:
+#   1. vendor tools/cloud-env-check.mjs to .claude/hooks/cloud-env-check.mjs
+#   2. write .claude/cloud-environment.json with a handshake block + domain list
+#   3. invoke it from a SessionStart hook (nothing runs it otherwise)
+#   4. set the handshake variable in the cloud environment dialog
+# Steps 3 and 4 live outside both files. This lane only covers step 1.
+#
+# Path-filtered deliberately, unlike deps.yml: this gate is about one file, and the
+# skipped-required-check problem does not apply because it is not a required check.
+# If it ever becomes one, drop the filter.
+on:
+  pull_request:
+    paths:
+      - .claude/hooks/cloud-env-check.mjs
+      - .github/workflows/env-check.yml
+  push:
+    branches: [main]
+    paths:
+      - .claude/hooks/cloud-env-check.mjs
+      - .github/workflows/env-check.yml
+  workflow_dispatch: {}
+concurrency:
+  group: env-check-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  drift:
+    # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
+    # reviewer can tell an intentional bump from a drifted one.
+    uses: bounded-systems/ci-workflows/.github/workflows/env-check-drift.yml@0ef2583725966dc03564f2404f87c573753fb351 # main
