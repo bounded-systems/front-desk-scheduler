@@ -79,6 +79,18 @@ Not "the DO is deployed". Not "the code looks right".
 receives a grant. Until that run happens, "the DO enforces exclusion" is a design
 claim — the same status the PRIMARY KEY had while `DOLT_HOST` was unset.
 
+**Met 2026-07-30.** `production-a2` raced the deployed endpoint with 16 and then
+32 concurrent claimants: exactly one grant per race, fencing tokens strictly
+increasing and never reused, a lapsed holder's `renewLease` returning false, and
+the DO's own history agreeing with every grant the race observed. A2 is
+discharged by experiment rather than asserted.
+
+The criterion does not retire with the first green. It is a STANDING signal (the
+daily cron), because what it establishes is a property of the *deployment* — and
+a deployment can regress in ways the code cannot show. `lease-deploy` publishes
+`FDS_CLAIM_ENDPOINT` in the same run that produces it, so the signal stays
+pointed at whatever is actually live.
+
 ## Order of work
 
 1. ✅ Split `claim-race` so the assumption is a failing test, not a vibe.
