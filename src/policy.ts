@@ -90,7 +90,7 @@ export const FALLBACK_AGE_WEIGHT_PER_DAY = 0.02;
 export const FALLBACK_AGE_CAP_DAYS = 180;
 export const AT_RISK_THRESHOLD = 0.8;
 
-/** The `bd ready` rule: live AND zero open blockers. */
+/** The ready rule: live AND zero open blockers. */
 export function isEligible(item: PriorityInput): boolean {
   const live = item.state === "open" || item.state === "in_progress";
   return live && item.openBlockers === 0;

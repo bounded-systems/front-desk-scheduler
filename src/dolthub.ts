@@ -73,7 +73,7 @@ export function pinTables(sql: string, head: string): string {
 }
 
 /**
- * The `bd ready` read over DoltHub's public HTTP API — zero budget, no clone.
+ * The ready-rule read over DoltHub's public HTTP API — zero budget, no clone.
  * Reads NON-Done items only (stays under the 1000-row API cap); shared assembly.
  *
  * SNAPSHOT-CONSISTENT: the three queries are pinned to ONE commit (`AS OF` the
@@ -108,7 +108,7 @@ export async function readTypedEdges(ref = "main"): Promise<RawTypedEdge[]> {
   return query<RawTypedEdge>(SQL.typedEdges, ref);
 }
 
-/** ALL items incl Done over DoltHub HTTP — the `bd list --all` replacement. */
+/** ALL items incl Done over DoltHub HTTP (the `list` verb). */
 export async function readAllItems(ref = "main"): Promise<RawItem[]> {
   return query<RawItem>(SQL.allItems, ref);
 }

@@ -1,6 +1,6 @@
 /**
  * @module scheduling
- * The pure `bd ready` computation shared by every read adapter (DoltHub HTTP,
+ * The pure ready-rule computation shared by every read adapter (DoltHub HTTP,
  * local dolt-server, local file): given the raw item/edge/lease rows, derive
  * openBlockers / unblocks / leased. Adapters only fetch; this assembles.
  */
@@ -96,7 +96,7 @@ export const SQL = {
   // (`readTypedEdges` → the `graph` verb) needs the kind to distinguish
   // parent-child (epic children) from blockers.
   typedEdges: "SELECT item_id, dep_item_id, edge_type FROM item_deps",
-  // ALL items incl Done — the `bd list --all` replacement (the `list` verb).
+  // ALL items incl Done (the `list` verb).
   // The scheduling/graph queries drop Done (not schedulable); list must include
   // it so consumers see closed work (e.g. epic children reporting `state`).
   allItems:
@@ -115,7 +115,7 @@ export const SQL = {
     "SELECT DISTINCT item_id FROM claims WHERE status='active' AND TIMESTAMPADD(SECOND,ttl_sec,claimed_at)>UTC_TIMESTAMP()",
 } as const;
 
-// ── typed dep-graph surface (GH-canonical) — the bd-dep/bd-ready replacement ──
+// ── typed dep-graph surface (GH-canonical): ready/blocked + typed edges ──
 
 /** One raw edge with its kind, as `SQL.typedEdges` returns it. */
 export interface RawTypedEdge {

@@ -595,7 +595,7 @@ export async function syncPush(estimatePoints = 200): Promise<PushResult> {
   return { captured, pushed, gated: false };
 }
 
-// --- native-relations mining (the bd-dep replacement) ---
+// --- native-relations mining (typed dep edges from GH-native relations) ---
 
 interface RelationEdge {
   readonly src: string; // item_id that is blocked
@@ -779,7 +779,7 @@ export async function shapeChecks(): Promise<ShapeFinding[]> {
   );
 
   // D3 — the inverse: a Todo item with an open BLOCKING dep should be Blocked
-  // (bd-ready agreement). 'closes' edges excluded: an open closing-PR means the
+  // (ready-rule agreement). 'closes' edges excluded: an open closing-PR means the
   // item is in delivery, not mis-statused.
   await check(
     "D3",
@@ -970,14 +970,14 @@ export async function mirrorMeta(): Promise<MirrorMeta | null> {
  * Scheduling read: items with openBlockers/unblocks computed from the FULL edge
  * graph (text 'blocks' + mined 'parent-child' + 'closes') in SQL — so an issue
  * whose fix is already in an open PR ranks as blocked, and closing a hot
- * dependency scores high on flow. This is the `bd ready` computation, in the mirror.
+ * dependency scores high on flow. This is the ready-rule computation, in the mirror.
  */
 /** Typed dep edges (with edge_type) from the local clone — the dep-graph source. */
 export async function readMirrorTypedEdges(): Promise<RawTypedEdge[]> {
   return dsqlRows<RawTypedEdge>(SQL.typedEdges);
 }
 
-/** ALL items incl Done from the local clone — the `bd list --all` replacement. */
+/** ALL items incl Done from the local clone (the `list` verb). */
 export async function readMirrorAllItems(): Promise<RawItem[]> {
   return dsqlRows<RawItem>(SQL.allItems);
 }

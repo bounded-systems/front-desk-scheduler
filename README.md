@@ -15,7 +15,7 @@ so the races are reproducible (a seeded simulation) and provable (a TLA+ spec).
 | Front Desk / PM | OS / computer-processing equivalent |
 |---|---|
 | Issue (unit of intent) | process / task (PCB) |
-| `Status: Todo` + no open blockers (`bd ready`) | **ready queue** (runnable processes) |
+| `Status: Todo` + no open blockers (the ready rule) | **ready queue** (runnable processes) |
 | `Depends on` graph | **dependency DAG** (`make -j`, Bazel, dataflow) |
 | `prioritize()` (value-density + unblocks − effort) | the **priority function** (≈ WSJF / SJF) |
 | Agent / Claude session | **thread / core / worker** |

@@ -5,7 +5,7 @@
  * scripts/mcp.ts). Reads through the DoltHub/local seam — zero GitHub API.
  *
  *   fds whats-next [--repo prx] [--top 10] [--budget rolling-5h]
- *   fds graph [--repo prx]        # the GH-canonical dep-graph (bd-ready/bd-dep)
+ *   fds graph [--repo prx]        # the GH-canonical dep-graph (ready/blocked + edges)
  *
  * JSON output: verbspec validates flags strictly against each verb's input
  * schema, so there is no `--json` flag. Set FDS_JSON=1 and the raw verb output

@@ -7,7 +7,7 @@ verbspec (author a verb once → CLI/MCP/OpenAPI), applied to verification.
 ## The abstractions
 
 - **`WorkItem`** — lifecycle `Blocked → Ready → InProgress → Done`.
-  `Ready ⟺ open ∧ every "blocks"-dep is Done` (the `bd ready` rule, = `isEligible`).
+  `Ready ⟺ open ∧ every "blocks"-dep is Done` (the ready rule, = `isEligible`).
   `edges` of type `blocks` form the dependency DAG.
 - **`Agent`** (a thread) — `Idle → Claiming → Working → Releasing`.
 - **`Budget`** — a token bucket `{ capacityPoints, consumed }`.
