@@ -250,6 +250,11 @@ jobs:
         env:
           FDS_CLAIM_ENDPOINT: ${{ steps.deploy.outputs.url }}
           RACE_ITEM: ${{ vars.FDS_CLAIM_RACE_ITEM || 'race#1' }}
+          # The worker authenticates writes (worker/lease/src/auth.mjs). For an
+          # installation token like github.token the check is repo COVERAGE, not
+          # push — so contents:read suffices. Same line production-a2 uses; its
+          # absence here 401'd every claim in the first raced deploy.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y
