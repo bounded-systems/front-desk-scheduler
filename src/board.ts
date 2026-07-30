@@ -125,10 +125,128 @@ function parseItems(stdout: string): BoardItem[] {
 }
 
 /**
+ * The board fields this module reads, as named on the project.
+ *
+ * Naming them explicitly is what makes the cheap query cheap: `fieldValueByName`
+ * costs one node per field, whereas asking for the whole `fieldValues` connection
+ * costs `first:N` nodes PER ITEM (see `fetchBoardItemsCheap`). A field renamed on
+ * the project surfaces as a null value, not a wrong one — `normalize` then
+ * defaults it, and D6 drift reports the divergence.
+ */
+export const BOARD_FIELDS = {
+  status: "Status",
+  kind: "Kind",
+  effort: "Effort",
+  value: "Value",
+  dependsOn: "Depends on",
+} as const;
+
+/** GraphQL alias → the union member carrying the value, per field type. */
+const CHEAP_QUERY = `query($org:String!,$num:Int!,$cursor:String){
+  organization(login:$org){projectV2(number:$num){items(first:100,after:$cursor){
+    pageInfo{hasNextPage endCursor}
+    nodes{
+      id
+      content{__typename
+        ... on Issue{number title repository{name}}
+        ... on PullRequest{number title repository{name}}
+      }
+      status:fieldValueByName(name:"${BOARD_FIELDS.status}"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+      kind:fieldValueByName(name:"${BOARD_FIELDS.kind}"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+      effort:fieldValueByName(name:"${BOARD_FIELDS.effort}"){... on ProjectV2ItemFieldNumberValue{number}}
+      value:fieldValueByName(name:"${BOARD_FIELDS.value}"){... on ProjectV2ItemFieldNumberValue{number}}
+      dependsOn:fieldValueByName(name:"${BOARD_FIELDS.dependsOn}"){... on ProjectV2ItemFieldTextValue{text}}
+    }
+  }}}
+}`;
+
+interface CheapNode {
+  id?: string;
+  content?: { __typename?: string; number?: number; title?: string; repository?: { name?: string } } | null;
+  status?: { name?: string } | null;
+  kind?: { name?: string } | null;
+  effort?: { number?: number } | null;
+  value?: { number?: number } | null;
+  dependsOn?: { text?: string } | null;
+}
+
+/** Shape a cheap-query node like `gh project item-list` JSON, so `normalize` is shared. */
+export function cheapNodeToRaw(n: CheapNode): RawBoardItem {
+  return {
+    id: n.id,
+    content: { number: n.content?.number, type: n.content?.__typename },
+    title: n.content?.title,
+    repository: n.content?.repository?.name,
+    status: n.status?.name,
+    kind: n.kind?.name,
+    effort: n.effort?.number,
+    value: n.value?.number,
+    "depends on": n.dependsOn?.text,
+  };
+}
+
+/**
+ * The board read, priced properly.
+ *
+ * `gh project item-list` asks for `fieldValues(first:100)` on every item, so a
+ * 100-item page costs ~101 GraphQL points (100 items x 100 field values / 100).
+ * At 14 pages that measured 1,415 points per sync — 99% of all API spend, four
+ * times a day, to re-read a board that is mostly static Done rows.
+ *
+ * `fieldValueByName` returns ONE object per named field instead of a connection,
+ * so nothing multiplies: a page costs ~1 point, the same as `fetchContentGraph`
+ * which has always paged this exact project for 14 points total. Naming the five
+ * fields we actually consume is the entire optimization.
+ *
+ * Returns null if the response is structurally unusable, so the caller can fall
+ * back to the legacy path rather than commit an empty board to the mirror.
+ */
+export async function fetchBoardItemsCheapRaw(
+  org = DEFAULT_ORG,
+  project = DEFAULT_PROJECT,
+): Promise<RawBoardItem[] | null> {
+  const raws: RawBoardItem[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const args = [
+      "api", "graphql",
+      "-f", `query=${CHEAP_QUERY}`,
+      "-F", `org=${org}`, "-F", `num=${project}`,
+      ...(cursor ? ["-F", `cursor=${cursor}`] : []),
+    ];
+    const { stdout } = await pexecFile("gh", args, { maxBuffer: 64 * 1024 * 1024 });
+    const data = JSON.parse(stdout) as {
+      data?: { organization?: { projectV2?: { items?: {
+        pageInfo: { hasNextPage: boolean; endCursor: string };
+        nodes: CheapNode[];
+      } } } };
+    };
+    const conn = data.data?.organization?.projectV2?.items;
+    if (!conn) return null; // malformed/errored — let the caller fall back
+    for (const n of conn.nodes) raws.push(cheapNodeToRaw(n));
+    if (!conn.pageInfo.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+  return raws;
+}
+
+/** `fetchBoardItemsCheapRaw`, normalized. Null propagates so callers can fall back. */
+export async function fetchBoardItemsCheap(
+  org = DEFAULT_ORG,
+  project = DEFAULT_PROJECT,
+): Promise<BoardItem[] | null> {
+  const raws = await fetchBoardItemsCheapRaw(org, project);
+  return raws && raws.map(normalize).filter((x): x is BoardItem => x !== null);
+}
+
+/**
  * Fetch the live board via `gh` (requires `gh auth` with `read:project`).
  * A successful fetch is cached to `.tools/board-cache.json`. Pass
- * `cacheMinutes` to reuse a fresh cache instead of re-spending GraphQL — the
- * item-list query is the expensive call, so reads should prefer the cache.
+ * `cacheMinutes` to reuse a fresh cache instead of re-spending GraphQL.
+ *
+ * Uses the cheap `fieldValueByName` query by default. Set `FDS_BOARD_LEGACY=1`
+ * to force the old `gh project item-list` path — the escape hatch if a project
+ * field is renamed and the cheap query starts returning nulls.
  */
 export async function fetchBoardItems(
   org = DEFAULT_ORG,
@@ -139,6 +257,18 @@ export async function fetchBoardItems(
   if (cacheMinutes > 0 && existsSync(CACHE_PATH)) {
     const ageMin = (Date.now() - statSync(CACHE_PATH).mtimeMs) / 60_000;
     if (ageMin < cacheMinutes) return parseItems(readFileSync(CACHE_PATH, "utf8"));
+  }
+  if (process.env.FDS_BOARD_LEGACY !== "1") {
+    const raws = await fetchBoardItemsCheapRaw(org, project).catch(() => null);
+    const cheap = raws?.map(normalize).filter((x): x is BoardItem => x !== null);
+    // Fall back on a structurally bad response OR a suspiciously empty board:
+    // committing zero items would delete every github-origin row in the mirror.
+    if (raws && cheap && cheap.length > 0) {
+      // Cache the RAW shape — parseItems reads this file back on the cache hit above.
+      try { writeFileSync(CACHE_PATH, JSON.stringify({ items: raws })); } catch { /* best-effort */ }
+      return cheap;
+    }
+    console.error("board: cheap query returned nothing usable — falling back to gh project item-list");
   }
   const { stdout } = await pexecFile("gh", [
     "project", "item-list", String(project),

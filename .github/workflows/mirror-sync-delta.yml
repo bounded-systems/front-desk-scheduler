@@ -1,7 +1,7 @@
 name: mirror-sync-delta
 # Hourly CHEAP incremental refresh (#1). Uses the GitHub Search API (a separate
 # rate-limit budget, NOT GraphQL) to refresh only issues changed since the last
-# sync — ~1 GraphQL point vs ~610 for a full item-list. Refreshes title + status
+# sync — ~1 GraphQL point vs ~1,415 measured for a full pull. Refreshes title + status
 # (closed→Done) on existing mirror rows; brand-new items and the relation/
 # frontmatter graph are the weekly full sync's job (mirror-sync.yml).
 #
