@@ -81,9 +81,26 @@ if (!handshake?.variable || !handshake?.prefix) {
   process.exit(0);
 }
 
-const domains = (config.networkAccess?.allowedDomains ?? []).map((d) =>
-  typeof d === 'string' ? { domain: d } : d,
-);
+// The record's shape is validated, not coerced. `?? []` here was a silent hole:
+// a typo'd container key ("allowedDomians") hashed ZERO domains and still
+// emitted a plausible digest, so the operator would paste it and the handshake
+// would go green over a record listing no allowlist at all. Refuse instead.
+const rawDomains = config.networkAccess?.allowedDomains;
+if (!Array.isArray(rawDomains) || rawDomains.length === 0) {
+  console.log(
+    `${TAG} ⚠ ${configPath}: networkAccess.allowedDomains is missing, not an array, or empty — check for a typo'd key. Refusing to emit a digest over an empty allowlist.`,
+  );
+  process.exit(1);
+}
+const domains = rawDomains.map((d) => (typeof d === 'string' ? { domain: d } : d));
+for (const [i, d] of domains.entries()) {
+  if (typeof d?.domain !== 'string' || d.domain.trim() === '') {
+    console.log(
+      `${TAG} ⚠ ${configPath}: allowedDomains[${i}] has no usable "domain" string — got ${JSON.stringify(d)}.`,
+    );
+    process.exit(1);
+  }
+}
 const recordedVars = config.environmentVariables ?? {};
 
 // --- digest ------------------------------------------------------------------
@@ -202,6 +219,17 @@ if (flag('--verify-domains')) {
   const blocked = results.filter((r) => r.status === '000');
   const skipped = results.filter((r) => r.status === 'skip');
   const ok = results.length - blocked.length - skipped.length;
+
+  // Every probe failing is a dead network, not N revoked grants. Printing
+  // "re-add it in the dialog" for the whole allowlist would be wrong the vast
+  // majority of the time, and would train people to ignore this check.
+  const probed = results.length - skipped.length;
+  if (probed > 1 && blocked.length === probed) {
+    console.log(
+      `${TAG} allowlist check INCONCLUSIVE — all ${probed} probes returned 000 (no network?). Not reporting individual domains.`,
+    );
+    process.exit(0);
+  }
 
   for (const r of blocked) {
     console.log(
