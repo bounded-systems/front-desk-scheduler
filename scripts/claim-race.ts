@@ -109,6 +109,21 @@ const where = PLANE.name === "lease"
 console.log(`claim-race: ${AGENTS} agents, item ${ITEM}, plane ${PLANE.name} @ ${where}`);
 console.log(`  guarantee: ${PLANE.guarantee}`);
 
+// WHICH ASSUMPTION A GREEN FROM THIS RUN DISCHARGES. It is a property of the
+// PLANE, not of this script: racing a shared dolt sql-server exercises A1 (the
+// engine applies INSERT IGNORE atomically against the PRIMARY KEY), while
+// racing a deployed worker/lease exercises A2′ (every claimant for one item
+// reaches the same serialization point). These are named in specs/lean and
+// split across the two CI jobs — harness-a1 and production-a2.
+//
+// This was hardcoded to A1, which is what the script raced when only the Dolt
+// planes existed. Once production-a2 pointed it at the Durable Object, the A2
+// job's own output still closed with "A1 holds empirically" — a green naming
+// evidence the run did not produce, which is the one thing this suite exists
+// to refuse.
+const ASSUMPTION = PLANE.name === "lease" ? "A2" : "A1";
+const SUBJECT = PLANE.name === "lease" ? "against this endpoint" : "on this server";
+
 console.log("phase 1 — RACE (cold item)");
 const w1 = await race("r1", 60);
 check(w1 !== null, "r1: a winner exists");
@@ -172,9 +187,9 @@ if (PLANE.fenced) {
 if (failures > 0) {
   console.error(
     s1Violation
-      ? `\nclaim-race: ${failures} FAILURE(S) — INCLUDING A DOUBLE-CLAIM. S1 is not holding on this server.`
+      ? `\nclaim-race: ${failures} FAILURE(S) — INCLUDING A DOUBLE-CLAIM. S1 is not holding ${SUBJECT}.`
       : `\nclaim-race: ${failures} failure(s) — no double-claim observed; likely test-setup or liveness, inspect above.`,
   );
   process.exit(1);
 }
-console.log("\nclaim-race: all checks passed — A1 holds empirically on this server.");
+console.log(`\nclaim-race: all checks passed — ${ASSUMPTION} holds empirically ${SUBJECT}.`);
