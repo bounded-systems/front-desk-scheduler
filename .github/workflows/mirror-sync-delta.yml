@@ -39,10 +39,10 @@ jobs:
         # The dolt cred lives only in the broker Worker; released over OIDC to this
         # pinned workflow. No stored secret. Fails closed.
         env:
-          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
         run: |
           set -euo pipefail
-          [ -n "${BROKER_URL:-}" ] || { echo "::error::FRONT_DESK_BROKER_URL not set"; exit 1; }
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::CF_BROKER_URL not set"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dolthub-cred-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
@@ -57,10 +57,10 @@ jobs:
       - name: Mint Front Desk App token via the OIDC broker
         id: broker-token
         env:
-          BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
         run: |
           set -euo pipefail
-          [ -n "$BROKER_URL" ] || { echo "::error::org var FRONT_DESK_BROKER_URL not visible to this repo"; exit 1; }
+          [ -n "$BROKER_URL" ] || { echo "::error::org var CF_BROKER_URL not visible to this repo"; exit 1; }
           jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
           [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
