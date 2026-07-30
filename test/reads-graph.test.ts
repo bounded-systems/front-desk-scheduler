@@ -50,6 +50,36 @@ test("reads.ts still reaches both adapters dynamically", () => {
   assert.match(src, /import\(\s*["']\.\/dolt-server\.ts["']\s*\)/, "server plane must still be reachable");
 });
 
+test("reads.ts imports nothing from node:", () => {
+  // The whole point of moving `resolveReads` to reads-resolve.ts. If a `node:`
+  // import comes back here, the seam stops being portable and every consumer
+  // of verbs.ts inherits it again.
+  assert.doesNotMatch(
+    read("reads.ts"),
+    /^\s*import\s[^;]*?from\s*["']node:/m,
+    "reads.ts must stay runtime-portable — node-only detection lives in reads-resolve.ts",
+  );
+});
+
+test("verbs.ts does not statically import the node-only environment sniffing", () => {
+  const src = read("verbs.ts");
+  assert.equal(
+    staticallyImports(src, "./reads-resolve.ts"),
+    false,
+    "verbs.ts must ask for `currentReads()`; WHICH plane to use is the entrypoint's call, not the verb's",
+  );
+  assert.equal(
+    staticallyImports(src, "./board.ts"),
+    false,
+    "verbs.ts needs only statusToState — import it from status.ts, not the module that shells out to gh",
+  );
+  assert.doesNotMatch(
+    src,
+    /^\s*import\s[^;]*?from\s*["']node:/m,
+    "verbs.ts must not import node: directly",
+  );
+});
+
 test("mirror-dir.ts stays free of imports", () => {
   // It exists solely so reads.ts can learn the clone path without loading
   // mirror.ts. An import here would hand back the dependency it removed.

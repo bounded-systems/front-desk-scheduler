@@ -13,8 +13,6 @@
  * present, else DoltHub.
  */
 
-import { existsSync } from "node:fs";
-import { MIRROR_DIR } from "./mirror-dir.ts";
 import {
   meta as dolthubMeta,
   readAllItems as dolthubAllItems,
@@ -92,16 +90,34 @@ export const serverReads: SchedulerReads = {
   },
 };
 
+// ── the installed default ────────────────────────────────────────────────────
+// WHICH adapter to use is a property of the ENTRYPOINT, not of the verbs. A CLI
+// can look at the filesystem and guess (`reads-resolve.ts`); a Worker cannot,
+// and must not pay for the import that could. So verbs ask for "the current
+// read plane" and an entrypoint decides what that is.
+//
+// This replaced a direct `resolveReads()` call inside every verb, which baked
+// Node's environment-sniffing into the verb module and made it unimportable
+// anywhere without `node:fs`. It cannot be an `await import()` instead: verbspec
+// calls `deps` synchronously (`v.deps?.()`), so the choice has to be resolvable
+// without awaiting.
+//
+// The default is DoltHub — the only adapter that runs anywhere, needs no clone
+// and no credential. An entrypoint with a filesystem overrides it in one line.
+
+/** A factory, not a value: `resolveReads` re-reads env on every call, and that
+ *  per-call behaviour is what the CLI and the tests expect. */
+let readsFactory: () => SchedulerReads = () => dolthubReads;
+
 /**
- * Pick the adapter. Priority: FDS_READS override → a running dolt-server if
- * DOLT_HOST is set → a local clone if present → DoltHub (zero-infra default).
+ * Install the process-wide read-plane factory. Node entrypoints call this with
+ * `resolveReads` from `./reads-resolve.ts`; a Worker leaves it alone.
  */
-export function resolveReads(): SchedulerReads {
-  switch (process.env.FDS_READS) {
-    case "server": return serverReads;
-    case "local": return localDoltReads;
-    case "dolthub": return dolthubReads;
-  }
-  if (process.env.DOLT_HOST) return serverReads;
-  return existsSync(`${MIRROR_DIR}/.dolt`) ? localDoltReads : dolthubReads;
+export function setReadsFactory(factory: () => SchedulerReads): void {
+  readsFactory = factory;
+}
+
+/** The read plane this process should use right now. */
+export function currentReads(): SchedulerReads {
+  return readsFactory();
 }

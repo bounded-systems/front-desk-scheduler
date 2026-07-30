@@ -8,8 +8,8 @@
 
 import { z } from "zod";
 import { defineVerb, type Registry, type VerbSpec } from "@bounded-systems/verbspec";
-import { statusToState } from "./board.ts";
-import { resolveReads, type SchedulerReads } from "./reads.ts";
+import { statusToState } from "./status.ts";
+import { currentReads, type SchedulerReads } from "./reads.ts";
 import { assembleGraph, assembleScheduling } from "./scheduling.ts";
 import {
   budgetGate,
@@ -75,9 +75,9 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
   actor: "front-desk",
   input: NextInput,
   output: NextOutput,
-  deps: () => ({ reads: resolveReads() }),
+  deps: () => ({ reads: currentReads() }),
   run: async (input, deps) => {
-    const reads = deps?.reads ?? resolveReads();
+    const reads = deps?.reads ?? currentReads();
     const budget = ORG_BUDGETS.get(input.budget) ?? ROLLING_5H_BUDGET;
     const [read, meta] = await Promise.all([reads.readScheduling(), reads.meta()]);
     const board = read.items;
@@ -161,7 +161,7 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
 
 // ── claim / release (the agent work loop; writes the authoritative local mirror) ──
 
-import { claimNext, readMirrorScheduling, releaseClaim } from "./mirror.ts";
+import { claimNext, releaseClaim } from "./mirror.ts";
 
 /**
  * The ranked candidate list a claim latches from.
@@ -177,7 +177,7 @@ import { claimNext, readMirrorScheduling, releaseClaim } from "./mirror.ts";
  * board state it decided against (`claims.decided_at_commit`).
  */
 const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; at: string | null; byId: Map<string, { number: number; repository: string; title: string }> }> => {
-  const read = await resolveReads().readScheduling();
+  const read = await currentReads().readScheduling();
   const board = read.items.filter(
     (i) => i.status !== "Done" && !i.leased && (!repo || i.repository === repo),
   );
@@ -292,10 +292,10 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
     "The GH-canonical dep-graph — ready (WSJF-ranked) + blocked (with open blocker IDs) + typed edges, read from the mirror. Zero GitHub API.",
   actor: "front-desk",
   input: GraphInput,
-  deps: () => ({ reads: resolveReads() }),
+  deps: () => ({ reads: currentReads() }),
   output: GraphOutput,
   run: async (input, deps) => {
-    const reads = deps?.reads ?? resolveReads();
+    const reads = deps?.reads ?? currentReads();
     const [read, typedEdges, meta] = await Promise.all([
       reads.readScheduling(),
       reads.readTypedEdges(),
@@ -403,10 +403,10 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
     "Every work item incl Done + the typed dep edges, GH-canonical. Read from the mirror; zero GitHub API.",
   actor: "front-desk",
   input: ListInput,
-  deps: () => ({ reads: resolveReads() }),
+  deps: () => ({ reads: currentReads() }),
   output: ListOutput,
   run: async (input, deps) => {
-    const reads = deps?.reads ?? resolveReads();
+    const reads = deps?.reads ?? currentReads();
     const [raw, typedEdges, meta] = await Promise.all([
       reads.readAllItems(),
       reads.readTypedEdges(),
