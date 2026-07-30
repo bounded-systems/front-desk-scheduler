@@ -52,21 +52,11 @@ function toKind(raw: string | undefined): BeadKind {
   return raw && (KINDS as readonly string[]).includes(raw) ? (raw as BeadKind) : "task";
 }
 
-/** Front Desk Status → bead state (see gh-project-room/contract.ts). */
-export function statusToState(status: string | undefined): BeadState {
-  switch (status) {
-    case "Todo":
-      return "open";
-    case "In Progress":
-      return "in_progress";
-    case "Blocked":
-      return "blocked";
-    case "Done":
-      return "closed";
-    default:
-      return "open";
-  }
-}
+// Defined in `status.ts`, not here: `verbs.ts` needs this mapping and nothing
+// else from this module, and this module reaches node:child_process + node:fs.
+// Imported and re-exported so existing callers are unchanged. See status.ts.
+import { statusToState } from "./status.ts";
+export { statusToState };
 
 /** Parse a free-text "Depends on" like "#6, #7" into issue numbers. */
 export function parseDependsOn(text: string | undefined): number[] {

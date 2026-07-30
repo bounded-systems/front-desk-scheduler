@@ -132,7 +132,7 @@ test("the claim path reads through the seam, not the local clone", () => {
   // `spawn dolt ENOENT` anywhere without a clone (e.g. a cloud session).
   const verbs = readFileSync(new URL("../src/verbs.ts", import.meta.url), "utf8");
   const fn = /const orderedReadyIds[\s\S]*?\n};/.exec(verbs)?.[0] ?? "";
-  assert.match(fn, /resolveReads\(\)\.readScheduling\(\)/, "must read through the seam");
+  assert.match(fn, /currentReads\(\)\.readScheduling\(\)/, "must read through the seam");
   assert.doesNotMatch(fn, /readMirrorScheduling\(\)/, "must not bypass it to the local clone");
   assert.match(fn, /at: read\.at/, "and must carry the pin out for the claim to record");
 });

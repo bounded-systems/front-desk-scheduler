@@ -14,6 +14,12 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { handleJsonRpc } from "@bounded-systems/verbspec";
 import { VERBS } from "../src/verbs.ts";
+import { setReadsFactory } from "../src/reads.ts";
+import { resolveReads } from "../src/reads-resolve.ts";
+
+// This process has a filesystem, so it gets the auto-detecting read plane.
+// `verbs.ts` deliberately does not import it — see src/reads.ts.
+setReadsFactory(resolveReads);
 
 const sock = process.env.FRONTDESKD_SOCK ?? "/tmp/frontdeskd.sock";
 if (existsSync(sock)) unlinkSync(sock); // clear a stale socket
