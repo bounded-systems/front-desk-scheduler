@@ -6,9 +6,26 @@
 // (it once shipped a wrong Lean hostname). This script catches that at boot,
 // with a message, instead of later by whichever install the stale config breaks.
 //
+// ── FLEET-MANAGED FILE — canonical copy lives in bounded-systems/ci-workflows ──
+// at tools/cloud-env-check.mjs. Every adopting repo carries a VENDORED copy at
+// .claude/hooks/cloud-env-check.mjs, and env-check-drift.yml measures that copy
+// against a digest pinned upstream (CANONICAL_SHA256).
+//
+// So: DO NOT EDIT A VENDORED COPY. A local fix goes red on that repo's next
+// relevant PR and is lost on the next re-vendor. Because this script is
+// repo-agnostic, a change you want here is almost always one every adopter needs
+// — make it upstream and re-vendor. Bump procedure: ci-workflows README,
+// "Bumping the canonical script".
+//
 // Repo-agnostic on purpose: everything repo-specific lives in the config file's
-// "handshake" block, so another repo adopts this by copying two files and
-// setting that block — no edits to this script.
+// "handshake" block, so no edit to this script is needed to adopt it.
+//
+// ADOPTION IS FOUR THINGS, NOT TWO — steps 3 and 4 live outside both files, and
+// nothing runs the script if they are skipped:
+//   1. vendor this file to .claude/hooks/cloud-env-check.mjs
+//   2. write .claude/cloud-environment.json (handshake block + domain list)
+//   3. invoke it from a SessionStart hook
+//   4. set the handshake variable in the cloud environment dialog
 //
 //   "handshake": { "variable": "FDS_ENV_CONFIG", "prefix": "FDS_" }
 //
