@@ -1,16 +1,19 @@
 {
-  "$comment": "Reference config for the Claude Code cloud environment this repo expects. Nothing consumes this file automatically \u2014 the environment is configured in the claude.ai/code UI \u2014 but it is the checked-in record of what that UI should say, so the next person (or session) doesn't rediscover it from proxy 403s. Paste the domain list with: jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json",
+  "$comment": "Reference config for the Claude Code cloud environment this repo expects. Nothing consumes this file automatically — the environment is configured in the claude.ai/code UI — but it is the checked-in record of what that UI should say, so the next person (or session) doesn't rediscover it from proxy 403s. .claude/hooks/cloud-env-check.mjs compares this file against the live session at boot; run it with --verify-domains to probe the allowlist itself.",
   "name": "front-desk",
-  "configVersion": 2,
-  "configVersionNote": "Bump this when ANYTHING above the session's control changes (domains, env vars). The session hook compares FDS_ENV_CONFIG against this and warns on mismatch, so a stale dialog is caught at boot instead of by a failed install. v1 had the plural releases.lean-lang.org hostname bug.",
+  "handshake": {
+    "variable": "FDS_ENV_CONFIG",
+    "prefix": "FDS_",
+    "note": "cloud-env-check.mjs hashes this file's domains + env vars into a 12-hex digest; the dialog echoes it back via the variable named here, so a stale dialog is caught at boot instead of by a failed install. The variable's name is hashed (renaming it is a real dialog change); its value is excluded (it IS the digest). Run `node .claude/hooks/cloud-env-check.mjs --print-digest` for the current expected value. Another repo adopts the check by copying cloud-env-check.mjs + this block with its own variable/prefix — no script edits."
+  },
   "networkAccess": {
     "level": "custom",
     "includeDefaultPackageManagers": true,
-    "$comment": "The default Trusted allowlist covers registry.npmjs.org but NOT JSR or DoltHub (verified 2026-07-27: both 403 through the proxy, killing npm install and the whole read plane). Hence custom.",
+    "$comment": "The default Trusted allowlist covers registry.npmjs.org but NOT JSR or DoltHub (verified 2026-07-27: both 403 through the proxy, killing npm install and the whole read plane). Hence custom. Wildcard entries carry a 'probe' host so --verify-domains can test them.",
     "allowedDomains": [
       {
         "domain": "npm.jsr.io",
-        "reason": "JSR npm-compat registry \u2014 the @bounded-systems/* deps (guest-room, verbspec, verbspec-mcp) resolve here, not npmjs"
+        "reason": "JSR npm-compat registry — the @bounded-systems/* deps (guest-room, verbspec, verbspec-mcp) resolve here, not npmjs"
       },
       {
         "domain": "jsr.io",
@@ -18,6 +21,7 @@
       },
       {
         "domain": "*.dolthub.com",
+        "probe": "www.dolthub.com",
         "reason": "read plane: www.dolthub.com (public SQL API) + doltremoteapi.dolthub.com (dolt clone/push)"
       },
       {
@@ -26,7 +30,7 @@
       },
       {
         "domain": "deno.land",
-        "reason": "deno install \u2014 `deno check` is this repo's type gate"
+        "reason": "deno install — `deno check` is this repo's type gate"
       },
       {
         "domain": "dl.deno.land",
@@ -38,25 +42,34 @@
       },
       {
         "domain": "release.lean-lang.org",
-        "reason": "Lean toolchain downloads \u2014 singular 'release', the origin compiled into elan (verified via strings on the binary). NOT 'releases.' (plural): that host exists but 302s to the marketing site, so allowlisting it provisions nothing"
+        "reason": "Lean toolchain downloads — singular 'release', the origin compiled into elan (verified via strings on the binary). NOT 'releases.' (plural): that host exists but 302s to the marketing site, so allowlisting it provisions nothing"
       },
       {
         "domain": "nodejs.org",
         "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)"
+      },
+      {
+        "domain": "front-desk-lease.titular-0-kicks.workers.dev",
+        "reason": "the claim plane — FDS_CLAIM_ENDPOINT points here; src/lease-client.ts is dead without it (this host was silently dropped once when the broker was added; --verify-domains exists to catch exactly that)"
+      },
+      {
+        "domain": "cf-token-broker.titular-0-kicks.workers.dev",
+        "reason": "OIDC token broker for credentialed mirror writes (docs/write-surfaces.md)"
       }
     ]
   },
   "environmentVariables": {
     "FDS_READS": "dolthub",
-    "FDS_ENV_NAME": "front-desk",
-    "FDS_ENV_CONFIG": "2"
+    "FDS_CLAIM_ENDPOINT": "https://front-desk-lease.titular-0-kicks.workers.dev",
+    "FDS_ENV_CONFIG": "eb77de38c2bb"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
   "knownCaveats": [
-    "Secrets never go in environmentVariables \u2014 the dialog stores them account-visible in plaintext. Credentialed writes go through the mirror-migrate workflow_dispatch + OIDC broker instead (docs/write-surfaces.md).",
-    "The GitHub proxy limits release-asset downloads to session-attached repositories regardless of network level, so the dolt install (a dolthub/dolt release asset) can 403 even with these domains. Fallback: the dolthub/dolt Docker image \u2014 Docker Hub is on the default Trusted list (docker/dolt-server/).",
+    "Secrets never go in environmentVariables — the dialog stores them account-visible in plaintext. Credentialed writes go through the mirror-migrate workflow_dispatch + OIDC broker instead (docs/write-surfaces.md).",
+    "Environment VARIABLES freeze at session start — dialog edits reach only NEW sessions. Domain allowlist edits apply LIVE to running sessions. Both verified empirically 2026-07-30; this asymmetry explains most 'the dialog says X but the session sees Y' confusion.",
+    "The GitHub proxy limits release-asset downloads to session-attached repositories regardless of network level, so the dolt install (a dolthub/dolt release asset) can 403 even with these domains. Fallback: the dolthub/dolt Docker image — Docker Hub is on the default Trusted list (docker/dolt-server/).",
     "The cloud image ships Node 22.x; engines.node is >=22.18 (native TS type-stripping floor). Suite verified 40/40 on 22.22.2.",
-    "elan resolves toolchains from release.lean-lang.org but falls back to github.com/leanprover/lean4/releases/download/... for some assets, which is subject to the session-attached-repo limit above. So the elan.lean-lang.org + release.lean-lang.org pair gets the elan binary and should get the toolchain, but Lean provisioning is the one step still worth confirming empirically after an environment edit \u2014 `elan toolchain install stable` is the check."
+    "elan resolves toolchains from release.lean-lang.org but falls back to github.com/leanprover/lean4/releases/download/... for some assets, which is subject to the session-attached-repo limit above. So the elan.lean-lang.org + release.lean-lang.org pair gets the elan binary and should get the toolchain, but Lean provisioning is the one step still worth confirming empirically after an environment edit — `elan toolchain install stable` is the check."
   ]
 }
