@@ -12,7 +12,10 @@ import { syncPull } from "../src/mirror.ts";
 
 const res = await syncPull();
 if (res.gated) {
-  console.error(`sync GATED: ${res.reason} (budget resets ${res.resetAt})`);
+  console.error(
+    `sync GATED: ${res.reason} — ${res.remaining}/${res.limit} GraphQL points remaining, ` +
+      `need ~${res.estimatePoints} (budget resets ${res.resetAt})`,
+  );
   process.exit(3);
 }
 console.log(`synced ${res.items} items → ${res.commit}`);
