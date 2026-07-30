@@ -34,12 +34,22 @@ name: claim-race
 #                  credential, no deploy.
 #
 #   production-a2 — points at the deployed serialization endpoint. Provisions
-#                  NOTHING. Red until one exists, which is the honest state:
-#                  A2 is currently ASSERTED, not discharged.
+#                  NOTHING. Red whenever no endpoint is configured, which is the
+#                  honest state while A2 is unbacked by a deployment.
 #
 # ACCEPTANCE CRITERION for the Durable Object work (docs/queue-vs-log.md):
 # production-a2 goes green — N agents against the real endpoint, exactly one
-# grant. Until that run happens, "the DO enforces exclusion" is a design claim.
+# grant.
+#
+# MET 2026-07-30: 16 then 32 agents against the deployed worker/lease, exactly
+# one grant per race, fencing strictly increasing across grants and the DO's
+# history agreeing with every grant observed. A2 is discharged by experiment.
+#
+# That green does not retire this job. It attests to the LIVE DEPLOYMENT, not to
+# the code in this tree, and a deployment can regress without a commit — which is
+# why the cron below is daily and why this stays a standing signal rather than a
+# milestone. A red here after 2026-07-30 means something about production
+# changed, not that the criterion was never met.
 #
 # `worker/**` is in the path filter for that reason: the DO is this test's
 # SUBJECT. It was missing when the DO first landed, so edits to the
