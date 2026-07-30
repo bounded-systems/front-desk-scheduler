@@ -37,6 +37,13 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly rescan, matching templates/deps.yml. Advisories are published against
+  # locks that are not changing, so a repo that merges rarely would otherwise stay
+  # green on stale information indefinitely. Tuesday, one day after ci-workflows'
+  # Monday self-test — that canary catches a broken digest or release URL
+  # fleet-wide BEFORE the fleet rescans on it.
+  schedule:
+    - cron: "23 7 * * 2"
   workflow_dispatch: {}
 concurrency:
   group: deps-${{ github.ref }}
@@ -47,4 +54,4 @@ jobs:
   osv:
     # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
     # reviewer can tell an intentional bump from a drifted one.
-    uses: bounded-systems/ci-workflows/.github/workflows/osv-scan.yml@8b7d8a8d3fbf43a4a97b47006ae40dfe32012b85 # main
+    uses: bounded-systems/ci-workflows/.github/workflows/osv-scan.yml@62990dd15f1b0deba21e597bebd1512970544c15 # main
