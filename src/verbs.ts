@@ -20,9 +20,9 @@ import {
   type PriorityInput,
 } from "./policy.ts";
 
-// ── whats-next ──────────────────────────────────────────────────────────────
+// ── next ────────────────────────────────────────────────────────────────────
 
-const WhatsNextInput = z.object({
+const NextInput = z.object({
   budget: z.string().default(ROLLING_5H_BUDGET.id),
   top: z.coerce.number().int().min(1).max(100).default(10),
   repo: z.string().optional(),
@@ -44,7 +44,7 @@ const QueueItem = z.object({
   untriaged: z.boolean(),
 });
 
-const WhatsNextOutput = z.object({
+const NextOutput = z.object({
   source: z.enum(["local", "dolthub", "server"]),
   syncedAt: z.string().nullable(),
   // The commit this ranking was DERIVED FROM — the pin the read actually used,
@@ -64,17 +64,17 @@ interface Deps {
   readonly reads: SchedulerReads;
 }
 
-export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutput, Deps> = defineVerb<
-  typeof WhatsNextInput,
-  typeof WhatsNextOutput,
+export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = defineVerb<
+  typeof NextInput,
+  typeof NextOutput,
   Deps
 >({
-  id: "whats-next",
+  id: "next",
   summary:
     "What should I work on next? The ranked ready queue (WSJF value-density) + budget verdict, read from the DoltHub/local mirror — zero GitHub API.",
   actor: "front-desk",
-  input: WhatsNextInput,
-  output: WhatsNextOutput,
+  input: NextInput,
+  output: NextOutput,
   deps: () => ({ reads: resolveReads() }),
   run: async (input, deps) => {
     const reads = deps?.reads ?? resolveReads();
@@ -135,7 +135,7 @@ export const whatsNextVerb: VerbSpec<typeof WhatsNextInput, typeof WhatsNextOutp
   render: (o) => {
     const w = (s: string, n: number) => String(s).padEnd(n).slice(0, n);
     const lines = [
-      `Front Desk — whats-next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
+      `Front Desk — next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
         (o.derivedFrom ? `\nderived from commit ${o.derivedFrom} — \`AS OF '${o.derivedFrom}'\` re-derives this exact queue` : ""),
       `budget=${o.budget} remaining=${o.remaining}   ready: ${o.eligible}`,
       `  ${w("#", 6)} ${w("repo", 16)} ${w("kind", 5)} ${w("eff", 4)} ${w("val", 4)} ${w("score", 7)} ${w("fits", 4)} meta`,
@@ -166,7 +166,7 @@ import { claimNext, readMirrorScheduling, releaseClaim } from "./mirror.ts";
 /**
  * The ranked candidate list a claim latches from.
  *
- * Reads through the SAME `reads` seam whats-next uses — not the local clone.
+ * Reads through the SAME `reads` seam `next` uses — not the local clone.
  * Until 2026-07-28 this called readMirrorScheduling() directly, which meant the
  * claim path RANKED off a local dolt clone while (since the A2 seam) it LATCHED
  * on the shared server: two different databases, one decision. It also made
@@ -250,7 +250,7 @@ export const releaseVerb = defineVerb({
 
 // ── graph ────────────────────────────────────────────────────────────────────
 // The GH-canonical dep-graph + ready/blocked classification (GH-1010).
-// Unlike whats-next (eligible-only, no budget-
+// Unlike `next` (eligible-only, no budget-
 // independent view), this emits BOTH buckets plus the typed edges, so a consumer
 // (prx's picker) can reconstruct the full read surface. Repo-scoped
 // so per-repo callers get collision-free numbers.
@@ -446,7 +446,7 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
 });
 
 export const VERBS: Registry = {
-  "whats-next": whatsNextVerb,
+  "next": nextVerb,
   "graph": graphVerb,
   "list": listVerb,
   "claim": claimVerb,

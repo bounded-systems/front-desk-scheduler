@@ -25,7 +25,7 @@ two masters never fight over the same field.
 | | Path | State |
 |---|---|---|
 | **Intake** | `gh` without dolt — create an issue; webhook lands it on the board; next pull absorbs it | `origin=github, sync_state=synced` |
-| **Hidden** | dolt without gh — `insertHiddenItem`; whats-next ranks it; never pushed; shared via DoltHub | `origin=dolt, sync_state=hidden` |
+| **Hidden** | dolt without gh — `insertHiddenItem`; `next` ranks it; never pushed; shared via DoltHub | `origin=dolt, sync_state=hidden` |
 | **Captured** | dolt → gh (or gh → dolt → gh) — `syncPush` promotes hidden rows to issues and writes dolt-dirty field edits up to the board | `dolt-dirty → synced` after push |
 
 ## Field authority (the mutability scope)

@@ -3,7 +3,7 @@
  * The read plane, over HTTP. Queries the public DoltHub SQL API — no GitHub API,
  * no local dolt clone, no credential, so reads NEVER touch the rate-limit budget
  * and are always at the latest synced commit. This is the source every consumer
- * (whats-next, agents, CI) should use; the GitHub API is only ever touched by the
+ * (next, agents, CI) should use; the GitHub API is only ever touched by the
  * budget-gated syncer.
  */
 

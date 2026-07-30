@@ -1,7 +1,7 @@
 /**
  * frontdeskd — the broker behind the `frontdesk` door (guest-room).
  *
- * Serves the scheduler verbs (whats-next / claim / release) as JSON-RPC over a
+ * Serves the scheduler verbs (next / claim / release) as JSON-RPC over a
  * unix socket. THIS process holds the read-plane credential (DOLT_* / the mirror);
  * the guest knocks on the socket and never holds a key — the guest-room contract.
  * A guest with the `frontdesk` door can ask "what should I do?" and claim work

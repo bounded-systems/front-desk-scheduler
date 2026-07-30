@@ -5,7 +5,7 @@
  *   GitHub (write plane) ──budget-gated sync──▶ Dolt mirror ──▶ all reads
  *
  * The syncer is the only reader IN THIS REPO that touches the GitHub API; every
- * consumer (whats-next, agents, CI) queries the mirror at a pinned Dolt commit
+ * consumer (next, agents, CI) queries the mirror at a pinned Dolt commit
  * and needs no GitHub credential. It is NOT the only consumer of the rate limit:
  * the App installation token is minted per-workflow from the broker and shared
  * across every workflow using the front-desk App (lease-projection, claim-race,
@@ -203,7 +203,7 @@ export async function upsertItems(items: readonly BoardItem[]): Promise<void> {
 }
 
 /** Insert HIDDEN work: a Dolt-born item with no GitHub counterpart. Never pushed
- *  unless captured. Visible to whats-next so you can plan against it. */
+ *  unless captured. Visible to `next` so you can plan against it. */
 export async function insertHiddenItem(
   input: { title: string; repository: string; kind?: string; effort?: number; value?: number },
   localId: string,

@@ -61,7 +61,7 @@ jobs:
 
       - name: Type gate (deno check)
         # deno.json is this repo's manifest and `deno check` is its type gate.
-        # It was RED before 2026-07-28 — 17 errors, all in test/whats-next.test.ts,
+        # It was RED before 2026-07-28 — 17 errors, all in test/next.test.ts,
         # which passed at runtime while never typechecking. A gate nobody runs
         # decays exactly like that, silently and only in one direction.
         run: deno check

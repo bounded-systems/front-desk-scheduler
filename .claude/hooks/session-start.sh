@@ -3,7 +3,7 @@
 #
 # Without this, a fresh web session starts degraded in ways that are easy to
 # misread as real failures:
-#   - no node_modules  ⇒ graph/list/whats-next tests die on ERR_MODULE_NOT_FOUND,
+#   - no node_modules  ⇒ graph/list/next tests die on ERR_MODULE_NOT_FOUND,
 #                        looking like broken tests rather than a missing install
 #   - no dolt          ⇒ every mirror WRITE path (sync, push, claim, migrations)
 #                        is unavailable; reads still work over the public API
