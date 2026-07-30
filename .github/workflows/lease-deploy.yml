@@ -97,12 +97,12 @@ jobs:
       # A denied or ignored (60-min timeout) approval fails the run without minting anything.
       #
       # The IN-HOUSE shared composite (infra#62, infra#79) — no third-party code in the gate;
-      # only allowlisted logins can release OR cancel it. Referenced @main deliberately: infra's
-      # main is PR-only + signed (its default-branch-protection ruleset), the same integrity
-      # this workflow already trusts for the broker's workflowRef pins. Requires infra's
-      # Actions access set to organization-accessible, else this step fails loud at resolve.
+      # only allowlisted logins can release OR cancel it. SHA-pinned like every other cross-repo
+      # ref (CodeQL flagged @main; first-party-on-protected-main is equal trust, a pin is
+      # stricter — bump the SHA when infra's action changes). Requires infra's Actions access
+      # set to organization-accessible, else this step fails loud at resolve.
       - name: Await approval (before any mint)
-        uses: bounded-systems/infra/.github/actions/await-approval@main
+        uses: bounded-systems/infra/.github/actions/await-approval@7b8b2d8040d84296c4790c068bbdee08ab400378 # main @ infra#79
         with:
           approvers: bdelanghe
           issue-title: "Approve lease-deploy (deploys the scheduler's serialization point)"
