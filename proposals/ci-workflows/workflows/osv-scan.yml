@@ -1,0 +1,119 @@
+name: osv-scan
+
+# Reusable dependency scanning for bounded-systems (infra#104).
+#
+# WHY THIS REPO IS PUBLIC, AND WHY IT IS NOT `infra`:
+# Private-repo workflows and actions never resolve into public callers — no org setting
+# overrides it. That constraint already forced the approval gate out of `infra` and into
+# its own public repo (`bounded-systems/await-approval`, infra#101, observed on
+# front-desk run 30562621239). With ~87 public repos to cover, this workflow has to live
+# somewhere public too.
+#
+# WHY NOT google/osv-scanner-action:
+# The proofs lane learned this the hard way. A third-party action can invoke NESTED
+# actions by tag (lean-action → actions/cache/restore@v5), which the org's full-SHA-pin
+# Actions policy rejects — and SHA-pinning the parent cannot exempt its children. A
+# release binary has no children.
+#
+# WHY A REUSABLE WORKFLOW RATHER THAN AN APP:
+# No vendor account, no API key, no installed App — zero standing grants added to the
+# org. That property is what made this beat all three options weighed in infra#90.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label for the scan job.
+        type: string
+        default: ubuntu-latest
+      scan-path:
+        description: Directory to scan, relative to the repository root.
+        type: string
+        default: "."
+      ref:
+        description: >-
+          Ref to check out. Defaults to the commit that triggered the caller, which is
+          what you want; set it only when scanning something other than the caller's ref.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    name: osv-scan
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The version and the digest are deliberately NOT inputs. They are a matched pair:
+      # a caller that could override the version would silently break the digest check,
+      # and a caller that could override the digest could disable it entirely. Bumping
+      # the scanner is an edit to this file, reviewed once, inherited by every caller.
+      #
+      # Provenance for this digest — re-derived 2026-07-30 per infra#104, which recorded
+      # the original as "pinned to what we saw" because it was captured through a
+      # TLS-intercepting proxy. Upstream publishes no checksums.txt, but it DOES publish
+      # a SLSA provenance bundle, which is strictly stronger:
+      #
+      #   https://github.com/google/osv-scanner/releases/download/v2.4.0/multiple.intoto.jsonl
+      #
+      # That bundle's DSSE signature verifies against its embedded Fulcio certificate,
+      # and the signed statement lists this exact digest as the subject for
+      # osv-scanner_linux_amd64. The signing identity is:
+      #
+      #   SAN         slsa-framework/slsa-github-generator/.github/workflows/
+      #                 generator_generic_slsa3.yml@refs/tags/v2.1.0
+      #   OIDC issuer https://token.actions.githubusercontent.com
+      #   source      github.com/google/osv-scanner @ refs/tags/v2.4.0
+      #   commit      b56b5191101d5f27d4787d5583d8d01e9518a7af
+      #   build       google/osv-scanner/actions/runs/27762425209
+      #
+      # Residual gap, stated plainly: the certificate was not chained to the Sigstore
+      # root out-of-band, and Rekor is unreachable from the session that verified this
+      # (egress policy), so the transparency-log inclusion proof was NOT checked. The
+      # recipe in the repo README reproduces the check anywhere with open egress.
+      - name: Install osv-scanner v2.4.0 (digest-pinned)
+        env:
+          OSV_VERSION: v2.4.0
+          OSV_SHA256: 15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /usr/local/bin/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  /usr/local/bin/osv-scanner" | sha256sum -c -
+          chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      # `scan source -r` walks the tree and picks its own extractors, rather than
+      # `find`-ing package-lock.json the way infra's inline job does. That matters here:
+      # infra has one npm lockfile, but the ~90 repos this fans out to are a mix of npm,
+      # Cargo, Go, Python and Maven, and a hardcoded npm-only find would silently report
+      # "nothing to scan" on every one of them.
+      #
+      # NOT covered: deno.lock. osv-scanner 2.4.0 ships no extractor for it — an explicit
+      # `--lockfile=deno.lock` fails with "could not determine extractor suitable to this
+      # file". Deno-first repos in this org are therefore scanned only for whatever OTHER
+      # manifests they carry, and a green check here does NOT mean their JSR/npm graph
+      # was examined. Tracked in infra#104.
+      #
+      # --allow-no-lockfiles: a repo with nothing scannable is a pass, not a failure. That
+      # is the common case across the org and must not read as a broken lane.
+      - name: Scan dependencies for known vulnerabilities
+        working-directory: ${{ inputs.scan-path }}
+        run: |
+          set -euo pipefail
+          # Hard-fail posture (chosen for the first org-wide pass): exit 1 means
+          # vulnerabilities were found and the lane goes red. Any OTHER non-zero exit is a
+          # tool or network failure and must also fail loudly rather than pass as
+          # "nothing found" — so the exit code propagates untouched.
+          #
+          # Escape hatch for an accepted or unfixable finding: commit an `osv-scanner.toml`
+          # next to the lockfile with an [[IgnoredVulns]] entry. It is picked up
+          # automatically, is reviewed like any other diff, and leaves a written reason in
+          # the tree instead of a silently weakened lane.
+          osv-scanner scan source -r --allow-no-lockfiles .
