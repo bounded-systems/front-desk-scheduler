@@ -13,7 +13,7 @@ docker run -p 3307:3306 -e FDS_READER_PASSWORD=<pw> front-desk-dolt-server
 
 # then, against it:
 DOLT_HOST=127.0.0.1 DOLT_PORT=3307 DOLT_USER=fds_reader DOLT_PASSWORD=<pw> \
-  FDS_READS=server node scripts/fds.ts whats-next
+  FDS_READS=server node scripts/fds.ts next
 ```
 
 ## Freshness

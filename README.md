@@ -86,8 +86,8 @@ npm run tlc:atomic               # → No error found; safety + Liveness hold ov
 #   reproducible: `nix develop` (flake.nix provides node 24 + tlc), or `nix run .#tlc-atomic`
 
 # The interaction — ask the live board what to pick up (needs `gh auth` + read:project):
-npm run whats-next -- --top 12                 # ranked ready queue across the org + budget verdict
-npm run whats-next -- --repo prx --budget rolling-5h
+npm run next -- --top 12                 # ranked ready queue across the org + budget verdict
+npm run next -- --repo prx --budget rolling-5h
 ```
 
 > Triage coverage is a measured number, not a vibe: `npm run triage:coverage`
@@ -96,7 +96,7 @@ npm run whats-next -- --repo prx --budget rolling-5h
 > **dependency DAG — 2 gating edges over the whole schedulable board, blocking
 > 2/210 items**. So readiness admits nearly everything and the unblocks bonus is
 > inert: the ranking is value-density alone. `depends-on:` in issue frontmatter
-> is what populates it. `whats-next` flags fallback-ranked items as `~`.
+> is what populates it. `next` flags fallback-ranked items as `~`.
 >
 > (Only `blocks`/`parent-child` edges gate; the 36 mined `closes` edges are PR
 > provenance and gate nothing — counting them together overstates DAG coverage.)

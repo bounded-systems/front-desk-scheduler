@@ -2,7 +2,7 @@
  * @module room
  * The `frontdesk` capability as a guest-room DOOR, plus rooms that grant it.
  *
- * A guest with the frontdesk door reaches the scheduler (whats-next / claim /
+ * A guest with the frontdesk door reaches the scheduler (next / claim /
  * release) through a unix socket to `frontdeskd` (scripts/frontdeskd.ts), which
  * holds the read-plane credential. The guest never holds a GitHub or DB key —
  * "exactly this capability, nothing ambient". A guest WITHOUT it is told, by
@@ -26,7 +26,7 @@ export const CATALOG = {
     env: "FRONTDESKD_SOCK",
     hostDefault: "/tmp/frontdeskd.sock",
     grants: "Front Desk scheduling (read plane)",
-    use: "Ask 'what should I work on?' and claim/release work through the front-desk door (whats-next / claim / release). The broker holds the read-plane credential; you never do.",
+    use: "Ask 'what should I work on?' and claim/release work through the front-desk door (next / claim / release). The broker holds the read-plane credential; you never do.",
     deny: "No Front Desk here; relaunch with --frontdesk — you cannot pick or claim work without it.",
   },
   keeper: {

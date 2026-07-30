@@ -4,7 +4,7 @@
  *   - dolt-born capture-requested rows → new GitHub issues (fields in frontmatter)
  *   - dolt-dirty github rows → effort/value written up to the board project fields
  *
- * Budget-gated. Read-only surfaces (whats-next) never call this; it's the one
+ * Budget-gated. Read-only surfaces (`next`) never call this; it's the one
  * place Dolt-side edits become GitHub-visible.
  */
 

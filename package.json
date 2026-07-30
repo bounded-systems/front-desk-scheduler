@@ -12,7 +12,7 @@
   "scripts": {
     "test": "node --test test/*.test.ts worker/lease/src/*.test.mjs",
     "sim": "node scripts/demo.ts",
-    "whats-next": "node scripts/fds.ts whats-next",
+    "next": "node scripts/fds.ts next",
     "tlc:racy": "bash scripts/tlc.sh scheduler-racy.cfg",
     "tlc:overspend": "bash scripts/tlc.sh scheduler-overspend.cfg",
     "tlc:atomic": "bash scripts/tlc.sh scheduler-atomic.cfg",

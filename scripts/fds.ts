@@ -4,7 +4,7 @@
  * The SAME verbs project to MCP / OpenAPI / Anthropic-tool surfaces (see
  * scripts/mcp.ts). Reads through the DoltHub/local seam — zero GitHub API.
  *
- *   fds whats-next [--repo prx] [--top 10] [--budget rolling-5h]
+ *   fds next [--repo prx] [--top 10] [--budget rolling-5h]
  *   fds graph [--repo prx]        # the GH-canonical dep-graph (ready/blocked + edges)
  *
  * JSON output: verbspec validates flags strictly against each verb's input

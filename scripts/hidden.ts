@@ -2,7 +2,7 @@
  * front-desk hidden — write HIDDEN work (the dolt-without-gh surface).
  *
  * Creates a Dolt-born item that has no GitHub counterpart: planning/scratch work
- * that whats-next can rank against but that never touches GitHub — until you
+ * that `next` can rank against but that never touches GitHub — until you
  * `capture` it. Shared via DoltHub, invisible to the GitHub board.
  *
  *   node scripts/hidden.ts --repo prx --title "spike: X" [--kind task --effort 3 --value 50]
@@ -36,5 +36,5 @@ if (argv.includes("--capture")) {
     },
     localId,
   );
-  console.log(`hidden item created: ${id} (repo ${repo}) — visible to whats-next, not on GitHub.`);
+  console.log(`hidden item created: ${id} (repo ${repo}) — visible to next, not on GitHub.`);
 }

@@ -4,7 +4,7 @@
 #
 #   FDS_READER_PASSWORD=<pw> docker compose -f docker/dolt-server/compose.yml up -d
 #   DOLT_HOST=127.0.0.1 DOLT_PORT=3307 DOLT_USER=fds_reader DOLT_PASSWORD=<pw> \
-#     FDS_READS=server node scripts/fds.ts whats-next
+#     FDS_READS=server node scripts/fds.ts next
 #
 # The volume keeps the clone across restarts; the server auto-pulls main from
 # DoltHub on each transaction (read replica), so a stale volume self-heals.
