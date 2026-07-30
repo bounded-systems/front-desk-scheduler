@@ -37,9 +37,19 @@ name: lease-deploy
 #      `lease-deploy` Environment. The infra registry's `script` hint is
 #      `front-desk-lease` (this Worker's wrangler name).
 #
-#   3. The `lease-deploy` GitHub Environment with REQUIRED REVIEWERS. Dispatch
-#      alone must not be able to replace the mechanism that enforces mutual
-#      exclusion for the whole scheduler.
+#   3. A HUMAN APPROVAL before anything is minted or deployed. Dispatch alone
+#      must not be able to replace the mechanism that enforces mutual exclusion
+#      for the whole scheduler. This was originally an environment
+#      REQUIRED-REVIEWERS assertion, but that rule is UNAVAILABLE on this plan —
+#      proven empirically 2026-07-30 (infra run 30550473295):
+#        422 Failed to create the environment protection rule. Please ensure
+#            the billing plan supports the required reviewers protection rule.
+#      (org-owned private repo on GitHub Free; infra#69 has the full record.)
+#      So the gate lives IN the workflow instead: a manual-approval step below
+#      pauses the run on an issue until an approver signs off, BEFORE the
+#      Cloudflare mint — the same pattern as infra's repo-admin-apply and
+#      broker-deploy lanes. Replacing the SHA-pinned third-party action with an
+#      in-house step is infra#62.
 #
 # WHY THIS ALSO SETS THE REPO VARIABLE
 # ------------------------------------
@@ -63,10 +73,14 @@ concurrency:
 permissions:
   id-token: write # OIDC → broker
   contents: read
+  issues: write # manual-approval opens/updates the approval issue
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Kept for its deployment history and (plan-supported) branch policy — NOT a reviewer
+    # gate; required-reviewer rules 422 on this plan. The approval step below is the gate.
     environment: lease-deploy
+    timeout-minutes: 60 # bound a forgotten approval — the wait doesn't hang a runner forever
     env:
       BROKER_URL: ${{ vars.FRONT_DESK_BROKER_URL }}
       CF_BROKER_PATH: ${{ vars.FRONT_DESK_CF_BROKER_PATH || '/deploy/lease' }}
@@ -76,39 +90,24 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Assert the reviewer gate actually exists
-        # The header calls the `lease-deploy` environment "the actual control".
-        # Nothing enforced that. GitHub AUTO-CREATES an environment when a
-        # workflow names one that is missing — with NO protection rules — so a
-        # typo in the environment name, or simply never creating it, produces a
-        # job that runs unreviewed while every comment here says it is gated.
-        # That is a documented control with no implementation, which is the
-        # failure this repo keeps finding in other costumes.
-        #
-        # Distinguish "checked and it is unprotected" (fatal) from "could not
-        # check" (loud, but not fatal — a token without administration:read is a
-        # different problem from a missing gate, and conflating them would make
-        # this step unrunnable rather than informative).
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          if ! env_json="$(gh api "repos/${{ github.repository }}/environments/lease-deploy" 2>&1)"; then
-            echo "::warning::could not read the lease-deploy environment: ${env_json//$'\n'/ }"
-            echo "::warning::NOT verifying that a reviewer gate exists. If this token lacks"
-            echo "::warning::administration:read that is benign; if the environment is missing,"
-            echo "::warning::this job is running UNREVIEWED. Check by hand before trusting it."
-            exit 0
-          fi
-          rules="$(jq -r '[.protection_rules[].type] | join(",")' <<<"$env_json")"
-          echo "::notice::lease-deploy protection rules: ${rules:-<none>}"
-          if ! grep -q 'required_reviewers' <<<"$rules"; then
-            echo "::error::the lease-deploy environment has NO required_reviewers rule."
-            echo "::error::Dispatch alone would then be able to replace the mechanism that"
-            echo "::error::enforces mutual exclusion for the whole scheduler. Refusing to run."
-            echo "::error::Add required reviewers to the environment, then dispatch again."
-            exit 1
-          fi
+      # The human gate. The predecessor of this step ASSERTED the environment had a
+      # required_reviewers rule and refused to run otherwise — an assertion that can never
+      # pass on this plan (the rule 422s; see the header). Same spirit, working mechanism:
+      # pause HERE, before any credential exists, until an approver signs off on an issue.
+      # A denied or ignored (60-min timeout) approval fails the run without minting anything.
+      - name: Await approval (before any mint)
+        uses: trstringer/manual-approval@662b3ddbc7685f897992051e87e1b4b58c07dc03 # v1.9.1
+        with:
+          secret: ${{ github.token }}
+          approvers: bdelanghe
+          minimum-approvals: 1
+          issue-title: "Approve lease-deploy (deploys the scheduler's serialization point)"
+          issue-body: >
+            A lease-deploy run wants to mint a short-lived Workers:Edit token (broker
+            /deploy/lease), deploy the front-desk-lease Worker, and publish
+            FDS_CLAIM_ENDPOINT. This replaces the mechanism that enforces mutual exclusion
+            for the whole scheduler — approve only if that is intended. Comment
+            "approved"/"approve"/"lgtm" to proceed, or "denied"/"deny" to cancel.
 
       - name: Cloudflare credential (via OIDC broker)
         id: cfcred
