@@ -1,0 +1,224 @@
+#!/usr/bin/env node
+// cloud-env-check — is the Claude Code cloud-environment dialog in sync with
+// the repo's checked-in record of it (.claude/cloud-environment.json)?
+//
+// The dialog is configured by hand in the claude.ai/code UI and can go stale
+// (it once shipped a wrong Lean hostname). This script catches that at boot,
+// with a message, instead of later by whichever install the stale config breaks.
+//
+// Repo-agnostic on purpose: everything repo-specific lives in the config file's
+// "handshake" block, so another repo adopts this by copying two files and
+// setting that block — no edits to this script.
+//
+//   "handshake": { "variable": "FDS_ENV_CONFIG", "prefix": "FDS_" }
+//
+// Three checks:
+//   1. handshake — the config content is hashed into a short digest; the dialog
+//      echoes it back via the handshake variable. Mismatch ⇒ the dialog and the
+//      file disagree about domains or env vars. The handshake variable's NAME is
+//      part of the digest (renaming it is a real dialog change) but its VALUE is
+//      excluded (it IS the digest — hashing it would be circular).
+//   2. prefix reconciliation — every session env var starting with the prefix
+//      must be recorded under environmentVariables, and vice versa. The
+//      handshake variable itself is exempt: it is always present in a configured
+//      session, so flagging it UNRECORDED would be a permanent false positive in
+//      any repo that doesn't also list it (this bug shipped once, masked here
+//      because front-desk happened to list it).
+//   3. --verify-domains — probe every allowlisted domain through the proxy.
+//      The digest attests to what the operator typed, not what the dialog
+//      actually contains; an allowlist edit the operator didn't record (or a
+//      drop they didn't notice) is invisible to it. The proxy is its own
+//      oracle: a blocked host yields curl code 000, an allowlisted one yields
+//      any real HTTP status. Wildcard entries can't be probed literally — give
+//      them a "probe" field naming a representative concrete host.
+//
+// Self-contained node stdlib only: this runs at SessionStart, BEFORE
+// dependencies are installed, so it must never import a package. Probes go
+// through curl (not node https) because curl honors HTTPS_PROXY and the
+// proxy CA bundle without any code here knowing about either.
+//
+// Flags:
+//   --verify-domains   probe the allowlist (network; a few seconds)
+//   --print-digest     print the expected digest and exit
+//   --config <path>    config file (default: ../cloud-environment.json
+//                      relative to this script)
+//
+// Exit code: 0 unless --verify-domains found blocked domains (then 1). The
+// handshake mismatch alone is a warning, not a failure — SessionStart must
+// start a degraded session, never refuse to start one.
+
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+
+const TAG = 'cloud-env-check:';
+const argv = process.argv.slice(2);
+const flag = (name) => argv.includes(name);
+const opt = (name) => {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+
+const configPath =
+  opt('--config') ??
+  join(dirname(fileURLToPath(import.meta.url)), '..', 'cloud-environment.json');
+
+let config;
+try {
+  config = JSON.parse(readFileSync(configPath, 'utf8'));
+} catch (err) {
+  console.log(`${TAG} cannot read ${configPath} — ${err.message}`);
+  process.exit(0); // non-fatal: no record means nothing to check against
+}
+
+const handshake = config.handshake;
+if (!handshake?.variable || !handshake?.prefix) {
+  console.log(
+    `${TAG} no "handshake" block ({variable, prefix}) in ${configPath} — nothing to check.`,
+  );
+  process.exit(0);
+}
+
+const domains = (config.networkAccess?.allowedDomains ?? []).map((d) =>
+  typeof d === 'string' ? { domain: d } : d,
+);
+const recordedVars = config.environmentVariables ?? {};
+
+// --- digest ------------------------------------------------------------------
+// Hash what the operator types into the dialog: the domain list and the env
+// vars (names and values) — except the handshake variable, which contributes
+// its name only.
+const material = JSON.stringify({
+  // The variable's name is dialog content (the operator creates it there), so
+  // it is hashed explicitly — NOT via environmentVariables, which repos are
+  // not required to list it under. The prefix is a repo-side convention, not
+  // dialog content, and stays out.
+  handshakeVariable: handshake.variable,
+  domains: domains.map((d) => d.domain).sort(),
+  env: Object.keys(recordedVars)
+    .sort()
+    .map((k) => (k === handshake.variable ? k : `${k}=${recordedVars[k]}`)),
+});
+const digest = createHash('sha256').update(material).digest('hex').slice(0, 12);
+
+if (flag('--print-digest')) {
+  console.log(digest);
+  process.exit(0);
+}
+
+// --- check 1: handshake ------------------------------------------------------
+const sessionValue = process.env[handshake.variable];
+if (sessionValue === digest) {
+  console.log(`${TAG} environment config ${digest} ✓ (dialog matches ${configPath})`);
+} else if (sessionValue === undefined) {
+  console.log(
+    `${TAG} ⚠ ${handshake.variable} is not set — the cloud environment dialog does not carry the handshake.`,
+  );
+  console.log(`  Add env var ${handshake.variable} = ${digest} in the environment dialog.`);
+} else {
+  console.log(
+    `${TAG} ⚠ ENVIRONMENT CONFIG MISMATCH — session has ${sessionValue}, repo expects ${digest}.`,
+  );
+  console.log('  The cloud environment dialog and the checked-in record disagree. Re-apply:');
+  console.log(`    domains:  jq -r '.networkAccess.allowedDomains[].domain' ${configPath}`);
+  console.log(
+    `    env vars: jq -r '.environmentVariables | to_entries[] | "\\(.key)=\\(.value)"' ${configPath}`,
+  );
+  console.log(`    then set ${handshake.variable} = ${digest} in the dialog.`);
+  console.log('  (Env vars freeze at session start — edits apply to the NEXT session.)');
+  console.log('  Continuing anyway — expect provisioning WARNs if domains are missing.');
+}
+
+// The file records the handshake variable's value for the copy-paste flow
+// above; it is excluded from the hash, so keep it honest by hand.
+if (
+  handshake.variable in recordedVars &&
+  recordedVars[handshake.variable] !== digest
+) {
+  console.log(
+    `${TAG} ⚠ ${configPath} records ${handshake.variable}=${recordedVars[handshake.variable]} but the content digests to ${digest} — update the recorded value.`,
+  );
+}
+
+// --- check 2: prefix reconciliation ------------------------------------------
+// The handshake variable is exempt in both directions: check 1 owns it, and it
+// is always present in a configured session even in repos that don't list it.
+for (const [key, value] of Object.entries(process.env)) {
+  if (!key.startsWith(handshake.prefix) || key === handshake.variable) continue;
+  if (!(key in recordedVars)) {
+    console.log(
+      `${TAG} ⚠ ${key} is set in this session but UNRECORDED in ${configPath} — record it (or remove it from the dialog).`,
+    );
+  } else if (recordedVars[key] !== value) {
+    console.log(
+      `${TAG} ⚠ ${key}: session has "${value}", ${configPath} records "${recordedVars[key]}".`,
+    );
+  }
+}
+for (const key of Object.keys(recordedVars)) {
+  if (key === handshake.variable) continue;
+  if (!(key in process.env)) {
+    console.log(
+      `${TAG} ⚠ ${key} is recorded in ${configPath} but missing from this session — add it in the environment dialog.`,
+    );
+  }
+}
+
+// --- check 3: --verify-domains -----------------------------------------------
+// Probes what the digest can't see: the allowlist as it actually is, not as it
+// was last recorded. Blocked ⇒ curl reports code 000; allowlisted ⇒ any HTTP
+// status (the probe asks "did we get through the proxy", not "is the service
+// healthy").
+if (flag('--verify-domains')) {
+  const probeHost = (entry) => {
+    if (entry.probe) return entry.probe;
+    if (entry.domain.startsWith('*.')) return null; // wildcard with no probe host
+    return entry.domain;
+  };
+
+  const probe = (host) =>
+    new Promise((resolve) => {
+      execFile(
+        'curl',
+        ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '10', `https://${host}/`],
+        // Trust the status code, not curl's exit code: a large body can blow
+        // --max-time AFTER headers arrive (curl exits 28, http_code 200) —
+        // that is a reachable host. A proxy-denied CONNECT never yields a
+        // status, so http_code stays 000 in every genuinely-blocked case.
+        (_err, stdout) => resolve((stdout || '').trim() || '000'),
+      );
+    });
+
+  const results = await Promise.all(
+    domains.map(async (entry) => {
+      const host = probeHost(entry);
+      if (host === null) return { entry, status: 'skip' };
+      return { entry, status: await probe(host), host };
+    }),
+  );
+
+  const blocked = results.filter((r) => r.status === '000');
+  const skipped = results.filter((r) => r.status === 'skip');
+  const ok = results.length - blocked.length - skipped.length;
+
+  for (const r of blocked) {
+    console.log(
+      `${TAG} ✗ ${r.entry.domain} BLOCKED (probe ${r.host} → 000) — re-add it in the environment dialog. Reason on record: ${r.entry.reason ?? 'none'}`,
+    );
+  }
+  for (const r of skipped) {
+    console.log(
+      `${TAG} ? ${r.entry.domain} is a wildcard with no "probe" host — add one so it can be verified.`,
+    );
+  }
+  if (blocked.length === 0 && skipped.length === 0) {
+    console.log(`${TAG} allowlist ✓ ${ok}/${results.length}`);
+  } else {
+    console.log(
+      `${TAG} allowlist ${ok}/${results.length} reachable, ${blocked.length} blocked, ${skipped.length} unverifiable`,
+    );
+  }
+  process.exit(blocked.length > 0 ? 1 : 0);
+}

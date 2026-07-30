@@ -30,23 +30,12 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 
 # --- environment self-check: is the cloud dialog in sync with the repo? -------
-# The dialog is configured by hand and can go stale (it shipped with a wrong
-# Lean hostname once). The repo stamps a configVersion in
-# .claude/cloud-environment.json and the dialog echoes it back via
-# FDS_ENV_CONFIG, so a mismatch is caught HERE, at boot, with a message —
-# instead of later, by whichever install the stale config breaks.
-EXPECTED_CFG="$(sed -n 's/.*"configVersion": *\([0-9][0-9]*\).*/\1/p' .claude/cloud-environment.json | head -1)"
-if [ -n "$EXPECTED_CFG" ]; then
-  if [ "${FDS_ENV_CONFIG:-}" = "$EXPECTED_CFG" ]; then
-    echo "session-start: environment '${FDS_ENV_NAME:-?}' config v${FDS_ENV_CONFIG} ✓ (matches .claude/cloud-environment.json)"
-  else
-    echo "session-start: ⚠ ENVIRONMENT CONFIG MISMATCH — session has v${FDS_ENV_CONFIG:-unset}, repo expects v${EXPECTED_CFG}."
-    echo "  The cloud environment dialog is stale. Re-apply .claude/cloud-environment.json:"
-    echo "    domains:  jq -r '.networkAccess.allowedDomains[].domain' .claude/cloud-environment.json"
-    echo "    env vars: jq -r '.environmentVariables | to_entries[] | \"\(.key)=\(.value)\"' .claude/cloud-environment.json"
-    echo "  Continuing anyway — expect provisioning WARNs below if domains are missing."
-  fi
-fi
+# All logic lives in cloud-env-check.mjs (self-contained, repo-agnostic — the
+# repo-specific parts come from the "handshake" block in cloud-environment.json,
+# so other repos adopt it by copying the file, not editing it). Non-fatal here;
+# run it manually with --verify-domains to probe the allowlist for drift the
+# digest cannot see.
+node .claude/hooks/cloud-env-check.mjs || true
 
 # --- dolt: the mirror's WRITE plane (reads go over the public HTTP API) -------
 # Needed for scripts/sync.ts, push.ts, claim.ts and for applying
@@ -89,7 +78,11 @@ fi
 # --- deno: `deno check` is this repo's type gate (deno.json is the manifest) --
 if ! command -v deno >/dev/null 2>&1 && [ ! -x "$HOME/.deno/bin/deno" ]; then
   echo "session-start: installing deno ..."
-  curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y >/dev/null 2>&1 \
+  # Run the installer from $HOME, not the repo: its shell-setup step invokes
+  # deno, which resolves jsr:@deno/installer-shell-setup against whatever
+  # deno.json/deno.lock it finds in CWD — from here, that quietly adds the
+  # installer's own dependency to the PROJECT lockfile.
+  (cd "$HOME" && curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$HOME/.deno" sh -s -- -y >/dev/null 2>&1) \
     || echo "session-start: WARN deno install failed; type checking unavailable"
 fi
 if [ -x "$HOME/.deno/bin/deno" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
