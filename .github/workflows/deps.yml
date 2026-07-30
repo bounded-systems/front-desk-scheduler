@@ -22,11 +22,13 @@ name: deps
 #
 # WHAT THIS ACTUALLY COVERS HERE — READ BEFORE TRUSTING A GREEN CHECK
 # -------------------------------------------------------------------
-# This repo's real dependency surface is deno.lock, and osv-scanner 2.4.0 has NO
-# extractor for it (`--lockfile=deno.lock` fails outright). What gets scanned is
-# specs/rust/Cargo.lock and specs/shacl/requirements.txt. Both are real, neither is
-# the main graph. A green check here does NOT mean the JSR/npm dependencies were
-# examined. Tracked in infra#104.
+# osv-scanner has no deno.lock extractor, but since ci-workflows#1 the shared lane
+# converts the lock's npm subset to a CycloneDX SBOM in-lane and scans that: for this
+# repo that is 103 of the ~110 lock entries, alongside specs/rust/Cargo.lock (31) and
+# specs/shacl/requirements.txt (2). Still NOT scanned, and logged as such per run:
+# jsr-native deps and @jsr/* npm-compat mirrors — OSV has no JSR ecosystem, so no
+# scanner can cover those today. A green check means the npm graph was examined, not
+# the JSR one. Tracked in infra#104.
 #
 # NOT path-filtered, deliberately — same reasoning as test.yml and schema-drift.yml:
 # a check that is skipped on some PRs cannot be made a required check without the
@@ -45,4 +47,4 @@ jobs:
   osv:
     # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
     # reviewer can tell an intentional bump from a drifted one.
-    uses: bounded-systems/ci-workflows/.github/workflows/osv-scan.yml@a1d80703367afeda42f5cdd09bf8e66093ff2e59 # main
+    uses: bounded-systems/ci-workflows/.github/workflows/osv-scan.yml@8b7d8a8d3fbf43a4a97b47006ae40dfe32012b85 # main
