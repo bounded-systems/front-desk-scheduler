@@ -29,7 +29,10 @@ import { claimLease, releaseLeaseRemote, renewLeaseRemote } from "./lease-client
 
 const pexecFile = promisify(execFile);
 
-export const MIRROR_DIR = new URL("../mirror", import.meta.url).pathname;
+// Imported and re-exported, not defined here: `reads.ts` needs this path without
+// needing the rest of this module. See mirror-dir.ts for why that matters.
+import { MIRROR_DIR } from "./mirror-dir.ts";
+export { MIRROR_DIR };
 
 /**
  * The GitHub GraphQL rate limit, modeled as a Budget in our own contract.
