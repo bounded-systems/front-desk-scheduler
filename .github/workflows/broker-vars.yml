@@ -57,8 +57,11 @@ jobs:
           set -uo pipefail
           fail=0
 
-          # Values are not printed. These are non-secret org variables, but a URL
-          # in a log is one more place it has to be corrected when it moves.
+          # The comparison prints lengths, not values — though the runner's own
+          # `env:` block echoes both above this step, so treat that as cosmetic.
+          # These are non-secret org variables (infra#41 quotes the value), so no
+          # masking is warranted; the point is only that this job adds no new
+          # place the URL has to be corrected when it moves.
           if [ -z "${CF_BROKER_URL:-}" ]; then
             echo "::error::org variable CF_BROKER_URL does not resolve in this repository."
             echo "::error::  This repo is PUBLIC; infra is private. Set the org variable's visibility to"
