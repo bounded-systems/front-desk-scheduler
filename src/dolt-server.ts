@@ -96,7 +96,7 @@ export async function readTypedEdges(): Promise<RawTypedEdge[]> {
   return withConn(async (q) => (await q(SQL.typedEdges)) as RawTypedEdge[]);
 }
 
-/** ALL items incl Done — the `bd list --all` replacement. */
+/** ALL items incl Done (the `list` verb). */
 export async function readAllItems(): Promise<RawItem[]> {
   return withConn(async (q) => (await q(SQL.allItems)) as RawItem[]);
 }

@@ -51,7 +51,7 @@ export interface SchedulerReads {
   readScheduling(): Promise<ScheduleRead>;
   /** Typed dep edges (with edge_type) — the GH-canonical dep-graph source. */
   readTypedEdges(): Promise<RawTypedEdge[]>;
-  /** ALL items incl Done — the `bd list --all` replacement (the `list` verb). */
+  /** ALL items incl Done (the `list` verb). */
   readAllItems(): Promise<RawItem[]>;
   meta(): Promise<ReadMeta | null>;
 }

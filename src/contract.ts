@@ -14,7 +14,7 @@
 import type { BeadEdge, BeadKind, EffortPoints } from "./policy.ts";
 
 // --- work-item lifecycle (the scheduler's view of a bead's status) ---
-// Ready ⟺ open ∧ every "blocks"-dep is Done  (the bd-ready rule).
+// Ready ⟺ open ∧ every "blocks"-dep is Done  (the ready rule).
 export const itemPhases = ["Blocked", "Ready", "InProgress", "Done"] as const;
 export type ItemPhase = (typeof itemPhases)[number];
 
@@ -86,7 +86,7 @@ export function itemById(w: World, id: ItemId): WorkItem | undefined {
   return w.items.find((i) => i.number === id);
 }
 
-/** The bd-ready rule as a snapshot predicate: not started, and all blockers Done. */
+/** The ready rule as a snapshot predicate: not started, and all blockers Done. */
 export function depsSatisfied(w: World, item: WorkItem): boolean {
   return item.edges
     .filter((e) => e.type === "blocks")

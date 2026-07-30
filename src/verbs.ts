@@ -249,10 +249,10 @@ export const releaseVerb = defineVerb({
 });
 
 // ── graph ────────────────────────────────────────────────────────────────────
-// The GH-canonical dep-graph + ready/blocked classification — the bd-ready /
-// bd-dep replacement (GH-1010). Unlike whats-next (eligible-only, no budget-
+// The GH-canonical dep-graph + ready/blocked classification (GH-1010).
+// Unlike whats-next (eligible-only, no budget-
 // independent view), this emits BOTH buckets plus the typed edges, so a consumer
-// (prx's picker + beadsd door) can reconstruct the bd read surface. Repo-scoped
+// (prx's picker) can reconstruct the full read surface. Repo-scoped
 // so per-repo callers get collision-free numbers.
 
 const GraphInput = z.object({
@@ -289,7 +289,7 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
 >({
   id: "graph",
   summary:
-    "The GH-canonical dep-graph — ready (WSJF-ranked) + blocked (with open blocker IDs) + typed edges, read from the mirror. The bd-ready/bd-dep replacement; zero GitHub API.",
+    "The GH-canonical dep-graph — ready (WSJF-ranked) + blocked (with open blocker IDs) + typed edges, read from the mirror. Zero GitHub API.",
   actor: "front-desk",
   input: GraphInput,
   deps: () => ({ reads: resolveReads() }),
@@ -364,7 +364,7 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
 });
 
 // ── list ─────────────────────────────────────────────────────────────────────
-// The `bd list --all` replacement (GH-1011). ALL items incl Done (unlike graph,
+// The `list` verb (GH-1011). ALL items incl Done (unlike graph,
 // which is non-Done only) + the typed edges, GH-canonical. A consumer maps these
 // to its record shape (e.g. prx's BeadsRecord). Repo-scoped for collision-free
 // numbers.
@@ -400,7 +400,7 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
 >({
   id: "list",
   summary:
-    "Every work item incl Done + the typed dep edges, GH-canonical — the `bd list --all` replacement. Read from the mirror; zero GitHub API.",
+    "Every work item incl Done + the typed dep edges, GH-canonical. Read from the mirror; zero GitHub API.",
   actor: "front-desk",
   input: ListInput,
   deps: () => ({ reads: resolveReads() }),
