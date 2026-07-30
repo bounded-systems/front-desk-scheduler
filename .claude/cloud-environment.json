@@ -45,6 +45,10 @@
         "reason": "Lean toolchain downloads — singular 'release', the origin compiled into elan (verified via strings on the binary). NOT 'releases.' (plural): that host exists but 302s to the marketing site, so allowlisting it provisions nothing"
       },
       {
+        "domain": "api.osv.dev",
+        "reason": "The OSV API — the advisory database the shared scanning lane actually gates on. Probed 2026-07-31 → 404 (reachable; a blocked host yields 000); it was blocked on 2026-07-30, so it reached the dialog in between and was never recorded here. This repo needs it specifically: deno.lock is converted to CycloneDX for scanning (ci-workflows#1), which took the scanned surface from 33 to 136 packages, and none of those advisories can be checked from a session without this host. Query the gating source rather than a second tool's opinion: POST https://api.osv.dev/v1/query -d '{\"package\":{\"name\":\"X\",\"ecosystem\":\"npm\"},\"version\":\"Y\"}' and read affected[].ranges[].events[].fixed."
+      },
+      {
         "domain": "nodejs.org",
         "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)"
       },
@@ -61,7 +65,7 @@
   "environmentVariables": {
     "FDS_READS": "dolthub",
     "FDS_CLAIM_ENDPOINT": "https://front-desk-lease.titular-0-kicks.workers.dev",
-    "FDS_ENV_CONFIG": "eb77de38c2bb"
+    "FDS_ENV_CONFIG": "9f1a112bbdda"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
