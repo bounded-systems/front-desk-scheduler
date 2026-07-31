@@ -49,6 +49,37 @@ export const GITHUB_GRAPHQL_BUDGET: Budget = {
   conversion: { unit: "tokens", unitPerPoint: 1 }, // 1 point = 1 GraphQL point
 };
 
+/**
+ * Points the syncer will NOT spend, held for other consumers of the shared App token.
+ *
+ * The App installation token is minted per-workflow from the broker and shared:
+ * `lease-projection`, `claim-race`, `broker-drift` and every other repo using the
+ * front-desk App all draw on ONE hourly bucket. Nothing meters them — `api_spend`
+ * records this repo's syncer only — so their draw is invisible here by construction.
+ *
+ * This margin used to exist by accident. Before #55, `apiCapacity` graded a
+ * real-scale `consumed` against a hardcoded 5,000, so `budgetGate` refused once
+ * consumption passed ~3,600 regardless of the true ceiling — leaving ~70% of the
+ * bucket permanently untouched. Fixing that arithmetic removed protection nobody
+ * had chosen but everyone was relying on. This makes the same guarantee deliberate,
+ * named, and sized by us.
+ *
+ * CHARGED TO THE GATE, NOT DEDUCTED FROM CAPACITY. The reserve is added to the
+ * caller's estimate, so a refusal still reports the REAL `remaining`/`limit` rather
+ * than a derived figure an operator has to decode back. `apiCapacity` keeps meaning
+ * exactly what GitHub said.
+ *
+ * Cheap to hold: measured 2026-07-31, a full 1,521-item pull costs 16 points
+ * against a bucket sitting at ~8,430 (`api_spend`/`sync_log`, post-#57). Reserving
+ * 1,000 costs the syncer nothing in practice. It bites only when the bucket is
+ * genuinely nearly gone — exactly when the other consumers need it.
+ *
+ * 1,000 is a CHOSEN FLOOR, not a measurement: no consumer outside this repo is
+ * metered, so their real hourly draw is unknown. If it is ever measured, size this
+ * off it instead. See #60.
+ */
+export const SHARED_TOKEN_RESERVE = 1000;
+
 async function dsql(query: string): Promise<string> {
   const { stdout } = await pexecFile("dolt", ["sql", "-q", query, "-r", "json"], {
     cwd: MIRROR_DIR,
@@ -576,7 +607,10 @@ export interface PushResult {
  */
 export async function syncPush(estimatePoints = 200): Promise<PushResult> {
   const before = await fetchGraphqlLimit();
-  if (!budgetGate(apiCapacity(before), estimatePoints).allow) {
+  // + reserve, same as the pull. #60 names only syncPull, but the push is the same
+  // syncer drawing on the same shared bucket — reserving in one and not the other
+  // would leave the hole open exactly where the reserve is meant to bite.
+  if (!budgetGate(apiCapacity(before), estimatePoints + SHARED_TOKEN_RESERVE).allow) {
     return { captured: 0, pushed: 0, gated: true };
   }
   const { fetchProjectMeta, setNumberField } = await import("./board.ts");
@@ -905,7 +939,8 @@ export async function estimateSyncCost(): Promise<number> {
 export async function syncPull(estimatePoints?: number): Promise<SyncResult | SyncGated> {
   const estimate = estimatePoints ?? await estimateSyncCost();
   const before = await fetchGraphqlLimit();
-  const gate = budgetGate(apiCapacity(before), estimate);
+  // + reserve: the pull competes with every other consumer of the shared App token.
+  const gate = budgetGate(apiCapacity(before), estimate + SHARED_TOKEN_RESERVE);
   if (!gate.allow) {
     return {
       gated: true,

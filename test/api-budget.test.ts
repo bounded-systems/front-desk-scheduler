@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { apiCapacity, GITHUB_GRAPHQL_BUDGET } from "../src/mirror.ts";
+import { apiCapacity, GITHUB_GRAPHQL_BUDGET, SHARED_TOKEN_RESERVE } from "../src/mirror.ts";
 import { budgetGate } from "../src/policy.ts";
 
 /** An App installation ceiling well above the 5,000 documented minimum. */
@@ -72,4 +72,48 @@ test("consumption never goes negative when remaining exceeds the reported limit"
   assert.equal(r.consumedPoints, 0);
   assert.ok(r.burnRatio >= 0);
   assert.equal(r.status, "ok");
+});
+
+// --- the shared-token reserve (#60) ---
+
+/** Measured cost of a full 1,521-item pull, post-#57 (api_spend, 2026-07-31). */
+const MEASURED_PULL = 16;
+
+test("a bucket with room for the pull but not the reserve refuses", () => {
+  // 500 left: the 16-point pull fits five times over, so WITHOUT the reserve this
+  // is allowed. The reserve is the whole difference — it refuses here so that
+  // lease-projection / claim-race / broker-drift, which draw on this same App
+  // token and are metered nowhere, still find points when they need them.
+  const r = apiCapacity({ limit: APP_LIMIT, remaining: 500, resetAt: "" });
+
+  assert.ok(
+    budgetGate(r, MEASURED_PULL).allow,
+    "precondition: without the reserve this bucket affords the pull",
+  );
+  assert.equal(budgetGate(r, MEASURED_PULL + SHARED_TOKEN_RESERVE).allow, false);
+});
+
+test("a healthy bucket is unaffected by the reserve", () => {
+  // The real operating point: remaining ~8,430 on the App installation, a pull
+  // costing 16. Holding 1,000 back has to cost the syncer nothing here, or the
+  // reserve would trade a real refusal for a hypothetical one.
+  const r = apiCapacity({ limit: APP_LIMIT, remaining: 8430, resetAt: "" });
+  const gate = budgetGate(r, MEASURED_PULL + SHARED_TOKEN_RESERVE);
+
+  assert.ok(gate.allow, `a healthy bucket must still sync (got: ${gate.reason})`);
+  assert.equal(gate.reason, "healthy");
+});
+
+test("the reserve is charged to the gate, so a refusal reports the TRUE remaining", () => {
+  // Charging the gate rather than shrinking capacity is what keeps the refusal
+  // message honest: an operator reading "remaining 500" must see what GitHub said,
+  // not 500 minus a reserve they would then have to decode back.
+  const live = { limit: APP_LIMIT, remaining: 500, resetAt: "" };
+  const r = apiCapacity(live);
+
+  assert.equal(budgetGate(r, MEASURED_PULL + SHARED_TOKEN_RESERVE).allow, false);
+  // Unchanged by the reserve — this is the report the gated result is built from.
+  assert.equal(r.remainingPoints, live.remaining);
+  assert.equal(r.budget.capacityPoints, live.limit);
+  assert.equal(r.consumedPoints, live.limit - live.remaining);
 });
