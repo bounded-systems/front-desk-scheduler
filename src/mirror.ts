@@ -171,6 +171,36 @@ function sqlEscape(s: string): string {
 }
 
 /**
+ * ISO-8601 (`2026-07-08T23:26:31Z`) → MySQL DATETIME (`2026-07-08 23:26:31`).
+ * Both write paths for created_at/closed_at need it, and they had inlined the
+ * same two `.replace` calls — one place so the two cannot drift.
+ */
+export function toSqlDatetime(iso: string): string {
+  return iso.replace("T", " ").replace("Z", "");
+}
+
+/**
+ * Go's zero `time.Time`, as `gh search --json` emits it for an issue that has
+ * no closedAt. NOT null and NOT omitted: `closedAt` falls through Issue.
+ * ExportData's `default:` branch to `sf.Interface()` on a time.Time, so an OPEN
+ * issue serialises as this string (verified against cli/cli pkg/search/result.go,
+ * 2026-07-31). Truthy in JS — treating it as a real timestamp would set
+ * closed_at on every open issue the delta touches, and SCHEDULABLE excludes on
+ * closed_at, so the ready queue would empty itself on the next hourly sync.
+ */
+const GO_ZERO_TIME = /^0001-01-01/;
+
+/**
+ * A nullable timestamp as a SQL literal. Returns bare `NULL` for an absent
+ * value rather than omitting the assignment, which is what lets a REOPEN clear
+ * closed_at — see the delta path's note on symmetry.
+ */
+export function sqlDatetimeOrNull(iso: string | null | undefined): string {
+  if (!iso || GO_ZERO_TIME.test(iso)) return "NULL";
+  return `'${sqlEscape(toSqlDatetime(iso))}'`;
+}
+
+/**
  * Upsert the full item set, keyed by the globally-unique project-item id —
  * issue NUMBERS collide across repos (#21 exists in several), which a
  * number-keyed REPLACE silently deduplicates. Rows gone from the board are removed.
@@ -764,8 +794,12 @@ export async function applyContentMeta(meta: readonly ContentMeta[]): Promise<Sh
       .slice(at, at + CHUNK)
       .flatMap((m) => {
         const sets: string[] = [];
-        if (m.createdAt) sets.push(`created_at = '${m.createdAt.replace("T", " ").replace("Z", "")}'`);
-        if (m.closedAt) sets.push(`closed_at = '${m.closedAt.replace("T", " ").replace("Z", "")}'`);
+        if (m.createdAt) sets.push(`created_at = '${toSqlDatetime(m.createdAt)}'`);
+        // Unconditional, unlike created_at: absent closedAt means the issue is
+        // OPEN, and that has to overwrite a previous timestamp or a reopened
+        // item keeps a closed_at forever — permanently unschedulable under
+        // SCHEDULABLE (#89). created_at is immutable, so `if` is right there.
+        sets.push(`closed_at = ${sqlDatetimeOrNull(m.closedAt)}`);
         if (m.fm.fm.kind) sets.push(`kind = '${m.fm.fm.kind}'`);
         if (m.fm.fm.effort !== undefined) sets.push(`effort = ${m.fm.fm.effort}`);
         if (m.fm.fm.value !== undefined) sets.push(`value = ${m.fm.fm.value}`);
@@ -1029,11 +1063,20 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
     "search", "issues",
     "--owner", org,
     "--updated", `>=${since}`,
-    "--json", "number,repository,title,state,isPullRequest",
+    // `closedAt` is NOT decoration. The full pull writes closed_at via
+    // applyContentMeta; this path did not, so the field was refreshed only by
+    // the rare full sync while `status` was refreshed here every 6h. Two
+    // completion signals on different clocks is what #89 made load-bearing:
+    // SCHEDULABLE excludes on closed_at, and status-drift compares the two. A
+    // freshly-closed issue therefore read as `status=Done, closed_at=NULL` —
+    // reported as drift on every closure, and worse, an issue closed WITHOUT
+    // its card moving stayed schedulable, which is #89 itself recurring.
+    "--json", "number,repository,title,state,isPullRequest,closedAt",
     "--limit", "500",
   ], { maxBuffer: 32 * 1024 * 1024 });
   const results = JSON.parse(stdout) as {
     number: number; title: string; state: string; isPullRequest: boolean;
+    closedAt?: string | null;
     repository: { name: string };
   }[];
 
@@ -1051,6 +1094,11 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
     const status = r.state.toLowerCase() === "closed" ? "Done" : undefined;
     const sets = [`title = '${sqlEscape(r.title)}'`];
     if (status) sets.push(`status = '${status}'`);
+    // ALWAYS assign, never conditionally: a REOPEN clears closedAt, and skipping
+    // the null would leave a stale timestamp behind — which SCHEDULABLE reads as
+    // "closed", so a reopened item would silently never rank again. The two
+    // directions have to be symmetric or the field is write-once in practice.
+    sets.push(`closed_at = ${sqlDatetimeOrNull(r.closedAt)}`);
     await dsql(`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(id)}'`);
     changed++;
   }
