@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "front-desk": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["scripts/mcp.ts"],
+      "env": {
+        "FDS_READS": "dolthub"
+      }
+    }
+  }
+}

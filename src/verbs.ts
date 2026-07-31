@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { defineVerb, type Registry, type VerbSpec } from "@bounded-systems/verbspec";
 import { statusToState } from "./status.ts";
+import { COVERAGE_GAPS, renderCoverage } from "./coverage.ts";
 import { currentReads, type SchedulerReads } from "./reads.ts";
 import { assembleGraph, assembleScheduling } from "./scheduling.ts";
 import {
@@ -58,6 +59,10 @@ const NextOutput = z.object({
   queue: z.array(QueueItem),
   pick: QueueItem.nullable(),
   gate: z.object({ allow: z.boolean(), reason: z.string() }),
+  // What `eligible` does NOT count. Declared, not derived — a private repo
+  // contributes zero rows, which is indistinguishable from a repo that does not
+  // exist. See src/coverage.ts.
+  excludes: z.array(z.object({ repo: z.string(), reason: z.string(), ranking: z.string() })),
 });
 
 interface Deps {
@@ -130,6 +135,9 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
       queue: ranked.slice(0, input.top).map(toQ),
       pick: top ? toQ(top) : null,
       gate: { allow: gate.allow, reason: gate.reason },
+      // Scoping to one repo does not narrow the gaps: a caller asking for `infra`
+      // specifically is the one MOST likely to be misled by `ready: 0`.
+      excludes: COVERAGE_GAPS.map((g) => ({ ...g })),
     };
   },
   render: (o) => {
@@ -154,6 +162,7 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
             `  Declare via issue-body frontmatter (kind/effort/value/depends-on) — see .github/ISSUE_TEMPLATE/task.md.`,
           ]
         : []),
+      ...renderCoverage(o.excludes),
     ];
     return lines.join("\n");
   },
