@@ -69,7 +69,7 @@
   "environmentVariables": {
     "FDS_READS": "dolthub",
     "FDS_CLAIM_ENDPOINT": "https://front-desk-lease.titular-0-kicks.workers.dev",
-    "FDS_ENV_CONFIG": "9f1a112bbdda"
+    "FDS_ENV_CONFIG": "df2203d92766"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
