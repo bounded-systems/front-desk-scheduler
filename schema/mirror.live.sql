@@ -74,6 +74,7 @@ CREATE TABLE `items` (
   `effort` double NOT NULL DEFAULT '0',
   `value` double NOT NULL DEFAULT '0',
   `depends_on` varchar(512) NOT NULL DEFAULT '',
+  `needs` varchar(255) NOT NULL DEFAULT '',
   `created_at` datetime,
   `closed_at` datetime,
   `origin` enum('github','dolt') NOT NULL DEFAULT '1',
