@@ -30,9 +30,18 @@ export const FIELD_AUTHORITY: readonly FieldAuthority[] = [
   // github-owned — identity + state; Dolt mirrors, never pushes back.
   { field: "title", owner: "github", note: "content; edited in GitHub" },
   { field: "body", owner: "github", note: "content; carries frontmatter (the dolt-field intake channel)" },
+  // Two completion surfaces exist, and the precedence between them is decided
+  // (#89): the board CARD (the mirror's `status` column — Todo / In Progress /
+  // Blocked / Done, a human-draggable ProjectV2 field) may refine a live item,
+  // but `closed_at` — GitHub's open/close, the field this table calls ground
+  // truth — WINS. An item with `closed_at` set is never schedulable, whatever
+  // its card says (SCHEDULABLE in scheduling.ts; `schedulable` in
+  // specs/lean/FrontDesk.lean). A card that disagrees with `closed_at` in
+  // either direction is drift — surfaced by scripts/status-drift.ts, reconciled
+  // by fixing the card, never by the queue silently believing it.
   { field: "status", owner: "github", note: "open/close is a GitHub action (webhook/PR merge)" },
   { field: "created_at", owner: "github", note: "immutable birth time" },
-  { field: "closed_at", owner: "github", note: "realized completion (calibration ground truth)" },
+  { field: "closed_at", owner: "github", note: "realized completion (calibration ground truth); overrides the card for scheduling (#89)" },
   { field: "parent-child", owner: "github", note: "native sub-issues; mined" },
   { field: "closes", owner: "github", note: "closing PR references; mined" },
 
