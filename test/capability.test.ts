@@ -21,6 +21,7 @@ import {
   isExecutableBy,
   probeActor,
   PROXY_TOKEN_SENTINEL,
+  SENTINEL_REASON,
   binaryOnPath,
 } from "../src/capability.ts";
 import { parseFrontMatter } from "../src/frontmatter.ts";
@@ -45,13 +46,14 @@ test("the proxy sentinel is NOT a credential, though it is set and non-empty", (
   // The whole trap: `if (GH_TOKEN)` reads as authenticated. It isn't.
   const sentinel = githubCredential({ GH_TOKEN: PROXY_TOKEN_SENTINEL });
   assert.equal(sentinel.ok, false);
-  assert.match(sentinel.because, /sentinel/);
-  // A substring check, not a pattern match. Written as a regex it read as an
-  // unanchored host match — which CodeQL flags, correctly in general: an
-  // unanchored hostname regex accepts `api.github.com.evil.test`. Nothing here
-  // validates a URL, but a plain `includes` says what is meant and cannot be
-  // copied into somewhere that does.
-  assert.ok(sentinel.because.includes("api.github.com"), sentinel.because);
+  // Pinned by identity against the exported constant rather than by searching
+  // the message for a hostname. Both earlier spellings — an unanchored
+  // /api\.github\.com/ regex, then .includes("api.github.com") — tripped CodeQL's
+  // unanchored-regex and incomplete-URL-sanitization rules. Those rules are
+  // heuristic here (this is a diagnostic string, not a URL check), but they are
+  // right that a hostname substring test is the wrong shape, and the constant
+  // pins the whole contract instead of one fragment of it.
+  assert.equal(sentinel.because, SENTINEL_REASON);
 
   assert.equal(githubCredential({ GH_TOKEN: "ghp_x" }).ok, true);
   assert.equal(githubCredential({}).ok, false);

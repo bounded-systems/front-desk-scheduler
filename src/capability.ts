@@ -78,6 +78,18 @@ export function isCapability(s: string): s is Capability {
  */
 export const PROXY_TOKEN_SENTINEL = "proxy-injected";
 
+/**
+ * Why the sentinel is not a credential, as shown to a caller.
+ *
+ * Exported as a constant so tests can pin the whole message by identity rather
+ * than fishing for `api.github.com` inside it. Asserting on that substring is
+ * what CodeQL's incomplete-URL-sanitization rule exists to catch — the rule is
+ * heuristic here, since nothing validates a URL, but a test that pins the exact
+ * contract is both stronger and unambiguous.
+ */
+export const SENTINEL_REASON =
+  `GH_TOKEN is the '${PROXY_TOKEN_SENTINEL}' sentinel — proxy-local, invalid against api.github.com`;
+
 /** What the caller holds, and why — the "why" is what makes a refusal actionable. */
 export interface ActorCapabilities {
   readonly held: ReadonlySet<Capability>;
@@ -100,9 +112,7 @@ export interface ProbeEnv {
 export function githubCredential(env: ProbeEnv["env"]): { ok: boolean; because: string } {
   const raw = (env.GH_TOKEN ?? env.GITHUB_TOKEN ?? "").trim();
   if (!raw) return { ok: false, because: "GH_TOKEN/GITHUB_TOKEN unset" };
-  if (raw === PROXY_TOKEN_SENTINEL) {
-    return { ok: false, because: `GH_TOKEN is the '${PROXY_TOKEN_SENTINEL}' sentinel — proxy-local, invalid against api.github.com` };
-  }
+  if (raw === PROXY_TOKEN_SENTINEL) return { ok: false, because: SENTINEL_REASON };
   return { ok: true, because: "a GitHub token is present" };
 }
 
