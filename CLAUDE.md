@@ -16,9 +16,17 @@ node scripts/fds.ts list          # every item incl. Done, plus typed dep edges
 ```
 
 Reads need **no credential and no rate-limit budget**: with `FDS_READS=dolthub`
-(the default in `.mcp.json`) the read plane is one unauthenticated GET against the
-public DoltHub mirror. Every result names the commit it derived from — quote it, and
-`AS OF '<commit>'` re-derives that exact queue.
+(the default in `.mcp.json`) the read plane is unauthenticated GETs against the
+public DoltHub mirror — one for `next`/`graph`, a handful for `list`, which pages
+the whole board (#88). Every result names the commit it derived from — quote it,
+and `AS OF '<commit>'` re-derives that exact queue.
+
+DoltHub caps a single query at 1000 rows, so **any new read of a table that grows
+without bound has to paginate**. `list` does, on a keyset over `item_id` pinned
+with `AS OF`; `next` and `graph` do not, because they read non-Done only (~233
+rows). Don't add a third unpaginated whole-table read — `dolthub.query` now
+refuses at 900 rows and tells you to page it, which is the failure #88 wanted
+moved off the wall and into the open.
 
 ## Two things the ranking does not tell you
 
