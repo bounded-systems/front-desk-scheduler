@@ -148,9 +148,15 @@ there is no benign reading of "the cheap query returns a different board".
   laptop with nothing recording the difference. If the frozen install fails,
   resolution genuinely changed — run `deno install` and commit the lockfile.
 - `npm test` runs `node --test test/*.test.ts worker/lease/src/*.test.mjs`.
-- The ready rule (`isEligible` in `src/policy.ts`) is proven in `specs/lean` and
-  `proofs/`. It must stay **one** definition — imported, never restated in SQL, in
-  the Worker, or in a script. #59 has the history of that constraint.
+- The ready rule (`isEligible` in `src/policy.ts`) must stay **one** definition —
+  imported, never restated in SQL, in the Worker, or in a script. #59 has the
+  history of that constraint. Distinct from it is the **schedulable set** — which
+  rows reach the rule at all: `SCHEDULABLE` in `src/scheduling.ts` (card not Done
+  AND `closed_at IS NULL`), mirrored by `schedulable` in
+  `specs/lean/FrontDesk.lean` with the #89 invariant proven (a GitHub-closed item
+  never ranks, whatever its card says). The Lean specs live in `specs/lean/`
+  only — an earlier version of this line cited a `proofs/` directory that has
+  never existed.
 - Cloud-session environment facts (allowlisted domains, the `FDS_*` variables and
   their environment-scoped caveat) live in `.claude/cloud-environment.json`.
 

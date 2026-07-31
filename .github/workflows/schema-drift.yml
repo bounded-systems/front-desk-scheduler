@@ -40,6 +40,19 @@ jobs:
       # runtime dependencies. Node 24 strips the types natively.
       - name: Check the checked-in projection against the deployed schema
         run: node scripts/schema-export.ts --check
+      # Board Status vs GitHub open/close (#89). Gated on schedule/dispatch/push,
+      # report-only on PRs — the drift is a property of the DEPLOYED mirror, so a
+      # PR neither causes nor can fix it, and failing one would block unrelated
+      # work on a card somebody forgot to drag. schema-export --check above DOES
+      # gate PRs on external state, but there the tree contains the projection
+      # being compared; here the tree contains nothing to fix. The scheduled red
+      # names the exact card to drag, which is the entire remediation.
+      - name: Status drift — board card vs GitHub open/close (#89)
+        if: always()
+        # NOT `cond && '' || '--gate'`: an empty string is FALSY in GitHub
+        # expressions, so that form gates PRs too. The truthy branch must be
+        # the one carrying the flag.
+        run: node scripts/status-drift.ts ${{ github.event_name != 'pull_request' && '--gate' || '' }}
       - name: Triage coverage (informational — never fails)
         # Report, don't gate: a red build over an unfilled estimate teaches
         # people to fill in garbage. Visibility is the enforcement.

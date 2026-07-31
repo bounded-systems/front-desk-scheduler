@@ -1,0 +1,69 @@
+/**
+ * The schedulable set (#89): GitHub-closed items never reach the policy, and
+ * the two completion authorities are reconciled toward `closed_at`.
+ *
+ * The clause lives in SQL (the set also drives dependency satisfaction, so
+ * membership must be decided before assembly), which makes it invisible to a
+ * behavioural test over assembled items — a closed row simply never arrives.
+ * So this file asserts three things at the layers where each is real:
+ *
+ *   1. every scheduling query carries BOTH exclusions (the string is the
+ *      artifact, same species as leases.test.ts's FROM-clause asserts);
+ *   2. assembleScheduling treats out-of-set deps as satisfied — the property
+ *      that makes SQL-level exclusion the correct layer;
+ *   3. the drift query sees both directions of disagreement and only
+ *      github-origin rows (dolt-origin planning items have no issue to
+ *      disagree with).
+ */
+
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import { assembleScheduling, SQL } from "../src/scheduling.ts";
+import type { RawEdge, RawItem } from "../src/scheduling.ts";
+
+test("every scheduling query excludes card-Done AND GitHub-closed (#89)", () => {
+  for (const q of [SQL.items, SQL.itemsLegacy] as const) {
+    assert.match(q, /status <> 'Done'/, "card-Done exclusion");
+    assert.match(q, /closed_at IS NULL/, "GitHub-closed exclusion (#89 — the card cannot resurrect a closed item)");
+  }
+});
+
+test("the ready rule itself is NOT restated in SQL (#59)", () => {
+  // The set may be defined in SQL; the ready rule may not. If either of these
+  // ever appears, someone has moved `isEligible` into the data plane.
+  for (const q of [SQL.items, SQL.itemsLegacy] as const) {
+    assert.doesNotMatch(q, /blocker/i, "openBlockers is derived in assembly, never in SQL");
+    assert.doesNotMatch(q, /in_progress|In Progress/, "liveness mapping stays in statusToState");
+  }
+});
+
+test("a dep outside the schedulable set is satisfied, not blocking", () => {
+  // Two rows arrive (the set), one dep points at an item that did NOT arrive —
+  // exactly what a GitHub-closed (or Done) dependency now looks like. It must
+  // count as complete: zero open blockers for the dependent.
+  const raw = (over: Partial<RawItem> & { item_id: string }): RawItem => ({
+    number: 1,
+    title: "t",
+    repository: "r",
+    status: "Todo",
+    kind: "task",
+    effort: 1,
+    value: 1,
+    depends_on: "",
+    age_days: 0,
+    ...over,
+  });
+  const items = [raw({ item_id: "a", number: 1 }), raw({ item_id: "b", number: 2 })];
+  const edges: RawEdge[] = [
+    { item_id: "a", dep_item_id: "closed-and-absent" }, // satisfied — outside the set
+    { item_id: "a", dep_item_id: "b" }, // open — inside the set
+  ];
+  const [a] = assembleScheduling(items, edges, []);
+  assert.equal(a.openBlockers, 1, "only the in-set dep blocks; the absent (closed) one is satisfied");
+});
+
+test("the drift query detects both directions, github-origin only", () => {
+  assert.match(SQL.statusDrift, /closed_at IS NOT NULL AND status <> 'Done'/, "dead work wearing a live card (#55's shape)");
+  assert.match(SQL.statusDrift, /closed_at IS NULL AND status = 'Done'/, "card claims completion GitHub has not recorded");
+  assert.match(SQL.statusDrift, /origin = 'github'/, "dolt-origin rows have no GitHub issue to disagree with");
+});

@@ -42,7 +42,11 @@
       },
       {
         "domain": "release.lean-lang.org",
-        "reason": "Lean toolchain downloads — singular 'release', the origin compiled into elan (verified via strings on the binary). NOT 'releases.' (plural): that host exists but 302s to the marketing site, so allowlisting it provisions nothing"
+        "reason": "Lean toolchain downloads, historical origin. An earlier note here asserted singular-is-correct 'verified via strings on the binary' — but on 2026-07-31 a live `lake build` watched elan request https://releases.lean-lang.org/lean4/v4.32.2/lean-4.32.2-linux.tar.zst (PLURAL) and take a proxy 403, so current elan resolves the plural host and this entry alone no longer provisions a toolchain. Keep both entries until confirmed which the shipping elan uses; the empirical check below is the tiebreaker, and it disagreed with the strings-based one"
+      },
+      {
+        "domain": "releases.lean-lang.org",
+        "reason": "Lean toolchain downloads, the origin current elan actually requests (observed 2026-07-31, see previous entry). NOT YET ALLOWLISTED in the environment UI as of that date — adding it there is the action; this entry records the requirement"
       },
       {
         "domain": "api.osv.dev",
@@ -65,7 +69,7 @@
   "environmentVariables": {
     "FDS_READS": "dolthub",
     "FDS_CLAIM_ENDPOINT": "https://front-desk-lease.titular-0-kicks.workers.dev",
-    "FDS_ENV_CONFIG": "9f1a112bbdda"
+    "FDS_ENV_CONFIG": "df2203d92766"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",

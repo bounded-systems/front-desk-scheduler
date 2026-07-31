@@ -59,6 +59,48 @@ theorem allowed_spend_within_cap {consumed capacity add : Nat}
 theorem reserve_preserves_invariant {consumed capacity add : Nat}
     (hfits : consumed + add ≤ capacity) : consumed + add ≤ capacity := hfits
 
+/-! ## The schedulable set (#89)
+
+  Completion is recorded on two surfaces: the board card's Status column
+  (`cardDone`) and GitHub's open/close (`closedAt` — authority.ts: "realized
+  completion, calibration ground truth"). Set membership mirrors SCHEDULABLE in
+  `src/scheduling.ts` (`status <> 'Done' AND closed_at IS NULL`): a row must be
+  clear on BOTH surfaces to be scheduled. This is deliberately the SET, not the
+  ready rule — `isEligible` stays the one definition of ready (#59); the set
+  decides which rows reach it at all, and (because dependency satisfaction is
+  set-complement) which deps count as done.
+
+  `closed` is a Bool — `closed_at IS NOT NULL` in the SQL. WHAT the timestamp
+  is never matters to membership, only whether GitHub recorded one, so the
+  model carries exactly that bit (and every theorem below is `decide`-checkable).
+-/
+
+/-- Mirrors SCHEDULABLE in src/scheduling.ts. -/
+def schedulable (closed : Bool) (cardDone : Bool) : Bool :=
+  !closed && !cardDone
+
+/--
+  #89's invariant: an item GitHub has closed is NEVER schedulable, whatever its
+  card says. `.github#55` is the counterexample this rules out — closed
+  2026-07-08, card "In Progress", ranked 8th for 23 days. The card can refine a
+  live item; it cannot resurrect a closed one.
+-/
+theorem closed_never_schedulable :
+    ∀ cardDone, schedulable true cardDone = false := by decide
+
+/-- The card keeps its own veto: Done excludes the item even with GitHub open. -/
+theorem card_done_never_schedulable :
+    ∀ closed, schedulable closed true = false := by decide
+
+/--
+  Completeness of the two clauses: an excluded row implicates at least one
+  authority — there is no third way out of the set. (This is what makes a
+  status-drift report exhaustive: every exclusion is attributable.)
+-/
+theorem excluded_names_its_authority :
+    ∀ closed cardDone, schedulable closed cardDone = false →
+      closed = true ∨ cardDone = true := by decide
+
 /--
   THE TOCTOU, formalized: `gate` being sound for EACH agent individually does
   NOT make it sound for two agents spending against the SAME snapshot. This is

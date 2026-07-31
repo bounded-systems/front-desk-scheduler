@@ -58,9 +58,10 @@ export interface RawEdge {
 }
 
 /**
- * Assemble scheduling items from raw rows. `items` is the NON-Done set (the only
- * schedulable rows); a dep pointing OUTSIDE it is a Done item → satisfied, so
- * openBlockers counts only deps that ARE in the set.
+ * Assemble scheduling items from raw rows. `items` is the SCHEDULABLE set —
+ * not card-Done AND not GitHub-closed (see SCHEDULABLE below); a dep pointing
+ * OUTSIDE it is complete → satisfied, so openBlockers counts only deps that
+ * ARE in the set.
  */
 export function assembleScheduling(
   items: readonly RawItem[],
@@ -93,11 +94,37 @@ export function assembleScheduling(
   }));
 }
 
-/** The three read-plane queries every adapter runs (non-Done items, edges, live leases). */
+/**
+ * The schedulable set, as a WHERE clause. Two exclusions, one per authority:
+ *
+ *   status <> 'Done'      — the board card's completion column (projection).
+ *   closed_at IS NULL     — GitHub's open/close, which authority.ts names
+ *                           "realized completion (calibration ground truth)".
+ *
+ * The second clause is front-desk-scheduler#89: `.github#55` was closed on
+ * GitHub on 2026-07-08 while its card still read "In Progress", and it ranked
+ * 8th for 23 days — the rule consulted the field the authority model does NOT
+ * own liveness with, while the field it calls ground truth sat unread in the
+ * same row. A card can refine a live item (Todo / In Progress / Blocked); it
+ * cannot resurrect a closed one.
+ *
+ * This is deliberately the SET definition, not a restatement of the ready rule
+ * (#59 forbids that): isEligible stays the one imported definition of ready.
+ * Membership must be decided here and not post-hoc in TS because the set also
+ * drives dependency satisfaction in assembleScheduling — a dep pointing outside
+ * the set is complete and blocks nothing, and a GitHub-closed dep must satisfy
+ * its dependents exactly as a Done one does.
+ *
+ * `closed_at` is in the base schema (mirror.sql), older than `needs`, so every
+ * ref either query can reach has the column — the clause is safe on both.
+ */
+const SCHEDULABLE = "WHERE status <> 'Done' AND closed_at IS NULL";
+
+/** The three read-plane queries every adapter runs (schedulable items, edges, live leases). */
 export const SQL = {
   items:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, needs, " +
-    "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items WHERE status <> 'Done'",
+    `DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items ${SCHEDULABLE}`,
   // Pre-2026-07-31 shape, without `needs`. Same role as `leasesLegacy` below and
   // the same justification: `ref` can name any historical Dolt commit, and
   // reading the board as it stood before a migration is a permanent capability
@@ -106,7 +133,16 @@ export const SQL = {
   // a board that never carried the field.
   itemsLegacy:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
-    "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items WHERE status <> 'Done'",
+    `DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items ${SCHEDULABLE}`,
+  // The reconciliation read (scripts/status-drift.ts): rows where the two
+  // completion authorities DISAGREE, in either direction. Not consumed by the
+  // queue — the schedulable set already resolves the disagreement toward
+  // closed_at — but a resolved disagreement is still a lying card on the live
+  // board, and nothing else would ever surface it.
+  statusDrift:
+    "SELECT repository, number, status, closed_at FROM items " +
+    "WHERE origin = 'github' AND ((closed_at IS NOT NULL AND status <> 'Done') " +
+    "OR (closed_at IS NULL AND status = 'Done'))",
   edges: "SELECT item_id, dep_item_id FROM item_deps",
   // Typed edges — carries edge_type (blocks / parent-child / closes) that the
   // flattened `edges` query drops. The GH-canonical dep-graph surface
