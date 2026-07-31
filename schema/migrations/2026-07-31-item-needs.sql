@@ -1,0 +1,45 @@
+-- 2026-07-31 — what an ACTOR must hold to execute an item.
+--
+-- `next` ranks by value-density and reports whether an item fits the budget.
+-- Both are properties of the ITEM. Neither asks whether the actor holding the
+-- answer can carry it out, and on 2026-07-31 that gap cost a full session
+-- (#86): `next` ranked front-desk#58 first — correctly, it is effort-1 and two
+-- other items are sized off the number it produces — but its work shells out to
+-- `gh`, which a cloud session does not have. Finding that out took reading the
+-- issue, then the script, then testing for the binary. .github#68 was the same
+-- dead end.
+--
+-- This column is where the requirement lives. Comma-separated tokens from the
+-- closed vocabulary in src/capability.ts (gh, github-api, dolt, deno), declared
+-- by the author in issue-body frontmatter (`needs: [gh]`) and parsed at sync,
+-- exactly like kind/effort/value. One source of truth, one path.
+--
+-- It is DISTINCT from `depends_on`, which says what must be DONE first. The two
+-- are independent: an item with zero open blockers can still be undoable by the
+-- caller asking for it. That independence is the finding.
+--
+-- Empty is the default and the overwhelming majority, and means "executable by
+-- anyone". The predicate fails OPEN: an undeclared requirement is UNKNOWN, and
+-- unknown must not present as blocked — the same distinction the claim path
+-- keeps between a refusal and an error. Failing closed would empty the queue on
+-- day one (28/228 ready items lacked even effort/value when #86 was written)
+-- and teach every caller to ignore the field.
+--
+-- READ COMPATIBILITY: the read plane tolerates this column's ABSENCE rather
+-- than requiring the migration to land first. SQL.items selects `needs`, and
+-- falls back to SQL.itemsLegacy when the column is not there. That is not
+-- transitional scaffolding — the same argument as `leasesLegacy`: `ref` can name
+-- any historical Dolt commit, and reading the board as it stood before this
+-- migration is a permanent capability of a versioned database. Until the
+-- migration is applied every item reads as `needs = ''`, so the predicate is
+-- inert and no queue changes.
+--
+-- Bare ADD COLUMN — Dolt has no conditional DDL (ADD COLUMN IF NOT EXISTS is
+-- MariaDB-only; PREPARE refuses DDL; DATABASE() is empty under `dolt sql`).
+-- Re-applying errors, which is fine: the runner consults `schema_migrations` and
+-- never applies a file twice. See .github/workflows/mirror-migrate.yml.
+--
+-- Apply:  gh workflow run mirror-migrate.yml \
+--           -f migration=2026-07-31-item-needs.sql -f dry_run=false
+
+ALTER TABLE `items` ADD COLUMN `needs` varchar(255) NOT NULL DEFAULT '' AFTER `depends_on`;

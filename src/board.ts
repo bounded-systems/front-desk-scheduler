@@ -44,6 +44,12 @@ export interface BoardItem {
   readonly effort: number;
   readonly value: number;
   readonly dependsOn: readonly number[];
+  /**
+   * Capabilities an ACTOR must hold to execute this item (src/capability.ts).
+   * Distinct from `dependsOn`, which is what must be DONE first. Empty ⇒ anyone
+   * — the undeclared default, and the predicate fails open on it (#86).
+   */
+  readonly needs: readonly string[];
 }
 
 const KINDS: readonly BeadKind[] = ["epic", "room", "door", "task"];
@@ -77,6 +83,10 @@ export function normalize(raw: RawBoardItem): BoardItem | null {
     effort: raw.effort ?? 0,
     value: raw.value ?? 0,
     dependsOn: parseDependsOn(raw["depends on"]),
+    // Not a board project field: `needs` is declared in issue-body frontmatter
+    // and absorbed at sync (absorbFrontMatter), so the project read has no
+    // source for it. Undeclared here ⇒ executable by anyone.
+    needs: [],
   };
 }
 

@@ -15,6 +15,7 @@ function item(over: Partial<SchedulingItem> & { id: string; number: number }): S
     effort: over.effort ?? 1,
     value: over.value ?? 1,
     dependsOn: over.dependsOn ?? [],
+    needs: over.needs ?? [],
     openBlockers: over.openBlockers ?? 0,
     unblocks: over.unblocks ?? 0,
     ageDays: over.ageDays ?? 0,

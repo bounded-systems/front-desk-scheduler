@@ -11,6 +11,12 @@ import { defineVerb, type Registry, type VerbSpec } from "@bounded-systems/verbs
 import { statusToState } from "./status.ts";
 import { COVERAGE_GAPS, renderCoverage } from "./coverage.ts";
 import { currentReads, type SchedulerReads } from "./reads.ts";
+import {
+  type ActorCapabilities,
+  CAPABILITIES,
+  currentActor,
+  missingFor,
+} from "./capability.ts";
 import { assembleGraph, assembleScheduling } from "./scheduling.ts";
 import {
   budgetGate,
@@ -43,6 +49,10 @@ const QueueItem = z.object({
   // a real WSJF density. Surfaced per-item so estimate-backed ranks never pass
   // silently as triaged ones.
   untriaged: z.boolean(),
+  // Capabilities this item declares (`needs:` frontmatter), and the subset the
+  // CALLING actor lacks. `missing` empty ⇒ executable by this caller.
+  needs: z.array(z.string()),
+  missing: z.array(z.string()),
 });
 
 const NextOutput = z.object({
@@ -55,8 +65,23 @@ const NextOutput = z.object({
   budget: z.string(),
   remaining: z.number(),
   eligible: z.number(),
+  // Of `eligible`, how many this caller can actually execute.
+  executable: z.number(),
   untriagedCount: z.number(),
   queue: z.array(QueueItem),
+  // Ranked items this caller CANNOT execute — correctly ranked, wrong actor.
+  // A separate list, not a reordering: #58 keeps its rank and its score, it
+  // simply belongs to someone else (#86).
+  otherActors: z.array(QueueItem),
+  // What this caller holds, so a refusal is inspectable rather than mysterious.
+  actor: z.object({
+    held: z.array(z.string()),
+    missing: z.array(z.string()),
+    // Why each capability is or is not held. The reason is the point: "GH_TOKEN
+    // is the 'proxy-injected' sentinel — proxy-local, invalid against
+    // api.github.com" is the sentence that would have saved the session in #86.
+    why: z.array(z.object({ capability: z.string(), reason: z.string() })),
+  }),
   pick: QueueItem.nullable(),
   gate: z.object({ allow: z.boolean(), reason: z.string() }),
   // What `eligible` does NOT count. Declared, not derived — a private repo
@@ -67,6 +92,23 @@ const NextOutput = z.object({
 
 interface Deps {
   readonly reads: SchedulerReads;
+  /**
+   * What the CALLER holds. Injected so the partition is testable without a
+   * filesystem, and so a non-process caller (the MCP server, a workflow) can
+   * declare its own capabilities rather than inheriting this process's.
+   */
+  readonly actor?: ActorCapabilities;
+}
+
+/**
+ * Why the caller cannot execute anything — one line per capability that some
+ * ranked item needs and this actor lacks, carrying the REASON rather than just
+ * the name. "no `gh` binary on PATH" and "GH_TOKEN is the sentinel" are
+ * different problems with different fixes.
+ */
+function explainMissingLines(o: { otherActors: { missing: string[] }[]; actor: { why: { capability: string; reason: string }[] } }): string[] {
+  const wanted = new Set(o.otherActors.flatMap((r) => r.missing));
+  return o.actor.why.filter((w) => wanted.has(w.capability)).map((w) => `${w.capability}: ${w.reason}`);
 }
 
 export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = defineVerb<
@@ -80,9 +122,10 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
   actor: "front-desk",
   input: NextInput,
   output: NextOutput,
-  deps: () => ({ reads: currentReads() }),
+  deps: () => ({ reads: currentReads(), actor: currentActor() }),
   run: async (input, deps) => {
     const reads = deps?.reads ?? currentReads();
+    const actor = deps?.actor ?? currentActor();
     const budget = ORG_BUDGETS.get(input.budget) ?? ROLLING_5H_BUDGET;
     const [read, meta] = await Promise.all([reads.readScheduling(), reads.meta()]);
     const board = read.items;
@@ -117,10 +160,22 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
         fits: r.fitsRemaining,
         title: it.title,
         untriaged: it.effort <= 0 && it.value <= 0,
+        needs: [...it.needs],
+        missing: missingFor(it.needs, actor),
       };
     };
 
-    const top = ranked[0];
+    // The capability partition. NOT a re-ranking: both lists stay in the score
+    // order `prioritize` produced, and no score is touched. #58 was ranked
+    // first correctly — effort-1, and #60/#62 are sized off the number it
+    // produces — it just needs `gh`, which a cloud session does not have. The
+    // useful output is two lists, not one reordered list (#86).
+    const executableRanked = ranked.filter((r) => toQ(r).missing.length === 0);
+    const otherRanked = ranked.filter((r) => toQ(r).missing.length > 0);
+
+    // The pick is the top item this caller can ACTUALLY do. A pick the caller
+    // cannot execute is what cost a full session on 2026-07-31.
+    const top = executableRanked[0];
     const report = planCapacity(budget, top ? [top] : [], input.consumed);
     const gate = budgetGate(report, top ? Math.max(top.effort, 1) : 0);
 
@@ -131,8 +186,15 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
       budget: budget.id,
       remaining,
       eligible: ranked.length,
+      executable: executableRanked.length,
       untriagedCount: ranked.filter((r) => toQ(r).untriaged).length,
-      queue: ranked.slice(0, input.top).map(toQ),
+      queue: executableRanked.slice(0, input.top).map(toQ),
+      otherActors: otherRanked.slice(0, input.top).map(toQ),
+      actor: {
+        held: [...actor.held],
+        missing: CAPABILITIES.filter((c) => !actor.held.has(c)),
+        why: CAPABILITIES.map((c) => ({ capability: c, reason: actor.because.get(c) ?? "unknown" })),
+      },
       pick: top ? toQ(top) : null,
       gate: { allow: gate.allow, reason: gate.reason },
       // Scoping to one repo does not narrow the gaps: a caller asking for `infra`
@@ -145,16 +207,33 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
     const lines = [
       `Front Desk — next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
         (o.derivedFrom ? `\nderived from commit ${o.derivedFrom} — \`AS OF '${o.derivedFrom}'\` re-derives this exact queue` : ""),
-      `budget=${o.budget} remaining=${o.remaining}   ready: ${o.eligible}`,
+      `budget=${o.budget} remaining=${o.remaining}   ready: ${o.eligible}` +
+        (o.otherActors.length ? `   yours: ${o.executable}` : ""),
       `  ${w("#", 6)} ${w("repo", 16)} ${w("kind", 5)} ${w("eff", 4)} ${w("val", 4)} ${w("score", 7)} ${w("fits", 4)} meta`,
       ...o.queue.map(
         (r) =>
           `  ${w("#" + r.number, 6)} ${w(r.repository, 16)} ${w(r.kind, 5)} ${w(String(r.effort), 4)} ${w(String(r.value), 4)} ${w(r.score.toFixed(2), 7)} ${w(r.fits ? "✔" : "·", 4)} ${r.untriaged ? "~" : "✔"}`,
       ),
+      // The second list. Printed rather than dropped because these items are
+      // correctly ranked and genuinely valuable — they belong to a different
+      // actor, and a caller who cannot see them cannot hand them off (#86).
+      ...(o.otherActors.length
+        ? [
+            `\n⊘ ranked, but NOT executable by you (${o.otherActors.length}) — correct ranks, different actor:`,
+            ...o.otherActors.map(
+              (r) =>
+                `  ${w("#" + r.number, 6)} ${w(r.repository, 16)} ${w(r.score.toFixed(2), 7)} needs ${r.missing.join(", ")}`,
+            ),
+            `  you hold: ${o.actor.held.join(", ") || "none"}${o.actor.missing.length ? `   you lack: ${o.actor.missing.join(", ")}` : ""}`,
+          ]
+        : []),
       o.pick
         ? `\n→ pick: #${o.pick.number} [${o.pick.repository}] ${o.pick.title}` +
           (o.pick.untriaged ? `\n  ⚠ untriaged — this rank is the fallback (kind+unblocks+age), not a declared priority` : "") +
           `\n  budget: ${o.gate.allow ? "ALLOW" : "DENY"} — ${o.gate.reason}`
+        : o.otherActors.length
+        ? `\n→ nothing YOU can execute. ${o.otherActors.length} ranked item(s) need capabilities you lack:\n` +
+          explainMissingLines(o).map((l) => `  ${l}`).join("\n")
         : "\n→ nothing eligible.",
       ...(o.untriagedCount > 0
         ? [
