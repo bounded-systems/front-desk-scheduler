@@ -55,9 +55,43 @@ gh api graphql {organization{projectV2}} → 403  only the pinned set of PR-revi
 ```
 
 So **ProjectV2 GraphQL is unreachable from a session by any route** — including a
-remote `gh` egressing through the same proxy. An item that reads the board itself
-(`board:parity`, `sync`) wants `needs: [github-api]`; declaring `needs: [gh]` would
-wrongly mark it executable anywhere a binary happens to be installed.
+remote `gh` egressing through the same proxy. A *script* that reads the board
+itself (`board:parity`, `sync`) therefore wants `needs: [github-api]`; declaring
+`needs: [gh]` would wrongly mark it executable anywhere a binary happens to be
+installed.
+
+Note what that sentence is about, though: **the script, not the issue.** `needs:`
+is what an actor must *hold to discharge the item*, and the two part company the
+moment a window exists. #58 was the case in point — the board-reading item, and
+it never carried a `needs:` declaration at all, because once `board-parity.yml`
+existed the work was "dispatch a workflow and read one line", which any caller
+can do. So this is not "board work always needs `github-api`".
+
+### Prefer building the window to declaring `needs:` (#95)
+
+**When you find you can't do something, the usual right answer is to build a
+ticket window, not to declare `needs:`.** Any privileged capability can be moved
+behind a workflow dispatch, and once it is, the item needs nothing: the workflow
+holds the credential and dispatching is something any actor can do.
+`claim-ticket.yml` (#61), `board-parity.yml` (#58) and `mirror-migrate.yml` (#94)
+are all the same move.
+
+Declaring `needs:` is right when the item genuinely belongs to a different actor
+— then `next` routes it to `otherActors` so it can be handed off. It is wrong
+when it is really a record that **nobody has built the window yet**, because that
+parks the item instead of prompting the one change that would unblock it. The
+declaration #58 was *intended* to carry went `[gh]` → `[github-api]` → nothing
+inside one afternoon (#95), and only the last was ever a fact about the issue
+rather than about the state of the tooling that day. Note it was never actually
+written into the issue — what moved was the guidance in this file, which is why
+the correction lands here.
+
+**A stale `needs:` is author-maintained, and that is accepted, not solved.**
+Nothing detects one: a checker would have to know that a window exists for the
+capability, and nothing records that — a window is just a workflow file that
+happens to hold a credential. So re-read `needs:` when you pick an item up, and
+delete it in the PR that builds the window. Treat a non-empty `needs:` as a claim
+with a date on it, not a standing fact.
 
 ## Claiming — go through the ticket window
 
