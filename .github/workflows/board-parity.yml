@@ -1,0 +1,152 @@
+name: board-parity
+# The measurement window (#58): let a Claude Code cloud session confirm the cheap
+# board query against the live board.
+#
+# WHY A WORKFLOW AND NOT A DIRECT RUN
+# -----------------------------------
+# Same shape as the ticket window (`claim-ticket.yml`, #61), for a different
+# reason. Claiming is blocked because a session holds no credential it can present
+# to a third-party host. Parity is blocked one layer earlier: the session cannot
+# make the GitHub call at all.
+#
+# A session's `GH_TOKEN` is the sentinel `proxy-injected` and the real credential
+# is injected at the egress proxy — but that proxy is a POLICY POINT, not a
+# passthrough. Verified from a session, 2026-07-31, with a real `gh` binary
+# installed (so this is not the missing-binary problem in #86):
+#
+#   gh api rate_limit                        → 200   {"limit":5000,"remaining":5000}
+#   gh api user                              → 200   bdelanghe, X-Oauth-Scopes: <empty>
+#   gh api orgs/bounded-systems              → 403   "sessions are bound to their
+#                                                     configured repositories"
+#   gh api graphql {organization{projectV2}} → 403   "only the pinned set of
+#                                                     PR-review operations is served"
+#
+# `board:parity` needs ProjectV2 GraphQL on BOTH paths — `gh project item-list`
+# (legacy) and `fieldValueByName` (cheap) — and ProjectV2 is not in the served set.
+# Installing `gh` does not help, and neither would a remote `gh` egressing through
+# the same proxy. The identity is the blocker, not the tooling.
+#
+# So the session does not measure. It asks GitHub to measure on its behalf, with
+# the SAME Front Desk App token the syncer uses (`mirror-sync.yml`), minted over
+# Actions OIDC from the broker. That identity has ProjectV2 and the ~8,350-point
+# installation bucket the numbers need to be comparable to `api_spend`.
+#
+# WHY THIS SERIALIZES ON `mirror-write`
+# -------------------------------------
+# This workflow only READS, so joining a write group looks wrong. It is not.
+# `board-parity.ts` measures cost by differencing `remaining` on the shared App
+# bucket (before/after each path). Any other consumer spending against that same
+# bucket mid-run is attributed to the path being measured — a concurrent
+# `mirror-sync` would land ~16 points inside the window and silently inflate the
+# result. The measurement is only sound if it is the only writer to that counter,
+# which is exactly the property `mirror-write` already serializes. Same root fact
+# as the reserve in #60: one bucket, many consumers, most of them unmetered.
+#
+# ONE DEFINITION
+# --------------
+# This file does NOT reimplement the queries or the diff. It runs `npm run
+# board:parity` — the same script a laptop runs — so the comparison stays one
+# definition (#59). The only things this file adds are the identity, the
+# serialization, and a parseable verdict.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this run — recorded in the summary, e.g. "confirming #57".'
+        required: false
+        default: "manual parity check"
+        type: string
+
+permissions:
+  id-token: write # OIDC → cf-token-broker, for the Front Desk App token
+  contents: read
+
+concurrency:
+  # See "WHY THIS SERIALIZES" above — this is a measurement-integrity lock, not a
+  # write lock. cancel-in-progress stays false: a running sync must finish rather
+  # than be killed by a diagnostic.
+  group: mirror-write
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      # Same pin the org's repo-standard.yml uses, so there is one SHA to bump.
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies (frozen)
+        run: deno install --frozen
+
+      - name: Mint Front Desk App token via the OIDC broker
+        id: broker-token
+        env:
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::org var CF_BROKER_URL not visible to this repo"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')"
+          [ -n "$tok" ] || { echo "::error::broker did not return a token for app 'front-desk'"; exit 1; }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
+      - name: Board parity
+        id: parity
+        env:
+          # The App identity — ProjectV2 access and the installation bucket, so the
+          # measured costs are comparable to the api_spend rows the syncer writes.
+          GH_TOKEN: ${{ steps.broker-token.outputs.token }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -uo pipefail
+
+          # stdout carries the measurements and the OK line; stderr carries the
+          # diffs. Keep them apart so a transport failure cannot be read as a
+          # clean parity result.
+          set +e
+          out="$(npm run --silent board:parity 2>/tmp/parity.err)"
+          rc=$?
+          set -e
+
+          echo "$out"
+          [ -s /tmp/parity.err ] && sed 's/^/  /' /tmp/parity.err
+
+          # One greppable line, so a session can read the verdict from the job log
+          # without downloading the run summary. Mirrors FDS-CLAIM-RESULT (#61).
+          cheap="$(printf '%s\n' "$out"  | sed -n 's/^cheap  (fieldValueByName): \([0-9]*\) GraphQL points$/\1/p')"
+          legacy="$(printf '%s\n' "$out" | sed -n 's/^legacy (project item-list): \([0-9]*\) GraphQL points$/\1/p')"
+          verdict=$([ $rc -eq 0 ] && echo ok || echo failed)
+          echo "FDS-PARITY-RESULT {\"parity\":\"$verdict\",\"cheapPoints\":${cheap:-null},\"legacyPoints\":${legacy:-null},\"exit\":$rc}"
+
+          {
+            echo "## board-parity — $verdict"
+            echo
+            echo "_${REASON}_"
+            echo
+            echo '```'
+            echo "$out"
+            [ -s /tmp/parity.err ] && cat /tmp/parity.err
+            echo '```'
+            if [ $rc -ne 0 ]; then
+              echo
+              echo "A systematic field difference usually means a project field was renamed."
+              echo "Check \`BOARD_FIELDS\` in \`src/board.ts\` against the project's actual field names (#58)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # A parity FAILURE is a real finding and must fail the run — unlike a lost
+          # claim in #61, which is an answer. There is no benign reading of "the
+          # cheap query returns a different board".
+          exit $rc

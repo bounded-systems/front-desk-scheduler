@@ -29,8 +29,24 @@ all open work. For `infra`, the authoritative ranking is its own tracking issue
 
 **A ranked item is not necessarily one you can do.** The score weighs effort and
 value; it does not ask whether *you* hold the credentials or binaries the item
-needs. From a cloud session in particular, anything requiring `gh` against the live
-GitHub API cannot run — see below. Check before you start. (front-desk-scheduler#86)
+needs. From a cloud session in particular, anything requiring the live GitHub API
+beyond repo-scoped REST cannot run — see below. Check before you start.
+(front-desk-scheduler#86)
+
+Note the blocker is the **identity, not the tooling**. Installing a real `gh` does
+not help: the egress proxy is a policy point, not a credential passthrough. Verified
+2026-07-31 with `gh` 2.63.2 actually installed:
+
+```
+gh api rate_limit                        → 200  {"limit":5000,"remaining":5000}
+gh api user                              → 200  bdelanghe, X-Oauth-Scopes: <empty>
+gh api orgs/bounded-systems              → 403  sessions are bound to their configured repositories
+gh api graphql {organization{projectV2}} → 403  only the pinned set of PR-review operations is served
+```
+
+So **ProjectV2 GraphQL is unreachable from a session by any route** — including a
+remote `gh` egressing through the same proxy. Anything that reads the board itself
+(`board:parity`, `sync`) has to go through a workflow, the same way claiming does.
 
 ## Claiming — go through the ticket window
 
@@ -58,6 +74,18 @@ though it were the second.
 
 **Reads are unaffected** — `/status` and `/history` are open, and the whole
 `next`/`graph`/`list` path needs no credential.
+
+## Measuring the board — the same window, one door over
+
+`board:parity` (#58) needs ProjectV2 on both paths, so it cannot run in a session
+either. **Dispatch `board-parity.yml`** and read the one `FDS-PARITY-RESULT` line
+from the job log. It mints the same Front Desk App token the syncer uses, so its
+measured costs are comparable to `api_spend`, and it serializes on `mirror-write` —
+the cost is a difference of `remaining` on a shared counter, so a concurrent
+`mirror-sync` would be attributed to the path under measurement.
+
+Unlike a claim, a parity **failure is not an answer**: it fails the run, because
+there is no benign reading of "the cheap query returns a different board".
 
 ## Working here
 
