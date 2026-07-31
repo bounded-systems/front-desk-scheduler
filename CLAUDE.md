@@ -32,11 +32,12 @@ value; it does not ask whether *you* hold the credentials or binaries the item
 needs. From a cloud session in particular, anything requiring `gh` against the live
 GitHub API cannot run — see below. Check before you start. (front-desk-scheduler#86)
 
-## Claiming — read this before you try
+## Claiming — go through the ticket window
 
-`claim` **does not work from a Claude Code cloud session today.** The lease Worker
-authenticates writes against `api.github.com`; a cloud session's ambient `GH_TOKEN`
-is proxy-local and is not valid there. Verified live, 2026-07-31:
+**Calling `claim` directly from a cloud session does not work, and cannot.** A
+session's `GH_TOKEN` is the sentinel `proxy-injected`; the real credential is
+injected at the egress proxy for GitHub hosts only, so a session holds nothing it
+can present to the lease Worker. Verified live, 2026-07-31:
 
 ```
 POST /claim  (no auth)              → 401  writes require `Authorization: Bearer <github token>`
@@ -44,12 +45,19 @@ POST /claim  (ambient GH_TOKEN)     → 403  token is neither a valid user token
 ```
 
 Both refuse in the router, before the Durable Object is touched — a failed claim
-writes nothing. This is by design (`AUTH_MODE=github`, fail-closed) and the gap is
-tracked as #61, the ticket-window pattern. **Reads are unaffected** — `/status` and
-`/history` are open, and the whole `next`/`graph`/`list` path needs no credential.
+writes nothing. That is `AUTH_MODE=github` working as designed.
 
-So: from a cloud session, use `next` to decide what to work on, then do the work.
-Don't burn a pass rediscovering the 403.
+So don't call it. **Dispatch `claim-ticket.yml` instead** and let GitHub claim on
+your behalf with `github.token`, an identity the Worker already accepts. Read the
+verdict from the one `FDS-CLAIM-RESULT` line in the job log. The full loop —
+dispatch, poll, read — is in `docs/claiming-from-a-session.md` (#61).
+
+Note the three outcomes: granted, **not granted** (a fact, not an error — someone
+else holds it), and error (no verdict, holder unknown). Don't retry the third as
+though it were the second.
+
+**Reads are unaffected** — `/status` and `/history` are open, and the whole
+`next`/`graph`/`list` path needs no credential.
 
 ## Working here
 

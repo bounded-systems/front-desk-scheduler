@@ -1,0 +1,144 @@
+name: claim-ticket
+# The ticket window (#61): let a Claude Code cloud session take a lease.
+#
+# WHY A WORKFLOW AND NOT A DIRECT CALL
+# ------------------------------------
+# A cloud session's `GH_TOKEN` is the literal sentinel string `proxy-injected`.
+# The real credential is injected at the egress proxy, for GitHub hosts only, so
+# a session can reach GitHub but holds NO bearer credential it can present to a
+# third-party host. The lease Worker is a third-party host.
+#
+# Verified from a session, 2026-07-31, against the deployed Worker:
+#
+#   POST /claim  (no auth)             → 401  writes require `Authorization: Bearer <github token>`
+#   POST /claim  (ambient GH_TOKEN)    → 403  token is neither a valid user token (401)
+#                                             nor an installation token (401)
+#
+# Both refuse in the router, before the Durable Object is touched — a failed
+# claim writes nothing. That is by design (`AUTH_MODE=github`, fail-closed).
+#
+# So the session does not claim. It asks GitHub to claim on its behalf: this
+# workflow runs with `github.token`, which IS an identity the Worker accepts —
+# `worker/lease/src/auth.mjs` branch 2, where an installation token's coverage of
+# this repo IS the grant. The session never holds a credential; GitHub holds it,
+# and this file is the window the session speaks through.
+#
+# REJECTED ALTERNATIVES (both on #61)
+# -----------------------------------
+#   - A stored `FDS_CLAIM_TOKEN` PAT in the environment config: puts a standing
+#     credential in a settings UI that itself warns against secrets, and this
+#     whole system exists to eliminate standing credentials.
+#   - Teaching the Worker to verify session identity: there is no session
+#     identity to verify. `proxy-injected` is a sentinel, not a token.
+#
+# ONE DEFINITION
+# --------------
+# This workflow does NOT reimplement ranking or eligibility. It shells out to the
+# same `claim` verb the CLI and the MCP server expose, so `isEligible` and the
+# ordering stay the single definition they are required to be (#59). The only
+# thing this file adds is the identity and a parseable verdict.
+on:
+  workflow_dispatch:
+    inputs:
+      agent_label:
+        description: >-
+          Who is claiming, e.g. "session-7". Recorded as an alias only — the
+          Worker namespaces it under the verified identity, so it lands as
+          `gha/<label>`. It cannot be used to impersonate anyone.
+        required: true
+        type: string
+      repo:
+        description: 'Restrict the pick to one repo, e.g. "front-desk-scheduler". Blank = whole board.'
+        required: false
+        type: string
+      ttl:
+        description: "Lease seconds. The lease EXPIRES on its own — a dead claimant's grip lapses."
+        required: false
+        default: "3600"
+        type: string
+
+# The lease write leaves GitHub over HTTPS; nothing here mutates the repo. Read
+# is all `github.token` needs — the Worker's check is `/installation/repositories`
+# coverage, which any installation token can answer regardless of its scopes.
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize per label so one session cannot race itself into two leases by
+  # double-dispatching. Different labels still race normally — that contention is
+  # the mechanism's whole point (specs/lean S1), not something to suppress.
+  group: claim-ticket-${{ inputs.agent_label }}
+  cancel-in-progress: false
+
+jobs:
+  claim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      # Same pin the org's repo-standard.yml uses, so there is one SHA to bump.
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies (frozen)
+        run: deno install --frozen
+
+      - name: Claim
+        id: claim
+        env:
+          # The whole point of the window. github.token is an installation token
+          # covering this repo, which is what auth.mjs branch 2 accepts.
+          GH_TOKEN: ${{ github.token }}
+          FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+          # Pinned rather than auto-detected: the runner has no local mirror, so
+          # detection would land on dolthub anyway. Saying so makes the read plane
+          # a property of the file instead of of the runner's filesystem.
+          FDS_READS: dolthub
+          FDS_JSON: "1"
+          AGENT_LABEL: ${{ inputs.agent_label }}
+          PICK_REPO: ${{ inputs.repo }}
+          TTL: ${{ inputs.ttl }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::error::FDS_CLAIM_ENDPOINT is unset — there is no lease plane to claim against."
+            echo "::error::It is published by lease-deploy.yml as a repo/org Actions variable."
+            exit 1
+          fi
+
+          args=(claim --agent "$AGENT_LABEL" --ttl "$TTL")
+          [ -n "${PICK_REPO:-}" ] && args+=(--repo "$PICK_REPO")
+
+          # stdout is the verdict, stderr is the diagnosis. Keep them apart so a
+          # transport error cannot be parsed as a refusal.
+          set +e
+          out="$(node scripts/fds.ts "${args[@]}" 2>/tmp/claim.err)"
+          rc=$?
+          set -e
+
+          if [ $rc -ne 0 ]; then
+            # An ERROR is not a refusal. An unreachable endpoint or a rejected
+            # identity means we do not know who holds the item — which is a
+            # different fact from "someone else holds it", and must not be
+            # reported as a lost race.
+            echo "::error::claim failed before a verdict was reached (exit $rc)."
+            sed 's/^/::error::/' /tmp/claim.err
+            node scripts/claim-ticket-summary.ts --error "$rc" < /tmp/claim.err >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # One greppable line, so a session can read the verdict from the job log
+          # without downloading the run summary.
+          echo "FDS-CLAIM-RESULT $out"
+          echo "result=$out" >> "$GITHUB_OUTPUT"
+
+          # A refusal is an ANSWER. The run succeeds either way; the verdict is in
+          # the payload, not in the exit code. Failing here would train a caller to
+          # read a lost race as a broken workflow.
+          node scripts/claim-ticket-summary.ts "$out" >> "$GITHUB_STEP_SUMMARY"
