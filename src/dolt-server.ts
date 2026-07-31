@@ -67,7 +67,14 @@ export async function readScheduling(): Promise<ScheduleRead> {
     await q("START TRANSACTION");
     try {
       const [items, edges, leased] = await Promise.all([
-        q(SQL.items) as Promise<RawItem[]>,
+        // Same shape of fallback: a replica that has not yet pulled the
+        // 2026-07-31 migration has no `needs` column. Items then read as
+        // undeclared, so the capability predicate is inert.
+        (q(SQL.items) as Promise<RawItem[]>).catch((e: unknown) =>
+          /column .*needs.* not found|unknown column .*needs/i.test(String(e))
+            ? (q(SQL.itemsLegacy) as Promise<RawItem[]>)
+            : Promise.reject(e)
+        ),
         q(SQL.edges) as Promise<RawEdge[]>,
         // Same fallback as dolthub.ts: a read replica that has not yet pulled the
         // 2026-07-28 migration has no `leases` table. Read-only.
@@ -98,7 +105,13 @@ export async function readTypedEdges(): Promise<RawTypedEdge[]> {
 
 /** ALL items incl Done (the `list` verb). */
 export async function readAllItems(): Promise<RawItem[]> {
-  return withConn(async (q) => (await q(SQL.allItems)) as RawItem[]);
+  return withConn(async (q) =>
+    await (q(SQL.allItems) as Promise<RawItem[]>).catch((e: unknown) =>
+      /column .*needs.* not found|unknown column .*needs/i.test(String(e))
+        ? (q(SQL.allItemsLegacy) as Promise<RawItem[]>)
+        : Promise.reject(e)
+    )
+  );
 }
 
 export async function meta(): Promise<{ syncedAt: string; commit: string } | null> {

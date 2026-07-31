@@ -1106,6 +1106,9 @@ export async function readMirrorScheduling(): Promise<
   const rows = await dsqlRows<{
     number: number; item_id: string; title: string; repository: string;
     status: string; kind: string; effort: number; value: number; depends_on: string;
+    // Arrives via `SELECT i.*` once the 2026-07-31 migration is applied; absent
+    // before it, which reads as undeclared (the predicate fails open).
+    needs?: string | null;
     open_blockers: number | string; unblocks: number | string; age_days: number | string | null; leased: number | string;
   }>(`SELECT i.*, DATEDIFF(UTC_TIMESTAMP(), i.created_at) AS age_days,
       EXISTS(SELECT 1 FROM leases l WHERE l.item_id=i.item_id AND ${LEASE_LIVE("l.")}) AS leased,
@@ -1124,6 +1127,7 @@ export async function readMirrorScheduling(): Promise<
     effort: r.effort,
     value: r.value,
     dependsOn: r.depends_on ? r.depends_on.split(",").map(Number) : [],
+    needs: r.needs ? String(r.needs).split(",").map((c) => c.trim()).filter(Boolean) : [],
     openBlockers: Number(r.open_blockers),
     unblocks: Number(r.unblocks),
     ageDays: r.age_days == null ? 0 : Number(r.age_days),
@@ -1135,6 +1139,7 @@ export async function readMirrorItems(): Promise<BoardItem[]> {
   const rows = await dsqlRows<{
     number: number; item_id: string; title: string; repository: string;
     status: string; kind: string; effort: number; value: number; depends_on: string;
+    needs?: string | null;
   }>("SELECT * FROM items");
   return rows.map((r) => ({
     id: r.item_id,
@@ -1146,5 +1151,6 @@ export async function readMirrorItems(): Promise<BoardItem[]> {
     effort: r.effort,
     value: r.value,
     dependsOn: r.depends_on ? r.depends_on.split(",").map(Number) : [],
+    needs: r.needs ? String(r.needs).split(",").map((c) => c.trim()).filter(Boolean) : [],
   }));
 }

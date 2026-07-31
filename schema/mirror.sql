@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS `items` (
   `effort`     double NOT NULL DEFAULT 0,
   `value`      double NOT NULL DEFAULT 0,
   `depends_on` varchar(512) NOT NULL DEFAULT '',
+  -- Capabilities an ACTOR must hold to execute this item (comma-separated,
+  -- from the closed vocabulary in src/capability.ts). Distinct from
+  -- `depends_on`, which is what must be DONE first: an item with no open
+  -- blockers can still be undoable by the caller asking for it (#86).
+  -- Empty = executable by anyone, which is the undeclared default and the
+  -- overwhelming majority. The predicate fails OPEN on purpose.
+  `needs`      varchar(255) NOT NULL DEFAULT '',
   `created_at` datetime,
   `closed_at`  datetime,
   -- origin: where the item was born. sync_state: where it is in the push cycle.

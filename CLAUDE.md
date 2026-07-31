@@ -27,15 +27,25 @@ skips private repos (infra#138/#145). `ready: N` counts what Front Desk can see,
 all open work. For `infra`, the authoritative ranking is its own tracking issue
 (infra#101), and on that issue the **latest comment supersedes the body**.
 
-**A ranked item is not necessarily one you can do.** The score weighs effort and
-value; it does not ask whether *you* hold the credentials or binaries the item
-needs. From a cloud session in particular, anything requiring the live GitHub API
-beyond repo-scoped REST cannot run — see below. Check before you start.
-(front-desk-scheduler#86)
+**A ranked item is not necessarily one you can do** — but `next` now tells you
+which. The score weighs effort and value and never asks whether *you* hold the
+credentials or binaries an item needs, so the ranking is split rather than
+reordered: `queue` is what you can execute, `otherActors` is what you can only
+rank. Scores and order are identical in both; an item you can't do keeps its rank
+and is shown, not dropped, so you can hand it off. `pick` is the top item you can
+actually execute. (front-desk-scheduler#86)
 
-Note the blocker is the **identity, not the tooling**. Installing a real `gh` does
-not help: the egress proxy is a policy point, not a credential passthrough. Verified
-2026-07-31 with `gh` 2.63.2 actually installed:
+Items declare requirements as `needs: [gh, github-api, dolt, deno]` in issue-body
+frontmatter. **Undeclared means anyone can do it** — the predicate fails open, so
+an item with no `needs` is never filtered from anyone. If `next` says nothing is
+executable, the reason is printed per capability; from a cloud session the usual
+one is that `GH_TOKEN` is the `proxy-injected` sentinel rather than a credential
+(see below), which is set and non-empty and does not work.
+
+When you declare `needs:`, note the blocker is the **identity, not the tooling** —
+so `gh` and `github-api` are not interchangeable. Installing a real `gh` does not
+buy the second one: the egress proxy is a policy point, not a credential
+passthrough. Verified 2026-07-31 with `gh` 2.63.2 actually installed:
 
 ```
 gh api rate_limit                        → 200  {"limit":5000,"remaining":5000}
@@ -45,8 +55,9 @@ gh api graphql {organization{projectV2}} → 403  only the pinned set of PR-revi
 ```
 
 So **ProjectV2 GraphQL is unreachable from a session by any route** — including a
-remote `gh` egressing through the same proxy. Anything that reads the board itself
-(`board:parity`, `sync`) has to go through a workflow, the same way claiming does.
+remote `gh` egressing through the same proxy. An item that reads the board itself
+(`board:parity`, `sync`) wants `needs: [github-api]`; declaring `needs: [gh]` would
+wrongly mark it executable anywhere a binary happens to be installed.
 
 ## Claiming — go through the ticket window
 

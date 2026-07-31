@@ -9,6 +9,7 @@
  *   effort: 3             # 1..10
  *   value: 60             # 0..100
  *   depends-on: [prx#119, gh-project-room#83]
+ *   needs: [gh, github-api]   # capabilities an ACTOR must hold to do it
  *   ---
  *
  * machine-schema discipline: closed const tuples + a parse seam that REJECTS
@@ -18,6 +19,7 @@
  */
 
 import type { BeadKind } from "./policy.ts";
+import { type Capability, CAPABILITIES, isCapability } from "./capability.ts";
 
 export const FM_KINDS = ["epic", "room", "door", "task"] as const;
 
@@ -31,6 +33,8 @@ export interface FrontMatter {
   readonly effort?: number;
   readonly value?: number;
   readonly dependsOn: readonly DepRef[];
+  /** Capabilities the actor must hold to execute this item. Empty ⇒ anyone. */
+  readonly needs: readonly Capability[];
 }
 
 export interface FrontMatterFinding {
@@ -44,7 +48,7 @@ export interface FrontMatterResult {
   readonly findings: readonly FrontMatterFinding[];
 }
 
-const EMPTY: FrontMatter = { dependsOn: [] };
+const EMPTY: FrontMatter = { dependsOn: [], needs: [] };
 
 const DEP_RE = /^([A-Za-z0-9._-]+)#(\d+)$/;
 
@@ -58,6 +62,7 @@ export function parseFrontMatter(body: string): FrontMatterResult {
   let effort: number | undefined;
   let value: number | undefined;
   const dependsOn: DepRef[] = [];
+  const needs: Capability[] = [];
 
   for (const rawLine of m[1].split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -95,10 +100,28 @@ export function parseFrontMatter(body: string): FrontMatterResult {
         }
         break;
       }
+      case "needs": {
+        // What an ACTOR must hold to carry this item out — a credential or a
+        // binary — as opposed to what must be DONE first (`depends-on`). The two
+        // are independent: an item with no blockers can still be undoable by the
+        // caller asking for it, which is #86's whole finding.
+        //
+        // ENUM-forced like `kind`: an unrecognised token becomes a finding rather
+        // than being carried through, because a requirement no actor can ever
+        // satisfy would silently remove the item from every queue.
+        const inner = /^\[(.*)\]$/.exec(val);
+        const parts = (inner ? inner[1].split(",") : [val]).map((s) => s.trim()).filter(Boolean);
+        for (const p of parts) {
+          if (isCapability(p)) {
+            if (!needs.includes(p)) needs.push(p);
+          } else findings.push({ key, message: `needs "${p}" not in {${CAPABILITIES.join("|")}}` });
+        }
+        break;
+      }
       default:
         break; // unknown keys: not ours (frontmatter may serve other tools)
     }
   }
 
-  return { present: true, fm: { kind, effort, value, dependsOn }, findings };
+  return { present: true, fm: { kind, effort, value, dependsOn, needs }, findings };
 }
