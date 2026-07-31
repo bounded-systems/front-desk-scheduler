@@ -63,7 +63,7 @@ function mockReads(items: SchedulingItem[], edges: RawTypedEdge[]): SchedulerRea
     source: "server",
     readScheduling: async () => ({ items, at: "v0110csl2jph0aeeij7rhhurrbjcft6g" }),
     readTypedEdges: async () => edges,
-    readAllItems: async () => [],
+    readAllItems: async () => ({ items: [], at: null }),
     meta: async () => ({ syncedAt: "2026-07-26T00:00:00Z", commit: "abc", source: "server" }),
   };
 }
