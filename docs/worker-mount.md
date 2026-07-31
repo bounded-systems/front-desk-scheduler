@@ -6,7 +6,9 @@ than restated. This file records the constraints that hold **whichever shape
 implements it**, because each one cost a measurement to find and none of them is
 visible from the code you would naturally read first.
 
-It is not a design. The shape is still an open call on #59.
+It is not a design for the mount — that shape is still an open call on #59. One
+decision *is* recorded here, on #43's read-time exclusion, because it turns
+entirely on the topology below.
 
 ## The node coupling is one edge
 
@@ -88,6 +90,33 @@ verb families:
   cheap at the default `top=10` — and makes the pick truth rather than a hint.
   Whole-board exclusion needs a lease index (an aggregate DO, or one maintained
   by DO alarms) and is its own unit of work.
+
+### Decided — 2026-07-31 (#43, option 1, scoped)
+
+Read-time exclusion on the lease plane takes **#43's option 1** — read the DO
+directly — **scoped to the pick and the top N**, with whole-board exclusion split
+out as a separate unit. `claims` still does not gate scheduling; the
+`test/leases.test.ts:139` invariant is untouched.
+
+The alternative considered and rejected was building the aggregate the
+ratification assumed: a well-known index DO, or one maintained by alarms, that
+`claim`/`release` also update. It is rejected for a reason worth writing down,
+because it is not obvious and it will be proposed again:
+
+**An index cannot restore "by construction."** Two Durable Objects cannot commit
+in one transaction, so a crash between the item-DO write and the index write
+leaves the index stale. That is the projection-lag problem rebuilt with a shorter
+lag — better, but *by configuration*, not by construction, which is precisely the
+distinction `claim-plane.ts` draws between the `lease` and `server` planes. It
+would also add a second piece of lease state, and `wrangler.jsonc` is explicit
+that a second serialization point is "precisely the failure this Worker exists to
+remove."
+
+Top-N verification has the opposite shape: it is *exact* for the items it covers,
+because it asks the adjudicating DO itself, and it covers exactly the items the
+caller is about to see or claim. Approximately-right-about-everything loses to
+exactly-right-about-what-matters here, and #43's own framing supports it — the
+whole-board case costs queue accuracy, never safety.
 
 ## Identity has to be bound before dispatch
 
