@@ -1,0 +1,60 @@
+name: env-record
+# Honesty gate for the checked-in cloud-environment record (infra#122, ci-workflows#8).
+#
+# STANDARDIZED ORG-WIDE CALLER — copy this file byte-identical to
+# .github/workflows/env-record.yml in the adopting repo. Same rationale as
+# templates/deps.yml and templates/env-check.yml: identical callers everywhere means
+# the next canonical bump is one review of one diff.
+#
+# THIS IS NOT env-check.yml, AND BOTH ARE WANTED. env-check gates the vendored SCRIPT
+# against the canonical copy. This gates the RECORD against itself: the digest
+# .claude/cloud-environment.json writes down under environmentVariables must match what
+# its own domains + env vars actually hash to. A repo can pass either and fail the other,
+# so adopt both.
+#
+# WHAT GOES WRONG WITHOUT IT: the digest is a function of the domain list, so adding a
+# domain moves it. The recorded value is excluded from its own hash and so has to be kept
+# honest by hand — the canonical script's comment says exactly that. A stale one is a
+# checked-in instruction to type the WRONG value into the claude.ai/code dialog, in the
+# file that is supposed to be the answer. The script does notice at SessionStart, but
+# only as a warning, and only for whoever happens to start a session. "A human might see
+# it" is the posture that left required-baseline.yml inert (infra#135) and let adoption
+# grace mask a CVSS 8.8 (ci-workflows#8).
+#
+# ONE TRAP WORTH KNOWING BEFORE YOU HIT IT: the handshake variable's NAME is part of the
+# hash even though its VALUE is not. So the key must already be present in
+# environmentVariables when you compute the digest — add it with a placeholder, run
+# `node .claude/hooks/cloud-env-check.mjs --print-digest`, then overwrite the placeholder
+# with the result. Computing it before adding the key yields a digest that disagrees with
+# the finished file.
+#
+# Path-filtered, same reasoning as env-check.yml: this gate is about two files, and the
+# skipped-required-check problem does not apply because it is not a required check. If it
+# ever becomes one, drop the filter.
+#
+# No network: the lane runs --print-digest, which only reads and hashes. It does NOT run
+# --verify-domains — probing from a GitHub runner would measure the runner's egress, not
+# the cloud session's, and would go red for reasons unrelated to the record.
+on:
+  pull_request:
+    paths:
+      - .claude/cloud-environment.json
+      - .claude/hooks/cloud-env-check.mjs
+      - .github/workflows/env-record.yml
+  push:
+    branches: [main]
+    paths:
+      - .claude/cloud-environment.json
+      - .claude/hooks/cloud-env-check.mjs
+      - .github/workflows/env-record.yml
+  workflow_dispatch: {}
+concurrency:
+  group: env-record-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  record:
+    # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
+    # reviewer can tell an intentional bump from a drifted one.
+    uses: bounded-systems/ci-workflows/.github/workflows/env-record.yml@162accbbcfdfd12c146c44f23770e6a6bb9abb1c # main
