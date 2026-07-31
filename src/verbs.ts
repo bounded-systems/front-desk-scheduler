@@ -477,6 +477,10 @@ const ListEdgeOut = z.object({ from: GraphRefOut, to: GraphRefOut, kind: z.strin
 const ListOutput = z.object({
   source: z.enum(["local", "dolthub", "server"]),
   syncedAt: z.string().nullable(),
+  // Same contract as NextOutput.derivedFrom: the pin the read actually used.
+  // `list` could not report one until #88, because it did not pin — which is
+  // also why it could not paginate correctly. The two arrived together.
+  derivedFrom: z.string().nullable(),
   items: z.array(ListItemOut),
   edges: z.array(ListEdgeOut),
 });
@@ -495,22 +499,27 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
   output: ListOutput,
   run: async (input, deps) => {
     const reads = deps?.reads ?? currentReads();
-    const [raw, typedEdges, meta] = await Promise.all([
-      reads.readAllItems(),
-      reads.readTypedEdges(),
+    // The item read comes FIRST, not in parallel: it resolves the commit, and
+    // the edge read is then pinned to that same commit so both halves describe
+    // one board state (#88). assembleGraph drops edges whose endpoints are
+    // missing, so a torn read here deletes edges quietly instead of failing.
+    const [{ items: raw, at }, meta] = await Promise.all([
+      reads.readAllItems({ repo: input.repo }),
       reads.meta(),
     ]);
+    const typedEdges = await reads.readTypedEdges(at);
 
     // assembleScheduling with no edges/leases gives us the id-bearing item
-    // objects (openBlockers unused here); passing ALL items means assembleGraph
-    // drops no edges (every endpoint is in the set).
-    const all = assembleScheduling(raw, [], []);
-    const scoped = input.repo ? all.filter((i) => i.repository === input.repo) : all;
+    // objects (openBlockers unused here). The rows are ALREADY scoped — the
+    // read plane narrowed the query rather than the result set — so every edge
+    // endpoint that survives is in the set.
+    const scoped = assembleScheduling(raw, [], []);
     const graph = assembleGraph(scoped, typedEdges);
 
     return {
       source: reads.source,
       syncedAt: meta?.syncedAt ?? null,
+      derivedFrom: at,
       items: scoped.map((i) => ({
         number: i.number,
         repository: i.repository,
@@ -527,7 +536,10 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
   },
   render: (o) =>
     [
-      `Front Desk — list   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}`,
+      `Front Desk — list   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
+      (o.derivedFrom
+        ? `\nderived from commit ${o.derivedFrom} — \`AS OF '${o.derivedFrom}'\` re-derives this exact list`
+        : ""),
       `items: ${o.items.length}   edges: ${o.edges.length}`,
       ...o.items.slice(0, 15).map((i) => `  ${i.repository}#${i.number} [${i.status}] ${i.title}`),
     ].join("\n"),

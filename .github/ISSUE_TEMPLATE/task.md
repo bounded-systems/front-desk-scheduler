@@ -21,6 +21,18 @@ Declare it when the work shells out to `gh`, hits the live GitHub API, or needs 
 local `dolt`/`deno`. `next` then keeps the item in the ranking (its score is
 unchanged) but routes it to an actor that can execute it, instead of handing it
 to a cloud session that will discover the dead end three files later.
+
+BEFORE declaring it, ask whether a ticket window would remove the requirement
+instead (#95). Putting the credential in a dispatched workflow turns "only some
+actor can do this" into "anyone can dispatch this", and the item then needs
+NOTHING — that is usually the better fix, and it is what claim-ticket.yml,
+board-parity.yml and mirror-migrate.yml each did. A `needs:` that really means
+"nobody has built the window yet" parks the item instead of prompting the change
+that would unblock it.
+
+Nothing detects a `needs:` that a later window made stale — a checker would have
+to know a window exists, and nothing records that. So it is on you: delete the
+declaration in the PR that builds the window.
 -->
 
 

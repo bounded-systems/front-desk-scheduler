@@ -7,13 +7,27 @@
  *   local    — `dolt sql` on the cloned mirror (or a `dolt sql-server` image):
  *              full SQL, no row cap, fast. Best for a fleet/hot path.
  *   dolthub  — the public DoltHub HTTP SQL API: no clone, no creds, but a
- *              1000-row cap (fine — the scheduler only reads non-Done items).
+ *              1000-row PER-QUERY cap.
+ *
+ * That cap used to carry the note "fine — the scheduler only reads non-Done
+ * items". #59 listed confirming it as an open scope item; #88 is what confirming
+ * it found. The claim was never true of `list`, whose entire purpose is every
+ * item INCLUDING Done, and it died silently at whatever moment the board's
+ * lifetime count crossed 1000 (1531 rows by 2026-07-31). It still holds for
+ * `next` and `graph`, which read non-Done only — ~233 rows today — so the honest
+ * statement is per-verb, not per-plane:
+ *
+ *   next / graph  — unpaginated, and fine while non-Done stays small. A guard in
+ *                   `dolthub.query` now fails these at 900 rows rather than
+ *                   letting them hit the wall the way `list` did.
+ *   list          — paginated and pinned; correct at any board size.
  *
  * FDS_READS=local|dolthub forces one; otherwise auto: local if a mirror clone is
  * present, else DoltHub.
  */
 
 import {
+  type AllItemsRead,
   meta as dolthubMeta,
   readAllItems as dolthubAllItems,
   readScheduling as dolthubScheduling,
@@ -30,7 +44,19 @@ import type { RawItem, RawTypedEdge, ScheduleRead, SchedulingItem } from "./sche
 // both. Every method here is already async, so the `await import()` costs a
 // resolved promise and changes no signature.
 
-export type { ScheduleRead, SchedulingItem };
+export type { AllItemsRead, ScheduleRead, SchedulingItem };
+
+/** How `readAllItems` is narrowed. Query-side where the plane has a row cap. */
+export interface ItemScope {
+  readonly repo?: string;
+}
+
+/** Apply a scope to already-read rows. The uncapped planes (local clone, dolt
+ *  sql-server) have nothing to gain from narrowing the query — the cap is a
+ *  DoltHub HTTP property — but they still owe the caller the same answer. */
+function scoped(items: RawItem[], scope: ItemScope): RawItem[] {
+  return scope.repo ? items.filter((i) => i.repository === scope.repo) : items;
+}
 
 export type ReadSource = "local" | "dolthub" | "server";
 
@@ -44,18 +70,22 @@ export interface SchedulerReads {
   readonly source: ReadSource;
   /** The queue AND the commit it was derived from — see ScheduleRead. */
   readScheduling(): Promise<ScheduleRead>;
-  /** Typed dep edges (with edge_type) — the GH-canonical dep-graph source. */
-  readTypedEdges(): Promise<RawTypedEdge[]>;
-  /** ALL items incl Done (the `list` verb). */
-  readAllItems(): Promise<RawItem[]>;
+  /**
+   * Typed dep edges (with edge_type) — the GH-canonical dep-graph source.
+   * `at` pins the read to a commit so it can be paired with an item read from
+   * the same board state; planes that cannot pin ignore it.
+   */
+  readTypedEdges(at?: string | null): Promise<RawTypedEdge[]>;
+  /** ALL items incl Done (the `list` verb), and the commit they were read at. */
+  readAllItems(scope?: ItemScope): Promise<AllItemsRead>;
   meta(): Promise<ReadMeta | null>;
 }
 
 export const dolthubReads: SchedulerReads = {
   source: "dolthub",
   readScheduling: () => dolthubScheduling(),
-  readTypedEdges: () => dolthubTypedEdges(),
-  readAllItems: () => dolthubAllItems(),
+  readTypedEdges: (at) => dolthubTypedEdges("main", at),
+  readAllItems: (scope = {}) => dolthubAllItems("main", scope),
   meta: async () => {
     const m = await dolthubMeta();
     return m ? { ...m, source: "dolthub" } : null;
@@ -71,7 +101,10 @@ export const localDoltReads: SchedulerReads = {
   // it reports `at: null` — honestly "cannot say", not a fabricated stamp.
   readScheduling: async () => ({ items: await (await mirror()).readMirrorScheduling(), at: null }),
   readTypedEdges: async () => (await mirror()).readMirrorTypedEdges(),
-  readAllItems: async () => (await mirror()).readMirrorAllItems(),
+  readAllItems: async (scope = {}) => ({
+    items: scoped(await (await mirror()).readMirrorAllItems(), scope),
+    at: null,
+  }),
   meta: async () => {
     const m = await (await mirror()).mirrorMeta();
     return m ? { ...m, source: "local" } : null;
@@ -83,7 +116,10 @@ export const serverReads: SchedulerReads = {
   source: "server",
   readScheduling: async () => (await doltServer()).readScheduling(),
   readTypedEdges: async () => (await doltServer()).readTypedEdges(),
-  readAllItems: async () => (await doltServer()).readAllItems(),
+  readAllItems: async (scope = {}) => ({
+    items: scoped(await (await doltServer()).readAllItems(), scope),
+    at: null,
+  }),
   meta: async () => {
     const m = await (await doltServer()).meta();
     return m ? { ...m, source: "server" } : null;

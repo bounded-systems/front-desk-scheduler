@@ -22,22 +22,65 @@ export type { SchedulingItem };
 const DB = "bounded-systems/front-desk-mirror";
 const API = `https://www.dolthub.com/api/v1alpha1/${DB}`;
 
+/** DoltHub's hard per-query row cap. Crossing it is a `RowLimit` status, not rows. */
+const ROW_CAP = 1000;
+
+/**
+ * Where an UNPAGINATED read starts failing, deliberately below `ROW_CAP`.
+ *
+ * #88: `list` died the moment the board's lifetime item count crossed 1000, and
+ * nothing reported the transition — the error surfaced only when a caller
+ * happened to run the verb. A cap you discover by hitting it gives no headroom.
+ * This one fires with ~100 rows to spare and names the remedy, so the next read
+ * to approach the wall fails in whatever lane runs it first.
+ */
+const CAP_GUARD = 900;
+
+/** Rows per page for paginated reads. Well under `CAP_GUARD`, so a page can
+ *  never trip the guard it is exempt from anyway. */
+const PAGE_ROWS = 600;
+
 export interface DoltHubResult<T> {
   readonly query_execution_status: string;
   readonly query_execution_message?: string;
   readonly rows: T[];
 }
 
-/** Run read-only SQL against the DoltHub read plane. Zero GitHub, zero creds. */
-export async function query<T = Record<string, unknown>>(sql: string, ref = "main"): Promise<T[]> {
+/** Single-quote a value for interpolation into Dolt SQL. Everything this module
+ *  interpolates comes from the mirror itself (a commit hash, an `item_id`) or
+ *  from a CLI/MCP `--repo` argument, but quote defensively rather than trusting
+ *  provenance — same reasoning as `resolveHead`'s shape pin. */
+function sqlQuote(v: string): string {
+  return `'${v.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+}
+
+/**
+ * Run read-only SQL against the DoltHub read plane. Zero GitHub, zero creds.
+ *
+ * `paginated` exempts a call from the `CAP_GUARD` — set it only when the CALLER
+ * pages, because the guard's whole job is to catch a read that assumed it would
+ * always fit and stopped being right.
+ */
+export async function query<T = Record<string, unknown>>(
+  sql: string,
+  ref = "main",
+  opts: { paginated?: boolean } = {},
+): Promise<T[]> {
   const res = await fetch(`${API}/${ref}?q=${encodeURIComponent(sql)}`);
   if (!res.ok) throw new Error(`DoltHub HTTP ${res.status}`);
   const body = (await res.json()) as DoltHubResult<T>;
   if (body.query_execution_status === "RowLimit") {
-    throw new Error("DoltHub query exceeded the 1000-row API cap — narrow it (e.g. filter status).");
+    throw new Error(`DoltHub query exceeded the ${ROW_CAP}-row API cap — paginate it (see readAllItems) or narrow it.`);
   }
   if (body.query_execution_status !== "Success") {
     throw new Error(`DoltHub query failed: ${body.query_execution_message || "unknown"}`);
+  }
+  if (!opts.paginated && body.rows.length >= CAP_GUARD) {
+    throw new Error(
+      `DoltHub query returned ${body.rows.length} rows, within ${ROW_CAP - body.rows.length} of the ${ROW_CAP}-row API ` +
+        `cap — this read is unpaginated and is about to break. Paginate it the way readAllItems does ` +
+        `(keyset on the primary key, pinned with AS OF), or narrow it. Failing now, with headroom, is the point.`,
+    );
   }
   return body.rows;
 }
@@ -111,16 +154,83 @@ export async function readScheduling(ref = "main"): Promise<ScheduleRead> {
   return { items: assembleScheduling(items, edges, leasedRows.map((r) => r.item_id)), at: head };
 }
 
-/** Typed dep edges (with edge_type) over DoltHub HTTP — the dep-graph source. */
-export async function readTypedEdges(ref = "main"): Promise<RawTypedEdge[]> {
-  return query<RawTypedEdge>(SQL.typedEdges, ref);
+/**
+ * Typed dep edges (with edge_type) over DoltHub HTTP — the dep-graph source.
+ *
+ * `at` pins the read to a commit. `list` passes the pin its ITEM read resolved,
+ * so both halves come from one board state: assembleGraph drops any edge whose
+ * endpoints are not in the item set, so a sync landing between the two reads
+ * would silently delete edges from the answer rather than fail. Same torn-read
+ * argument as `readScheduling`, which has pinned its three queries all along.
+ */
+export async function readTypedEdges(ref = "main", at?: string | null): Promise<RawTypedEdge[]> {
+  return query<RawTypedEdge>(at ? pinTables(SQL.typedEdges, at) : SQL.typedEdges, ref);
 }
 
-/** ALL items incl Done over DoltHub HTTP (the `list` verb). */
-export async function readAllItems(ref = "main"): Promise<RawItem[]> {
-  return query<RawItem>(SQL.allItems, ref).catch((e: unknown) =>
-    /column .*needs.* not found|needs.*could not be found/i.test(String(e))
-      ? query<RawItem>(SQL.allItemsLegacy, ref)
-      : Promise.reject(e)
-  );
+/** The all-items read and the commit its pages were read at — `at: null` when
+ *  the head could not be resolved and the read fell back to unpinned. */
+export interface AllItemsRead {
+  readonly items: RawItem[];
+  readonly at: string | null;
+}
+
+/**
+ * ALL items incl Done over DoltHub HTTP (the `list` verb), paginated.
+ *
+ * #88: this verb read the whole table in one query and died when the board's
+ * LIFETIME item count crossed the 1000-row cap — 1531 rows on 2026-07-31. It was
+ * correct only while the board stayed small, and `--repo` could not rescue it
+ * because the scope was applied client-side, AFTER the query it would have had
+ * to narrow.
+ *
+ * KEYSET, NOT OFFSET. `item_id` is the table's primary key, so `WHERE item_id >
+ * <last> ORDER BY item_id` is a total order with no cursor state on the server.
+ * `OFFSET` would be wrong here: each page is an independent HTTP request, so a
+ * sync landing mid-walk shifts the window and rows are silently dropped or
+ * repeated — the worst failure for a verb that promises "every item".
+ *
+ * PINNED, for the same reason. `AS OF` the resolved head makes every page read
+ * the same immutable snapshot, which is what turns "3 requests" back into one
+ * consistent answer. Note the pin has to live in the SQL: the API's ref segment
+ * accepts branch names only — a commit hash there is HTTP 400 (full-length) or
+ * "branch not found" (truncated). Verified 2026-07-31.
+ */
+export async function readAllItems(
+  ref = "main",
+  scope: { repo?: string } = {},
+): Promise<AllItemsRead> {
+  const head = await resolveHead(ref);
+  // `needs` landed 2026-07-31; a pin to an earlier commit has no such column.
+  // Resolved once on the first page and reused — the schema cannot change
+  // mid-walk, because every page reads the same commit.
+  let base = SQL.allItems;
+  let legacyTried = false;
+
+  const page = (cursor: string): string => {
+    const sql = head ? pinTables(base, head) : base;
+    const where = [`item_id > ${sqlQuote(cursor)}`];
+    // The scope narrows the QUERY, not the result set (#88). Client-side, it
+    // could not lower the row count that broke the read in the first place.
+    if (scope.repo) where.push(`repository = ${sqlQuote(scope.repo)}`);
+    return `${sql} WHERE ${where.join(" AND ")} ORDER BY item_id LIMIT ${PAGE_ROWS}`;
+  };
+
+  const items: RawItem[] = [];
+  let cursor = "";
+  for (;;) {
+    const rows = await query<RawItem>(page(cursor), ref, { paginated: true }).catch((e: unknown) => {
+      if (!legacyTried && /column .*needs.* not found|needs.*could not be found/i.test(String(e))) {
+        legacyTried = true;
+        base = SQL.allItemsLegacy;
+        return query<RawItem>(page(cursor), ref, { paginated: true });
+      }
+      return Promise.reject(e);
+    });
+    items.push(...rows);
+    // A short page is the end of the table. A full page means there may be more,
+    // so the walk costs one extra request when the count is an exact multiple.
+    if (rows.length < PAGE_ROWS) break;
+    cursor = rows[rows.length - 1]!.item_id;
+  }
+  return { items, at: head };
 }
