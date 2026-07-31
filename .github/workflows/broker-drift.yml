@@ -16,10 +16,37 @@ name: broker-drift
 # broad — the test becomes the incident. Read-only probes detect overscope
 # without exercising it. test/credential-chain.test.ts pins this property.
 #
-# EXPECTED STATE ON FIRST MERGE: every tier RED with 401 — this workflow's
-# job_workflow_ref is not on the broker's allowlists yet. That is honest signal,
-# same as production-a2: the monitor exists first, infra config turns it green
-# tier by tier. The output discriminates so red always says WHICH fix:
+# TIER STATE, 2026-07-31 (was "EXPECTED STATE ON FIRST MERGE" — it is no longer
+# first merge, and leaving that note up was itself the problem). One tier mints;
+# two are not on the broker's allowlists and have never been:
+#
+#   github-app   → healthy, mints
+#   dolthub      → 401, job_workflow_ref not on DOLTHUB_CREDS.workflowRefs
+#   cloudflare   → 401, job_workflow_ref not in verifyOIDC's pin set
+#
+# The original note called that red "honest signal", which was right at merge
+# time and stopped being right once it became permanent: EVERY scheduled run has
+# been red since this landed, and a monitor that is always red is one nobody
+# reads — exactly when its job is to be believed on the day it goes red for real.
+#
+# So the two un-allowlisted tiers are declared in EXPECTED_401 below and do not
+# fail the lane. This is infra#139 option 3: scope the standing red so a NEW
+# failure is visibly different from the known one. It decides nothing about
+# whether those tiers should eventually mint — options 1 and 2 remain open, and
+# this lane will tell you the moment either lands.
+#
+# WHAT STILL TURNS THIS RED (the point of the exercise):
+#   - github-app failing at all — a real regression, nothing masks it
+#   - ANY tier returning 404 / 502 / anything unexpected, including the two in
+#     EXPECTED_401. Only 401/403 is excused for those, because only "not on the
+#     allowlist" is the known condition; a 502 from dolthub is new information.
+#   - any C2 overscope probe succeeding
+#
+# And an EXPECTED_401 tier that starts MINTING raises a warning rather than a
+# pass, because the list has gone stale and must shrink — otherwise this same
+# note rots a second time.
+#
+# The output discriminates so red always says WHICH fix:
 #   401/403      → allowlist (add this file's job_workflow_ref, per audience)
 #   404          → route (fix the *_PATH variable)
 #   502 + 9109   → parent scopes vs requested policy (infra / dashboard)
@@ -46,6 +73,19 @@ jobs:
           set -uo pipefail
           [ -n "${BROKER_URL:-}" ] || { echo "::error::CF_BROKER_URL not set"; exit 1; }
           failures=0
+          expected_misses=0
+          stale=0
+
+          # Tiers known NOT to be on the broker's allowlists (infra#139). A 401/403
+          # from one of these is the standing condition, not news, so it does not
+          # fail the lane. Everything else about them is still checked.
+          #
+          # SHRINK THIS LIST when a tier is allowlisted — the lane warns when one
+          # starts minting, precisely so this cannot quietly go stale the way the
+          # old "expected state on first merge" note did.
+          EXPECTED_401="dolthub cloudflare"
+
+          is_expected_401() { case " $EXPECTED_401 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
           mint_tier() { # name audience path -> writes /tmp/tok.$name on 200
             local name="$1" audience="$2" path="$3"
@@ -65,10 +105,26 @@ jobs:
                 jq -r '.token // .jwk // empty' <<<"$body" | tr -d '\n' > "/tmp/tok.$name"
                 if [ -s "/tmp/tok.$name" ]; then
                   echo "::notice::[$name] tier healthy — mint succeeded"
+                  # Good news that must not pass silently: this tier is still
+                  # declared un-allowlisted, so the declaration is now wrong and
+                  # would mask a future regression on a tier that really works.
+                  if is_expected_401 "$name"; then
+                    echo "::warning::[$name] now MINTS but is still in EXPECTED_401 — remove it from that list (infra#139) so a future failure on this tier is caught"
+                    stale=$((stale+1))
+                  fi
                 else
                   echo "::error::[$name] HTTP 200 but no token in the body"; return 1
                 fi ;;
-              401|403) echo "::error::[$name] $code — this workflow's job_workflow_ref is not on the broker allowlist for audience '$audience'"; return 1 ;;
+              401|403)
+                # Only 401/403 is excused, and only for declared tiers: "not on the
+                # allowlist" is the known condition. Any other code from the same
+                # tier is new information and still fails below.
+                if is_expected_401 "$name"; then
+                  echo "::notice::[$name] $code — known un-allowlisted tier (infra#139), standing condition, not counted as a failure"
+                  expected_misses=$((expected_misses+1))
+                  return 0
+                fi
+                echo "::error::[$name] $code — this workflow's job_workflow_ref is not on the broker allowlist for audience '$audience'"; return 1 ;;
               404)     echo "::error::[$name] 404 — route '$path' absent; fix the *_PATH variable or the broker's routing"; return 1 ;;
               502)
                 echo "::error::[$name] 502 — Cloudflare/GitHub refused the MINT. Body: ${body:0:400}"
@@ -84,7 +140,11 @@ jobs:
           mint_tier github-app github-app-broker   "/github/front-desk"         || failures=$((failures+1))
           mint_tier cloudflare cf-oidc-token-broker "${CF_BROKER_PATH}"         || failures=$((failures+1))
 
-          echo "failures=$failures" >> "$GITHUB_OUTPUT"
+          {
+            echo "failures=$failures"
+            echo "expected_misses=$expected_misses"
+            echo "stale=$stale"
+          } >> "$GITHUB_OUTPUT"
           [ "$failures" -eq 0 ] || exit 1
 
       - name: Overscope probes (C2) — read-only, refusal is the pass
@@ -146,8 +206,15 @@ jobs:
           {
             echo "### broker-drift"
             echo "Tests C1/C2 from specs/lean/Delegation.lean against the live broker."
-            echo "- red mint = drift or missing allowlist (the log names which)"
-            echo "- red probe = a minted token holds authority the tiers do not document"
             echo ""
+            echo "- **red mint** = drift, or a failure on a tier expected to work (the log names which)"
+            echo "- **red probe** = a minted token holds authority the tiers do not document"
+            echo "- **known un-allowlisted tiers** (\`${{ steps.mint.outputs.expected_misses || '?' }}\` this run) 401 by standing condition and do not fail the lane — infra#139"
+            echo ""
+            if [ "${{ steps.mint.outputs.stale || 0 }}" != "0" ]; then
+              echo "> ⚠️ A tier in \`EXPECTED_401\` now mints. Shrink that list in this workflow so a future"
+              echo "> regression on it is caught — see infra#139."
+              echo ""
+            fi
             echo "The theorems bound the design; this run binds the deployment."
           } >> "$GITHUB_STEP_SUMMARY"
