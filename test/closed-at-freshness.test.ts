@@ -34,11 +34,24 @@ test("ISO → MySQL DATETIME", () => {
 
 test("a closed issue yields a quoted literal; a reopened one yields NULL", () => {
   assert.equal(sqlDatetimeOrNull("2026-07-08T23:26:31Z"), "'2026-07-08 23:26:31'");
-  // All three absent-shapes must clear the column, not omit the assignment:
-  // `gh search` omits the key, GraphQL sends null, and the type allows undefined.
+  // Every absent-shape must clear the column, not omit the assignment.
   assert.equal(sqlDatetimeOrNull(null), "NULL", "reopened (GraphQL null) must CLEAR closed_at");
   assert.equal(sqlDatetimeOrNull(undefined), "NULL", "absent key must CLEAR closed_at");
   assert.equal(sqlDatetimeOrNull(""), "NULL", "empty string is absent, not a zero date");
+});
+
+test("Go's zero time means OPEN, not closed at year 1", () => {
+  // THE ONE THAT WOULD HAVE EMPTIED THE QUEUE. `gh search issues --json closedAt`
+  // does not omit the key or send null for an open issue: closedAt reaches
+  // Issue.ExportData's `default:` branch as a time.Time, so the zero value
+  // marshals to this string. It is truthy in JS, so a naive `iso ? ... : NULL`
+  // writes it as a real timestamp — and SCHEDULABLE excludes every row with
+  // closed_at set, so one hourly delta sync would drop every open item from the
+  // ready queue.
+  assert.equal(sqlDatetimeOrNull("0001-01-01T00:00:00Z"), "NULL");
+  assert.equal(sqlDatetimeOrNull("0001-01-01T00:00:00.000Z"), "NULL", "fractional-seconds variant too");
+  // A real timestamp that merely starts with a 0 digit must survive.
+  assert.equal(sqlDatetimeOrNull("2001-01-01T00:00:00Z"), "'2001-01-01 00:00:00'");
 });
 
 test("NULL is emitted bare — a quoted 'NULL' would be a string, not a null", () => {

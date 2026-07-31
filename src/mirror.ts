@@ -180,12 +180,24 @@ export function toSqlDatetime(iso: string): string {
 }
 
 /**
- * A nullable timestamp as a SQL literal. Returns the string `NULL` for an
- * absent value rather than omitting the assignment, which is what lets a
- * REOPEN clear closed_at — see the delta path's note on symmetry.
+ * Go's zero `time.Time`, as `gh search --json` emits it for an issue that has
+ * no closedAt. NOT null and NOT omitted: `closedAt` falls through Issue.
+ * ExportData's `default:` branch to `sf.Interface()` on a time.Time, so an OPEN
+ * issue serialises as this string (verified against cli/cli pkg/search/result.go,
+ * 2026-07-31). Truthy in JS — treating it as a real timestamp would set
+ * closed_at on every open issue the delta touches, and SCHEDULABLE excludes on
+ * closed_at, so the ready queue would empty itself on the next hourly sync.
+ */
+const GO_ZERO_TIME = /^0001-01-01/;
+
+/**
+ * A nullable timestamp as a SQL literal. Returns bare `NULL` for an absent
+ * value rather than omitting the assignment, which is what lets a REOPEN clear
+ * closed_at — see the delta path's note on symmetry.
  */
 export function sqlDatetimeOrNull(iso: string | null | undefined): string {
-  return iso ? `'${sqlEscape(toSqlDatetime(iso))}'` : "NULL";
+  if (!iso || GO_ZERO_TIME.test(iso)) return "NULL";
+  return `'${sqlEscape(toSqlDatetime(iso))}'`;
 }
 
 /**
