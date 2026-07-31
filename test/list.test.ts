@@ -129,7 +129,7 @@ test("list verb: reports the commit it derived from, like next", async () => {
   const items = [raw({ item_id: "a", number: 1 })];
   const out = await listVerb.run({}, { reads: mockReads(items, [], { at: "deadbeef" }) });
   assert.equal(out.derivedFrom, "deadbeef");
-  assert.match(listVerb.render!(out), /AS OF 'deadbeef'/);
+  assert.match(listVerb.render!(out, {}), /AS OF 'deadbeef'/);
 });
 
 test("list verb: derivedFrom is null on a plane that cannot pin", async () => {
@@ -137,5 +137,5 @@ test("list verb: derivedFrom is null on a plane that cannot pin", async () => {
   const out = await listVerb.run({}, { reads: mockReads(items, []) });
   // Honest "cannot say" rather than a fabricated stamp — same as localDoltReads.
   assert.equal(out.derivedFrom, null);
-  assert.doesNotMatch(listVerb.render!(out), /AS OF/);
+  assert.doesNotMatch(listVerb.render!(out, {}), /AS OF/);
 });
