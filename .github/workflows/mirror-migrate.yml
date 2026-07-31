@@ -1,4 +1,12 @@
 name: mirror-migrate
+
+# Put the payload in the run title. The `mirror-write` Environment gates this run on a
+# REQUIRED REVIEWER, and that approval prompt — plus the run list and the notification
+# email — shows the run's name and nothing else. "mirror-migrate #13" does not say which
+# migration, or whether dry_run was false, so the reviewer either clicks through to the
+# inputs or approves a production database write on trust. The gate is the actual control
+# here (see the SETUP note below); it should not be the least-informed screen in the loop.
+run-name: "mirror-migrate: ${{ inputs.migration }} — ${{ inputs.dry_run == true && 'dry run' || 'APPLY' }}"
 # Apply a pending schema migration to the deployed Dolt mirror.
 #
 # WHY THIS IS A WORKFLOW AND NOT SOMETHING A SESSION DOES DIRECTLY
@@ -274,10 +282,21 @@ jobs:
         # Minted LATE, immediately before use: the migration has already applied
         # by this point, so a token failure cannot cost us the write.
         #
-        # ⚠ Requires this workflow's job_workflow_ref on the broker's GH_APPS
-        # allowlist for app `front-desk`. Until that is deployed the step below
-        # falls back to GITHUB_TOKEN and then to a warning — it never fails the
-        # run, because the migration itself has already succeeded.
+        # ⚠ Uses `front-desk-schema`, NOT `front-desk`. Both are the same App and
+        # key; the difference is that front-desk-schema is PINNED to this workflow
+        # ref and carries contents:write, which the publish step needs to create
+        # the projection branch. front-desk is the unpinned multi-repo fan-in —
+        # any workflow in any bounded-systems repo can mint it — so widening it
+        # with contents:write would have handed repository write to the whole org.
+        # The broker would not have refused that: unsafePrivilegedApp only forces
+        # a pin for PRIVILEGED_APP_PERMISSIONS, and `contents` is not one.
+        # See bounded-systems/infra#153.
+        #
+        # Requires that entry deployed to the broker. Until it is, this 404s
+        # ("unknown app"), the step below degrades to a warning, and the run still
+        # succeeds — the migration itself has already applied by this point, so a
+        # token failure cannot cost us the write. The visible symptom is the
+        # projection PR not being opened (regenerate by hand, as in #92).
         id: apptoken
         if: ${{ inputs.dry_run == false }}
         continue-on-error: true
@@ -290,9 +309,13 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')" || true
           [ -n "${jwt:-}" ] || { echo "::warning::could not obtain an OIDC token for the App broker"; exit 0; }
           tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
-            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')" || true
+            "${BROKER_URL%/}/github/front-desk-schema" | jq -r '.token // empty')" || true
           if [ -z "${tok:-}" ]; then
-            echo "::warning::broker returned no App token (is mirror-migrate.yml on the GH_APPS allowlist?)"
+            echo "::warning::broker returned no App token from /github/front-desk-schema."
+            echo "::warning::  404 unknown app → the entry is not deployed yet (infra#153 merged but"
+            echo "::warning::     broker-deploy not run). 401 → this workflow ref does not match its"
+            echo "::warning::     workflowRef pin. Either way the migration already applied; only the"
+            echo "::warning::     projection PR is skipped."
             exit 0
           fi
           echo "::add-mask::$tok"

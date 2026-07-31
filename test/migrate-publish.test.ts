@@ -91,6 +91,40 @@ test("the signature is reported, not assumed — even though the endpoint guaran
   assert.match(s, /::warning::.*NOT verified/, "an unsigned commit must be loud");
 });
 
+test("the App token comes from the pinned door, not the multi-repo fan-in", () => {
+  // `front-desk` and `front-desk-schema` are the same App and the same key, so
+  // swapping one for the other looks like a no-op and mints successfully either
+  // way. The difference is who else can mint it: front-desk carries no
+  // workflowRef, which makes it mintable by ANY workflow in ANY bounded-systems
+  // repo (the intended fan-in), so it deliberately holds no write outside the
+  // board. front-desk-schema is pinned to this workflow and carries
+  // contents:write for the projection branch.
+  //
+  // Reverting to /github/front-desk would not fail loudly: the mint succeeds and
+  // create-a-reference 403s, which is the shape of the 2026-07-31 failure
+  // (run 30641376455, infra#153) — a green run that published nothing, the third
+  // instance of the thing this file exists to catch.
+  const s = step("Front Desk App token");
+  assert.match(s, /\/github\/front-desk-schema/, "must mint from the pinned entry");
+  assert.doesNotMatch(
+    s,
+    /\/github\/front-desk["'\s|]/,
+    "must NOT mint from the unpinned fan-in entry — it has no contents:write, and giving it any would grant it org-wide",
+  );
+});
+
+test("the run title says which migration, and whether it applies", () => {
+  // The mirror-write Environment gates this on a required reviewer, and the
+  // approval prompt shows the run name and nothing else. A bare "mirror-migrate
+  // #13" asks someone to approve a production database write without naming the
+  // payload — the gate is the actual control, so it should not be the least
+  // informed screen in the loop.
+  assert.match(wf, /^run-name:/m, "the run must be titled with its inputs");
+  const title = wf.match(/^run-name:.*$/m)![0];
+  assert.match(title, /inputs\.migration/, "the title must name the migration");
+  assert.match(title, /inputs\.dry_run/, "and distinguish a dry run from an apply");
+});
+
 test("the PR body's backticks are escaped inside the heredoc", () => {
   // Unescaped, a backtick in a double-quoted string is COMMAND SUBSTITUTION:
   // bash runs the migration filename and substitutes its output, so the line
