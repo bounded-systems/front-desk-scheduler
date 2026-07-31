@@ -110,6 +110,11 @@ pointed at whatever is actually live.
 
 Step 1 exists so that steps 2–4 have something to satisfy other than taste.
 
+Serving the scheduler's verbs *from* the Worker is a separate line of work (#59),
+and the topology decided here constrains it more than it looks — in particular the
+DO being per-item, with no aggregate route, is why that mount does **not** close
+#43 on its own. The measured constraints are in `docs/worker-mount.md`.
+
 ---
 
 *A note on how this was framed.* An earlier draft of this argument called "a proof
