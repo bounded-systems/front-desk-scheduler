@@ -87,7 +87,15 @@ export async function readScheduling(ref = "main"): Promise<ScheduleRead> {
   const head = await resolveHead(ref);
   const at = (sql: string) => (head ? pinTables(sql, head) : sql);
   const [items, edges, leasedRows] = await Promise.all([
-    query<RawItem>(at(SQL.items), ref),
+    // `needs` landed 2026-07-31. A read pinned to an earlier commit has no such
+    // column — the same permanent historical-read case as the leases fallback
+    // below, not transitional scaffolding. Items then read as undeclared, which
+    // is the truth about a board that never carried the field.
+    query<RawItem>(at(SQL.items), ref).catch((e: unknown) =>
+      /column .*needs.* not found|needs.*could not be found/i.test(String(e))
+        ? query<RawItem>(at(SQL.itemsLegacy), ref)
+        : Promise.reject(e)
+    ),
     query<RawEdge>(at(SQL.edges), ref),
     // `leases` has existed on main since 2026-07-28, but this is NOT dead code:
     // `ref` can name any historical Dolt commit, and reading the board as it
@@ -110,5 +118,9 @@ export async function readTypedEdges(ref = "main"): Promise<RawTypedEdge[]> {
 
 /** ALL items incl Done over DoltHub HTTP (the `list` verb). */
 export async function readAllItems(ref = "main"): Promise<RawItem[]> {
-  return query<RawItem>(SQL.allItems, ref);
+  return query<RawItem>(SQL.allItems, ref).catch((e: unknown) =>
+    /column .*needs.* not found|needs.*could not be found/i.test(String(e))
+      ? query<RawItem>(SQL.allItemsLegacy, ref)
+      : Promise.reject(e)
+  );
 }

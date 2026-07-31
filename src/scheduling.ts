@@ -42,6 +42,13 @@ export interface RawItem {
   effort: number;
   value: number;
   depends_on: string;
+  /**
+   * Comma-separated capability tokens. OPTIONAL because a read pinned to a
+   * commit from before the 2026-07-31 migration has no such column — the same
+   * permanent-historical-read case as `leasesLegacy`, not a transitional one.
+   * Absent ⇒ undeclared ⇒ executable by anyone (the predicate fails open).
+   */
+  needs?: string | null;
   age_days: number | null;
 }
 
@@ -78,6 +85,7 @@ export function assembleScheduling(
     effort: Number(r.effort),
     value: Number(r.value),
     dependsOn: r.depends_on ? r.depends_on.split(",").map(Number) : [],
+    needs: r.needs ? r.needs.split(",").map((c) => c.trim()).filter(Boolean) : [],
     openBlockers: openBlockers.get(r.item_id) ?? 0,
     unblocks: unblocks.get(r.item_id) ?? 0,
     ageDays: r.age_days == null ? 0 : Number(r.age_days),
@@ -88,6 +96,15 @@ export function assembleScheduling(
 /** The three read-plane queries every adapter runs (non-Done items, edges, live leases). */
 export const SQL = {
   items:
+    "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, needs, " +
+    "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items WHERE status <> 'Done'",
+  // Pre-2026-07-31 shape, without `needs`. Same role as `leasesLegacy` below and
+  // the same justification: `ref` can name any historical Dolt commit, and
+  // reading the board as it stood before a migration is a permanent capability
+  // of a versioned database, not transitional scaffolding. Items then read as
+  // undeclared, so the capability predicate is inert — which is the truth about
+  // a board that never carried the field.
+  itemsLegacy:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
     "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items WHERE status <> 'Done'",
   edges: "SELECT item_id, dep_item_id FROM item_deps",
@@ -100,6 +117,9 @@ export const SQL = {
   // The scheduling/graph queries drop Done (not schedulable); list must include
   // it so consumers see closed work (e.g. epic children reporting `state`).
   allItems:
+    "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, needs, " +
+    "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items",
+  allItemsLegacy:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
     "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items",
   // Live leases — the held set, excluded from the ready queue. Reads `leases`

@@ -27,10 +27,20 @@ skips private repos (infra#138/#145). `ready: N` counts what Front Desk can see,
 all open work. For `infra`, the authoritative ranking is its own tracking issue
 (infra#101), and on that issue the **latest comment supersedes the body**.
 
-**A ranked item is not necessarily one you can do.** The score weighs effort and
-value; it does not ask whether *you* hold the credentials or binaries the item
-needs. From a cloud session in particular, anything requiring `gh` against the live
-GitHub API cannot run — see below. Check before you start. (front-desk-scheduler#86)
+**A ranked item is not necessarily one you can do** — but `next` now tells you
+which. The score weighs effort and value and never asks whether *you* hold the
+credentials or binaries an item needs, so the ranking is split rather than
+reordered: `queue` is what you can execute, `otherActors` is what you can only
+rank. Scores and order are identical in both; an item you can't do keeps its rank
+and is shown, not dropped, so you can hand it off. `pick` is the top item you can
+actually execute. (front-desk-scheduler#86)
+
+Items declare requirements as `needs: [gh, github-api, dolt, deno]` in issue-body
+frontmatter. **Undeclared means anyone can do it** — the predicate fails open, so
+an item with no `needs` is never filtered from anyone. If `next` says nothing is
+executable, the reason is printed per capability; from a cloud session the usual
+one is that `GH_TOKEN` is the `proxy-injected` sentinel rather than a credential
+(see below), which is set and non-empty and does not work.
 
 ## Claiming — go through the ticket window
 
