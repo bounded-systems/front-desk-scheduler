@@ -159,6 +159,14 @@ there is no benign reading of "the cheap query returns a different board".
   never existed.
 - Cloud-session environment facts (allowlisted domains, the `FDS_*` variables and
   their environment-scoped caveat) live in `.claude/cloud-environment.json`.
+- **The MCP path validates its output; the CLI does not.** Whatever the read plane
+  returns must be coerced in `assembleScheduling` — the DoltHub HTTP plane returns
+  every column as a JSON string, `dolt sql -r json` returns real numbers, and
+  `RawItem`'s numeric types describe the intent rather than the runtime. #101 was
+  one missing `Number()` on `number`: `next`, `graph` and `list` all failed over
+  MCP with `expected number, received string` while `node scripts/fds.ts next`
+  printed a correct queue. **A green CLI is not evidence the tool works** — when
+  you change a read, exercise it over MCP too.
 
 ## Session start
 

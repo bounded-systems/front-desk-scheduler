@@ -67,3 +67,56 @@ test("the drift query detects both directions, github-origin only", () => {
   assert.match(SQL.statusDrift, /closed_at IS NULL AND status = 'Done'/, "card claims completion GitHub has not recorded");
   assert.match(SQL.statusDrift, /origin = 'github'/, "dolt-origin rows have no GitHub issue to disagree with");
 });
+
+test("every numeric field survives a read plane that returns strings (#101)", () => {
+  // The DoltHub HTTP plane returns every column as a JSON string ("931", "2");
+  // `dolt sql -r json` on a local clone returns real numbers. Assembly is the
+  // seam where the two planes are made to agree, and `number` was the one field
+  // that had no `Number()` — so it reached the MCP output schema, which DOES
+  // validate, as a string:
+  //
+  //   MCP error -32602: Output validation error: Invalid structured content for
+  //   tool next: expected number, received string at queue[0].number
+  //
+  // `next`, `graph` and `list` all failed over MCP on the default read plane
+  // while `node scripts/fds.ts next` printed a correct queue, because the CLI
+  // validates nothing. That gap is why this asserts on TYPES, not just values —
+  // `assert.equal("931", 931)` would have passed throughout the outage.
+  const stringy = {
+    item_id: "a",
+    number: "931",
+    title: "t",
+    repository: "r",
+    status: "Todo",
+    kind: "task",
+    effort: "2",
+    value: "65",
+    depends_on: "",
+    age_days: "7",
+  } as unknown as RawItem;
+
+  const [a] = assembleScheduling([stringy], [], []);
+  for (const [field, want] of [["number", 931], ["effort", 2], ["value", 65], ["ageDays", 7]] as const) {
+    assert.equal(typeof a[field], "number", `${field} must be coerced, not passed through as a string`);
+    assert.equal(a[field], want);
+  }
+});
+
+test("a row with no issue number still assembles (#101 must not break the null case)", () => {
+  const noNumber = {
+    item_id: "a",
+    number: null,
+    title: "t",
+    repository: "r",
+    status: "Todo",
+    kind: "task",
+    effort: 1,
+    value: 1,
+    depends_on: "",
+    age_days: null,
+  } as unknown as RawItem;
+
+  const [a] = assembleScheduling([noNumber], [], []);
+  assert.equal(a.number, 0, "a dolt-origin row with no GitHub issue is 0, not NaN");
+  assert.equal(a.ageDays, 0);
+});
