@@ -32,6 +32,22 @@ export interface ScheduleRead {
   readonly at: string | null;
 }
 
+/**
+ * A row as it arrives from a read plane — NOT as the rest of the code wants it.
+ *
+ * The numeric fields are declared `number` because that is what they mean, and
+ * every one of them must still be run through `Number()` in `assembleScheduling`.
+ * The DoltHub HTTP plane returns every column as a JSON **string** (`"931"`,
+ * `"2"`), while `dolt sql -r json` on a local clone returns real numbers, so the
+ * declared type is honest about intent and a lie about runtime on the default
+ * path. Coercion is the seam that makes both planes agree.
+ *
+ * `number` was the field that got missed (#101). It reached the MCP output
+ * schema, which does validate, as a string — so `next` and `graph` failed
+ * outright over MCP while the CLI, which validates nothing, printed a correct
+ * queue. Do not remove a `Number()` here on the grounds that the type already
+ * says `number`; the type is the thing that is wrong.
+ */
 export interface RawItem {
   item_id: string;
   number: number | null;
@@ -78,7 +94,7 @@ export function assembleScheduling(
   }
   return items.map((r) => ({
     id: r.item_id,
-    number: r.number ?? 0,
+    number: r.number == null ? 0 : Number(r.number),
     title: r.title,
     repository: r.repository,
     status: r.status,
