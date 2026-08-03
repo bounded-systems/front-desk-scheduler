@@ -168,6 +168,122 @@ export async function claimLease(
   };
 }
 
+/**
+ * The lease's referent (#105): the thing whose lifecycle IS the lease's
+ * lifecycle. Typed and opaque — the Worker stores and compares it; only the
+ * reaper interprets `kind`. `pr` (id `owner/repo#number`) is the kind
+ * recognised today.
+ */
+export interface LeaseReferent {
+  readonly kind: string;
+  readonly id: string;
+}
+
+export interface BindOutcome {
+  readonly bound: boolean;
+  /** On a refusal the DO's reason — `expired` | `not-holder` | `stale-fencing`. */
+  readonly reason: string;
+  readonly holder: string | null;
+  readonly expiresAt: number | null;
+}
+
+/**
+ * Bind — pin the lease to its referent and re-size the expiry into the
+ * backstop. Called once the work exists somewhere queryable (the PR is open).
+ * From then on the primary release path is the reaper observing the referent
+ * close; `ttlSec` here is the backstop ("the reaper has been broken for a
+ * day"), not a task estimate.
+ */
+export async function bindReferentRemote(
+  itemId: string,
+  agent: string,
+  fencing: number,
+  referent: LeaseReferent,
+  ttlSec: number,
+): Promise<BindOutcome> {
+  const r = await call("/bind", itemId, { agent, fencing, ttl_sec: ttlSec, referent });
+  return {
+    bound: r.bound === true,
+    reason: r.bound === true ? "bound" : ((r.reason as string) ?? "refused"),
+    holder: (r.holder as string) ?? null,
+    expiresAt: typeof r.expiresAt === "number" ? r.expiresAt : null,
+  };
+}
+
+export interface ReapOutcome {
+  readonly reaped: boolean;
+  /** On a refusal the DO's reason — `not-held` | `stale-fencing` |
+   *  `no-referent` | `referent-mismatch`. The first is the idempotent repeat;
+   *  the others mean the reaper's evidence went stale between /status and
+   *  /reap, and the right response is to skip, not retry. */
+  readonly reason: string;
+  /** Whose grip was broken, on success. */
+  readonly holder: string | null;
+}
+
+/**
+ * Reap — the collector's release. Presents the fencing and referent read from
+ * /status in the same sweep; the DO refuses anything stale. No `agent`: the
+ * reaper is not the holder and does not pretend to be.
+ */
+export async function reapLeaseRemote(
+  itemId: string,
+  fencing: number,
+  referent: LeaseReferent,
+): Promise<ReapOutcome> {
+  const r = await call("/reap", itemId, { fencing, referent });
+  return {
+    reaped: r.reaped === true,
+    reason: r.reaped === true ? "reaped" : ((r.reason as string) ?? "refused"),
+    holder: (r.holder as string) ?? null,
+  };
+}
+
+/** One item's live lease state, as /status reports it. The reaper's read: the
+ *  fencing and referent come from ONE snapshot, which is what makes the pair
+ *  presentable to /reap as evidence. */
+export interface LeaseStatus {
+  readonly holder: string | null;
+  readonly fencing: number;
+  readonly expiresAt: number | null;
+  readonly live: boolean;
+  readonly referent: LeaseReferent | null;
+}
+
+/** Read /status — open, no credential, like /history. */
+export async function fetchLeaseStatus(itemId: string): Promise<LeaseStatus> {
+  const base = leaseEndpoint();
+  if (base === null) throw new LeaseClientError("FDS_CLAIM_ENDPOINT is unset — the lease plane is not configured");
+  const url = `${base}/status?item_id=${encodeURIComponent(itemId)}`;
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new LeaseClientError(`lease endpoint unreachable at ${base}: ${String((e as Error).message ?? e)}`);
+  }
+  const text = await res.text();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new LeaseClientError(`lease endpoint returned non-JSON (${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) {
+    throw new LeaseClientError(`lease endpoint ${res.status}: ${(parsed as { error?: string }).error ?? text.slice(0, 200)}`);
+  }
+  const ref = parsed.referent as { kind?: unknown; id?: unknown } | null | undefined;
+  return {
+    holder: typeof parsed.holder === "string" ? parsed.holder : null,
+    fencing: typeof parsed.fencing === "number" ? parsed.fencing : 0,
+    expiresAt: typeof parsed.expiresAt === "number" ? parsed.expiresAt : null,
+    live: parsed.live === true,
+    referent:
+      ref && typeof ref.kind === "string" && typeof ref.id === "string"
+        ? { kind: ref.kind, id: ref.id }
+        : null,
+  };
+}
+
 /** Heartbeat. `false` is the signal to STOP — the lease is no longer ours. */
 export async function renewLeaseRemote(
   itemId: string,
@@ -262,10 +378,16 @@ export interface LeaseHistoryRecord {
   readonly ttlSec: number;
   readonly expiresAt: number;
   readonly releasedAt: number | null;
-  /** As stored — 'active' may be stale; use effective_status for now-truth. */
-  readonly status: "active" | "released" | "completed" | "expired";
-  readonly effective_status: "active" | "released" | "completed" | "expired";
+  /** As stored — 'active' may be stale; use effective_status for now-truth.
+   *  'reaped' (#105) is the GC's close: the referent was observed merged,
+   *  closed, or gone — distinct from released/completed (the holder said so)
+   *  and from expired (the backstop fired, which should be an anomaly). */
+  readonly status: "active" | "released" | "completed" | "expired" | "reaped";
+  readonly effective_status: "active" | "released" | "completed" | "expired" | "reaped";
   readonly reason: "free" | "expired";
+  /** What the grant was pinned to, once bound; records from a worker that
+   *  predates the referent lack the field. */
+  readonly referent?: LeaseReferent | null;
 }
 
 /**
