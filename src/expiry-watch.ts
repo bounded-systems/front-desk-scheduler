@@ -14,31 +14,27 @@
  * WHY IT READS THE DOs AND NOT `claims`
  * -------------------------------------
  * The obvious source is the projection: one cheap unauthenticated query
- * against the mirror. It cannot answer the question, for two reasons that are
- * facts about the code rather than preferences:
+ * against the mirror. When this module was written it could not answer the
+ * question at all, for two reasons that were facts about the code rather than
+ * preferences — `claims` carried no referent, so the discriminator between an
+ * ordinary referent-less lapse and a bound lease reaching its backstop did not
+ * exist in the table; and the projection froze live intervals at 'active',
+ * which made the very case this module exists to catch the case most likely to
+ * be missing its close. Both were #119, and both are now FIXED: `claims` has a
+ * `referent` column and the watermark is the closed-interval frontier.
  *
- *   1. `claims` HAS NO REFERENT. The alarm is not "a lease expired" — it is "a
- *      BOUND lease expired", because a referent-less lapse on the short claim
- *      ttl is ordinary (a session died before opening a PR) while a bound
- *      lease reaching its backstop means the reaper never arrived. The
- *      discriminator is the referent, `projectionUpsertSql` does not project
- *      it, and the only claims-side proxy is `ttl_sec` — a convention of
- *      bind-ticket.yml's default, not an invariant anything enforces.
+ * The choice stands anyway, on the third reason — the one that was never about
+ * a defect. Reading `/history` keeps the ONE-DEFINITION discipline (#59) that a
+ * claims-side monitor would have to break: catching a lapsed-but-unclosed
+ * interval from SQL means restating `effectiveStatus` as `claimed_at +
+ * INTERVAL ttl_sec SECOND < UTC_TIMESTAMP()`, whereas the DO computes
+ * `effective_status` on read and hands over the answer.
  *
- *   2. THE PROJECTION FREEZES LIVE INTERVALS. `WATERMARK_SQL` takes
- *      MAX(fencing) over all projected rows including `status='active'`, and
- *      the projector then reads strictly above it — so an interval projected
- *      mid-life is never re-read and its close never lands. A bound lease
- *      sitting live for 24h spans up to four projection runs, which makes the
- *      exact case this module exists to catch the case most likely to be
- *      frozen at 'active' and never reported as expired at all.
- *
- * Both are #119, and neither blocks this. Reading `/history` also keeps the
- * ONE-DEFINITION discipline (#59) that a claims-side monitor would have to
- * break: catching a lapsed-but-unclosed interval from SQL means restating
- * `effectiveStatus` as `claimed_at + INTERVAL ttl_sec SECOND <
- * UTC_TIMESTAMP()`, whereas the DO computes `effective_status` on read and
- * hands over the answer.
+ * So a claims-side monitor is now POSSIBLE where it previously was not, and it
+ * would be cheaper (one unauthenticated query against the mirror versus one
+ * `/history` GET per candidate). If anyone takes that trade, the thing to
+ * carry across is the restatement above — that is the cost, and it is the one
+ * #59 says to weigh, not a defect to route around.
  *
  * WHAT THIS CAN AND CANNOT SEE
  * ----------------------------

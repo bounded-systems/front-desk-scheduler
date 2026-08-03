@@ -142,6 +142,14 @@ CREATE TABLE IF NOT EXISTS `claims` (
   -- PR) was observed merged, closed, or gone. Distinct from released/completed
   -- (the holder said so) and expired (the backstop fired; an anomaly).
   `status`      enum('active','released','completed','expired','reaped') NOT NULL DEFAULT 'active',
+  -- WHAT the grant was pinned to (#119), as `kind:id` — e.g.
+  -- 'pr:bounded-systems/front-desk-scheduler#111'. NULL = never bound, which
+  -- is information, not omission: a referent-less lapse on the short claim ttl
+  -- is the ordinary end of a session that died before opening a PR, while an
+  -- `expired` row WITH a referent means a bound lease reached its backstop —
+  -- the "reaper is down" anomaly. Forensics reads it the same way: which PR
+  -- was this lease pinned to.
+  `referent`    varchar(255),
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`, `status`),
   UNIQUE KEY `uq_claim_item_fencing` (`item_id`, `fencing`),
