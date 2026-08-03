@@ -56,9 +56,24 @@ depends-on: [prx#119, gh-project-room#83]
 An agent takes work by latching a row in **`leases`**, which has one row per held
 item under `PRIMARY KEY (item_id)`. That key *is* the scheduler's S1 (mutual
 exclusion): a second claimant collides and loses, with no check-then-act window
-and no isolation-level assumption. Expiry is a TTL refreshed by `renewLease`, so
-a dead worker's hold lapses and the item requeues — a lease, not a lock, which is
-why convoys and priority inversion don't arise.
+and no isolation-level assumption.
+
+A hold ends in one of three ways, and #105 made them distinguishable on purpose.
+Normally **the holder says so** — `release-ticket.yml`, recorded `released` or
+`completed`. Failing that, the lease is pinned to a **referent** (its PR,
+attached through `bind-ticket.yml`) and the reaper (`reap-leases.yml`) collects
+it when that PR merges or closes, recorded `reaped`. The **TTL is the backstop
+underneath both**: a lease that never bound lapses on the short claim ttl —
+the right outcome for a session that died before pushing anything — and a bound
+one carries a 24h expiry whose firing means the reaper itself is down, recorded
+`expired`. So it is still a lease and not a lock, which is why convoys and
+priority inversion don't arise; what changed is that the clock is no longer
+asked to estimate how long the work takes.
+
+> Before #105 this line read "expiry is a TTL refreshed by `renewLease`". That
+> is no longer how a session's hold ends: `renewLease` still exists but only the
+> syncer calls it, and there is deliberately no session-facing renew — binding
+> once replaces every heartbeat one would have cost.
 
 **`claims`** is the append-only history of those holds (audit, effort
 calibration). It is written *after* a successful latch and is not load-bearing:
