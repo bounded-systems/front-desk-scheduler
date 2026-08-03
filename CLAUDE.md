@@ -205,6 +205,36 @@ there is no benign reading of "the cheap query returns a different board".
   The common shape is a gap between what is tested and what is *used*, and it
   does not show up in a diff. When you finish something, dispatch the window,
   read the verdict line, query the mirror — the loop, not the unit.
+- **A fresh advisory is unfixable for 24h, and the failure is silent.** Deno's
+  minimum dependency age policy (24h by default) refuses any npm version
+  published less than a day ago. A plain `deno install` does not say it skipped
+  one — it just resolves lower, so the tell is a lockfile that will not move
+  onto a version the registry plainly lists and the parents plainly allow. #118
+  lost time to this, concluding across three runs including `--reload` that it
+  was "the resolver's choice"; it was the gate, and an explicit override is what
+  makes the refusal speak. So a day-zero advisory reds the scan for its first
+  day on *any* Deno repo, which is a property of the ecosystem, not of a repo.
+  Two rules follow. **Never `--min-dep-age 0`** — it is global, not per-package,
+  so it grabs the newest of everything: on #118 it took hono 4.13.0 published
+  nineteen minutes earlier plus an unrelated `jose` bump, which is adopting a
+  minutes-old minor while claiming to fix a vulnerability. Prefer waiting; if
+  you cannot, use the **smallest** relaxation that admits the one version you
+  want (`--min-dep-age 1170`, or a cutoff timestamp). And **check whether the
+  parents' ranges already admit the fix before concluding you are blocked on
+  upstream** — if they do, no release is coming to help you and the constraint
+  is somewhere else, usually the clock. `--min-dep-age <cutoff>` set to a future
+  boundary also lets you *verify* tomorrow's resolution today without committing
+  it, which is how the `hono` outcome was known before it was reachable.
+- **`osv` is not a required check; `test`, `vars` and `drift` are.** That is the
+  org ruleset (20149487), read from the rule rather than inferred from
+  `mergeable_state`. It also sets `strict_required_status_checks_policy`, and
+  that combination produces a genuinely misleading failure: when `main` moves,
+  the merge API rejects with `405 … 3 of 3 required status checks are expected`
+  even though all three are green on your head. It means **your branch is
+  stale**, not that checks are missing — rebase and let them re-report; do not
+  re-run them. Main moves fast (twice in fifteen minutes on 2026-08-03) and this
+  repo has **auto-merge disabled**, so nothing absorbs the race and every base
+  move costs a manual rebase.
 
 ## Session start
 
