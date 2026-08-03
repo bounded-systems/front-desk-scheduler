@@ -15,8 +15,10 @@
  *   1. enumerate items from the BOARD (the clone), not from a registry — the
  *      claim path ranks board items, so the board bounds the poll set, and an
  *      FK on claims would refuse orphans anyway;
- *   2. read each item's watermark FROM THE PROJECTION ITSELF (max projected
- *      fencing) — no separate cursor to lose, so a failed run is a catch-up;
+ *   2. read each item's watermark FROM THE PROJECTION ITSELF — the closed-
+ *      interval frontier; an `active` row never advances it (#119), so a
+ *      mid-life projection is re-read until its close lands. No separate
+ *      cursor to lose, so a failed run is a catch-up;
  *   3. fetch history above the watermark, plan idempotent upserts, apply.
  *
  * REFUSES to run without FDS_CLAIM_ENDPOINT (exit 2) rather than exiting
@@ -29,7 +31,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fetchLeaseHistory } from "../src/lease-client.ts";
-import { ITEMS_SQL, planProjection, WATERMARK_SQL } from "../src/lease-projection.ts";
+import {
+  ITEMS_SQL,
+  planProjection,
+  type ProjectedRowMark,
+  WATERMARK_ROWS_SQL,
+  watermarks,
+} from "../src/lease-projection.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -63,11 +71,12 @@ async function dsqlRows<T>(query: string): Promise<T[]> {
 }
 
 async function main(): Promise<void> {
-  // Fail on the missing column BEFORE doing any network work, with the fix
+  // Fail on the missing columns BEFORE doing any network work, with the fix
   // named. There is always a window where merged code runs against an
   // unmigrated mirror; the window should say its own name.
+  let markRows: ProjectedRowMark[];
   try {
-    await dsqlRows(WATERMARK_SQL);
+    markRows = await dsqlRows<ProjectedRowMark>(WATERMARK_ROWS_SQL);
   } catch (e) {
     if (/Unknown column|could not find column/i.test(String(e))) {
       console.error(
@@ -79,14 +88,24 @@ async function main(): Promise<void> {
     }
     throw e;
   }
+  try {
+    await dsqlRows("SELECT referent FROM claims LIMIT 1");
+  } catch (e) {
+    if (/Unknown column|could not find column/i.test(String(e))) {
+      console.error(
+        "project-leases: the mirror has no claims.referent column (#119) — the upsert\n" +
+          "  would fail mid-run. Apply the migration first:\n" +
+          "    gh workflow run mirror-migrate.yml -f migration=2026-08-03-claims-referent.sql -f dry_run=false",
+      );
+      process.exit(1);
+    }
+    throw e;
+  }
 
   const items = (await dsqlRows<{ item_id: string }>(ITEMS_SQL)).map((r) => r.item_id);
-  const marks = new Map(
-    (await dsqlRows<{ item_id: string; max_fencing: number }>(WATERMARK_SQL)).map((r) => [
-      r.item_id,
-      Number(r.max_fencing),
-    ]),
-  );
+  // The watermark rule lives in watermarks() — ONE definition (#59), shared
+  // with the tests that drive the mid-life case — not restated in SQL (#119).
+  const marks = watermarks(markRows);
 
   let polled = 0, projected = 0, failures = 0;
   const CONCURRENCY = 8;

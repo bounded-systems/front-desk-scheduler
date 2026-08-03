@@ -16,7 +16,13 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { LeaseHistoryRecord } from "../src/lease-client.ts";
-import { ITEMS_SQL, planProjection, projectionUpsertSql, WATERMARK_SQL } from "../src/lease-projection.ts";
+import {
+  ITEMS_SQL,
+  planProjection,
+  projectionUpsertSql,
+  WATERMARK_ROWS_SQL,
+  watermarks,
+} from "../src/lease-projection.ts";
 
 const T0 = 1_800_000_000_000;
 
@@ -38,12 +44,12 @@ function rec(over: Partial<LeaseHistoryRecord> = {}): LeaseHistoryRecord {
 
 test("an open interval projects as active with no close", () => {
   const sql = projectionUpsertSql("prx#12", rec());
-  assert.match(sql, /^INSERT INTO claims \(item_id, agent, fencing, decided_at_commit, claimed_at, ttl_sec, released_at, status\)/);
+  assert.match(sql, /^INSERT INTO claims \(item_id, agent, fencing, decided_at_commit, claimed_at, ttl_sec, released_at, status, referent\)/);
   // Not hand-computed (that went wrong once today already): derived from the
   // same conversion the code under test uses is a tautology, so derive from
   // the platform's OWN formatter instead.
   const want = new Date(T0).toISOString().replace("T", " ").slice(0, 19);
-  assert.match(sql, new RegExp(`VALUES \\('prx#12', 'alice', 1, NULL, '${want}', 60, NULL, 'active'\\)`));
+  assert.match(sql, new RegExp(`VALUES \\('prx#12', 'alice', 1, NULL, '${want}', 60, NULL, 'active', NULL\\)`));
   assert.match(sql, /ON DUPLICATE KEY UPDATE/, "the idempotency mechanism must be present");
 });
 
@@ -113,7 +119,128 @@ test("provenance survives the projection", () => {
 });
 
 test("the watermark comes from the projection itself, and the poll set from the board", () => {
-  assert.match(WATERMARK_SQL, /MAX\(fencing\)/);
-  assert.match(WATERMARK_SQL, /fencing IS NOT NULL/, "legacy inline rows (NULL fencing) are not watermarks");
+  assert.match(WATERMARK_ROWS_SQL, /FROM claims/);
+  assert.match(WATERMARK_ROWS_SQL, /fencing IS NOT NULL/, "legacy inline rows (NULL fencing) are not watermarks");
   assert.match(ITEMS_SQL, /FROM items/);
+});
+
+// ── the watermark rule (#119) ──────────────────────────────────────────────
+
+test("a settled item watermarks at its max fencing", () => {
+  const marks = watermarks([
+    { item_id: "i1", fencing: 1, status: "completed" },
+    { item_id: "i1", fencing: 2, status: "reaped" },
+    { item_id: "i2", fencing: 7, status: "expired" },
+  ]);
+  assert.equal(marks.get("i1"), 2);
+  assert.equal(marks.get("i2"), 7);
+});
+
+test("an ACTIVE row does not advance the watermark — the close must be able to land", () => {
+  // The #119 defect exactly: before the fix this returned 3, the projector
+  // asked for `> 3`, and the open interval's close could never be re-read.
+  const marks = watermarks([
+    { item_id: "i1", fencing: 1, status: "completed" },
+    { item_id: "i1", fencing: 2, status: "reaped" },
+    { item_id: "i1", fencing: 3, status: "active" },
+  ]);
+  assert.equal(marks.get("i1"), 2, "the frontier is the last CLOSED interval");
+});
+
+test("a stranded active row BELOW a terminal one is re-read, not stepped over", () => {
+  // MIN(active) - 1 rather than "ignore actives": a row frozen at 'active'
+  // beneath a later closed one is the shape the pre-#119 watermark could
+  // strand, and the rule has to self-heal it rather than leave it behind.
+  const marks = watermarks([
+    { item_id: "i1", fencing: 4, status: "active" },
+    { item_id: "i1", fencing: 5, status: "reaped" },
+  ]);
+  assert.equal(marks.get("i1"), 3, "re-fetch from below the stranded interval");
+});
+
+test("an item never projected has no watermark (callers default to 0)", () => {
+  assert.equal(watermarks([]).get("i1"), undefined);
+});
+
+test("fencing arriving as a JSON string still compares numerically (#101)", () => {
+  // `dolt sql -r json` returns real numbers; the DoltHub HTTP plane returns
+  // every column as a string. A lexical MAX would rank '9' above '10'.
+  const marks = watermarks([
+    { item_id: "i1", fencing: "9" as unknown as number, status: "reaped" },
+    { item_id: "i1", fencing: "10" as unknown as number, status: "completed" },
+  ]);
+  assert.equal(marks.get("i1"), 10);
+});
+
+test("the mid-life case end to end: project live, close, project again", () => {
+  // The property the module doc claimed and the code did not deliver — driven
+  // as the projector drives it, watermark included, rather than asserted about
+  // one SQL string.
+  const open = rec({ fencing: 1, status: "active", effective_status: "active" });
+
+  // Run 1 — the interval is live.
+  const first = planProjection("prx#12", [open], watermarks([]).get("prx#12") ?? 0);
+  assert.equal(first.length, 1);
+  assert.match(first[0], /'active'/);
+  assert.match(first[0], /, NULL, 'active'/, "an open interval has no close yet");
+
+  // The projected row as it now stands in `claims`.
+  const projected = [{ item_id: "prx#12", fencing: 1, status: "active" }];
+
+  // Run 2 — the DO has since closed it. The watermark must NOT have frozen it.
+  const closed = rec({
+    fencing: 1, status: "reaped", effective_status: "reaped", releasedAt: T0 + 30_000,
+    referent: { kind: "pr", id: "bounded-systems/front-desk-scheduler#111" },
+  });
+  const mark = watermarks(projected).get("prx#12") ?? 0;
+  assert.equal(mark, 0, "the active row must not advance the frontier");
+
+  const second = planProjection("prx#12", [closed], mark);
+  assert.equal(second.length, 1, "the close is re-read rather than filtered out");
+  assert.match(second[0], /'reaped'/);
+  assert.match(second[0], /released_at = '[^']+'/, "the close reaches the UPDATE clause");
+  assert.doesNotMatch(second[0], /released_at = NULL/);
+  assert.match(second[0], /'pr:bounded-systems\/front-desk-scheduler#111'/);
+
+  // Run 3 — now settled, the interval stops being re-read.
+  const settled = watermarks([{ item_id: "prx#12", fencing: 1, status: "reaped" }]).get("prx#12") ?? 0;
+  assert.equal(settled, 1);
+  assert.equal(planProjection("prx#12", [closed], settled).length, 0, "converges; no re-projection forever");
+});
+
+// ── the referent (#119 defect 2) ───────────────────────────────────────────
+
+test("the referent reaches the row — what the grant was pinned to, not just that it ended", () => {
+  const sql = projectionUpsertSql("prx#12", rec({
+    status: "reaped", effective_status: "reaped", releasedAt: T0 + 30_000,
+    referent: { kind: "pr", id: "bounded-systems/front-desk-scheduler#117" },
+  }));
+  assert.match(sql, /INSERT INTO claims \([^)]*referent\)/, "the column is written");
+  assert.match(sql, /'pr:bounded-systems\/front-desk-scheduler#117'/);
+  assert.match(sql, /referent = 'pr:bounded-systems\/front-desk-scheduler#117'/, "and reaches the UPDATE clause");
+});
+
+test("an unbound grant projects a NULL referent — information, not omission", () => {
+  // A referent-less lapse is the ORDINARY end of a session that died before
+  // opening a PR. Distinguishing it from a bound lease reaching its backstop
+  // is the whole reason the column exists (#113).
+  const sql = projectionUpsertSql("prx#12", rec({ effective_status: "expired" }));
+  assert.match(sql, /, NULL\)/, "no referent → NULL, never a fabricated one");
+  assert.match(sql, /referent = NULL/);
+});
+
+test("a malformed referent refuses to become SQL", () => {
+  assert.throws(
+    () => projectionUpsertSql("i", rec({ referent: { kind: "pr" } as never })),
+    /referent must be/,
+  );
+  assert.throws(
+    () => projectionUpsertSql("i", rec({ referent: { kind: "pr", id: "x".repeat(300) } })),
+    /exceeds 255/,
+  );
+});
+
+test("the referent is escaped like everything else", () => {
+  const sql = projectionUpsertSql("prx#12", rec({ referent: { kind: "pr", id: "o'brien/repo#1" } }));
+  assert.match(sql, /'pr:o''brien\/repo#1'/);
 });

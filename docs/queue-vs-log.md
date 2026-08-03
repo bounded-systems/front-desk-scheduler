@@ -62,10 +62,32 @@ What that requires, concretely:
 - The projection write must be **idempotent** — keyed on (item_id, fencing
   ordinal), so a replay overwrites rather than duplicates.
 - It must be **replayable** — the DO retains enough to re-emit any projection
-  write that failed.
+  write that failed, *and the projector must be willing to ask for it again*.
+  Both halves are load-bearing; see the note below on how the second lapsed.
 - A failed write is therefore a **catch-up, not a divergence**. It is only that
   if both properties above actually hold; if either lapses, the audit trail can
   disagree with what happened and nothing will notice.
+
+> **This is not hypothetical — replayability lapsed here for five days (#119).**
+> Retention was never the problem: the DOs kept every record, and `/history`
+> would have re-served any of them. The projector stopped *asking*. Its
+> watermark was `MAX(fencing)` over all projected rows including
+> `status='active'`, and it then read strictly above that mark — so an interval
+> projected while still live was never re-read and **its close could never
+> land**. The row stayed `active`, `released_at` NULL, permanently.
+>
+> The failure was invisible for the reason failures here usually are: the
+> projection did not run successfully even once until 2026-08-03 (#112), and by
+> then every interval happened to be terminal already. Not one line of the code
+> that implemented the property was wrong — the *rule for what to re-ask for*
+> was, and no test of a single projection run could see it, because the defect
+> only exists across two runs.
+>
+> Fixed by making the watermark the **closed-interval frontier**: an `active`
+> row never advances it (`watermarks()` in `src/lease-projection.ts`), so a
+> mid-life projection is re-read until it closes and then stops. The sentence
+> "the watermark is the projection itself" survives; "max projected fencing"
+> did not, and the difference between those two is the whole bug.
 
 `commit_attestations` already carries a weaker version of this same edge: its
 claims are asserted by the writer, not verifiable by a reader. Worth keeping the
@@ -96,16 +118,18 @@ pointed at whatever is actually live.
 1. ✅ Split `claim-race` so the assumption is a failing test, not a vibe.
 2. ✅ Build the DO: claim / renew / release, monotonic fencing counter (#34).
 3. ✅ Route the claim path at it — `src/claim-plane.ts`, three named planes (#35).
-4. ✅ Projection writer (2026-07-29). Grants are recorded in the DO's history
-   in the SAME storage transaction as the decision, and projected into
-   `claims` keyed by `(item_id, fencing)` under a UNIQUE index —
-   `INSERT … ON DUPLICATE KEY UPDATE`, verified idempotent against real
-   Dolt before the design was committed. The watermark is THE PROJECTION
-   ITSELF (max projected fencing per item), so there is no cursor to lose
-   and a failed run is a catch-up by construction. Retention is what
-   replayability rests on: the DOs keep every record; pruning waits for a
-   projector acknowledgement design. `claim-race` phase 4 audits that
-   history agrees with the grants the race observed.
+4. ✅ Projection writer (2026-07-29; watermark corrected 2026-08-03, #119).
+   Grants are recorded in the DO's history in the SAME storage transaction as
+   the decision, and projected into `claims` keyed by `(item_id, fencing)`
+   under a UNIQUE index — `INSERT … ON DUPLICATE KEY UPDATE`, verified
+   idempotent against real Dolt before the design was committed. The watermark
+   is THE PROJECTION ITSELF — specifically the **closed-interval frontier**,
+   because an `active` row that advanced it would freeze that interval
+   forever (the #119 defect above) — so there is no cursor to lose and a
+   failed run is a catch-up. Retention is what replayability rests on: the
+   DOs keep every record; pruning waits for a projector acknowledgement
+   design. `claim-race` phase 4 audits that history agrees with the grants
+   the race observed.
 5. Turn `production-a2` green — set `FDS_CLAIM_ENDPOINT` and watch it pass.
 
 Step 1 exists so that steps 2–4 have something to satisfy other than taste.

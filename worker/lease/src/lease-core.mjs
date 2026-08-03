@@ -386,8 +386,10 @@ export function historyStep(history, { type, request, before, after, response },
 
   if (type === "bind" && response.bound) {
     // Bind is renew-shaped for the record: the interval stays open, its expiry
-    // and ttl move, and the referent lands on it — so the projected row can say
-    // WHAT the grant was pinned to, not just that it ended.
+    // and ttl move, and the referent lands on it. The projection carries it
+    // into `claims.referent` (#119) — an earlier version of this comment
+    // asserted that before it was true, so if you change what history records
+    // here, check src/lease-projection.ts still projects it.
     return h.map((r) =>
       r.fencing === after.fencing
         ? { ...r, expiresAt: after.expiresAt, ttlSec: request.ttlSec, referent: after.referent }
