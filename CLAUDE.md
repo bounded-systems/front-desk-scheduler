@@ -187,6 +187,24 @@ there is no benign reading of "the cheap query returns a different board".
   MCP with `expected number, received string` while `node scripts/fds.ts next`
   printed a correct queue. **A green CLI is not evidence the tool works** — when
   you change a read, exercise it over MCP too.
+- **Generalising that: run the path a real caller runs, not the one the tests
+  run.** #101 was the first instance; 2026-08-03 produced three more in one
+  afternoon, all invisible to a fully green suite:
+  - **#112** — `lease-projection` had failed **24 times out of 24** and no claim
+    had ever reached `claims`. Its workflowRef was missing from the broker
+    allowlist. Nothing was wrong with the code; nobody had run it.
+  - **#114** — the docs told callers to read a `fencing` field of the claim
+    verdict that did not exist, and both ticket windows *required* it as input.
+    Every test called `claimLease()` directly and got a typed token, so nothing
+    exercised the shape a **workflow** caller receives — the verb's rendered
+    JSON. The regression test now asserts the OUTPUT CONTRACT for that reason.
+  - **#109** — `mirror-migrate` already opens the `mirror.live.sql`
+    regeneration PR itself. Regenerating by hand duplicated it. **After a
+    migration, merge the bot's PR; do not run `schema:export` yourself.**
+
+  The common shape is a gap between what is tested and what is *used*, and it
+  does not show up in a diff. When you finish something, dispatch the window,
+  read the verdict line, query the mirror — the loop, not the unit.
 
 ## Session start
 
