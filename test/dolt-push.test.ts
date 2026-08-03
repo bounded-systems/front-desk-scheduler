@@ -60,11 +60,13 @@ test("EVERY workflow that pushes the mirror goes through the convergent push", (
   // The anti-decay property. A new mirror writer with a bare `dolt push` is
   // #129 returning, and it would be invisible until two jobs overlapped.
   const offenders: string[] = [];
-  for (const name of readdirSync(WF_DIR)) {
+  // withFileTypes rather than a separate statSync: checking the path and then
+  // reading it is a TOCTOU the directory entry answers outright (CodeQL).
+  for (const entry of readdirSync(WF_DIR, { withFileTypes: true })) {
+    const name = entry.name;
+    if (!entry.isFile()) continue;
     if (!name.endsWith(".yml") && !name.endsWith(".yaml")) continue;
-    const path = new URL(name, WF_DIR);
-    if (!statSync(path).isFile()) continue;
-    const body = readFileSync(path, "utf8");
+    const body = readFileSync(new URL(name, WF_DIR), "utf8");
     for (const line of body.split("\n")) {
       // A bare `dolt push` not routed through the script.
       if (/\bdolt push\b/.test(line) && !/dolt-push\.sh/.test(line)) {
