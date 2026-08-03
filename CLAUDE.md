@@ -125,14 +125,25 @@ Note the three outcomes: granted, **not granted** (a fact, not an error — some
 else holds it), and error (no verdict, holder unknown). Don't retry the third as
 though it were the second.
 
+**Bind your PR as soon as it exists.** The claim's ttl (default 3600s) is the
+referent-less grace window, not a task estimate (#105): dispatch
+`bind-ticket.yml` with the `item_id`, your `fencing` token, and the PR as
+`owner/repo#number`, and read `FDS-BIND-RESULT`. From then on the lease is
+pinned to the PR's lifecycle — the reaper (`reap-leases.yml`) releases it when
+the PR merges or closes, and the expiry is only a 24h backstop whose firing
+means the reaper is down. A lease that never binds lapses on the short claim
+ttl, which is the right outcome for a session that died before pushing. There
+is deliberately no `renew` window — binding once replaces every heartbeat.
+
 **Give it back the same way.** `release-ticket.yml` is the same window one verb
 over (#104) — dispatch it with the `item_id` and the **`fencing` token from your
-claim verdict**, and read `FDS-RELEASE-RESULT`. Don't just let the TTL lapse: a
-session that finishes in eight minutes on a 3600s lease holds a closed item for
-another fifty-two, and every `next` in that window sees it held. The one refusal
-to react to is **`stale-fencing`** — it means a newer grant exists, so you are a
-zombie and should stop working the item, not retry. (Whether the lease should be
-time-based at all is the open question in #105.)
+claim verdict**, and read `FDS-RELEASE-RESULT`. The reaper will free a bound
+lease when its PR closes, but saying "I am done" yourself is faster and records
+released-vs-completed. Don't just let the TTL lapse: a session that finishes in
+eight minutes on a 3600s lease holds a closed item for another fifty-two, and
+every `next` in that window sees it held. The one refusal to react to is
+**`stale-fencing`** — it means a newer grant exists, so you are a zombie and
+should stop working the item, not retry.
 
 **Reads are unaffected** — `/status` and `/history` are open, and the whole
 `next`/`graph`/`list` path needs no credential.

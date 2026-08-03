@@ -33,7 +33,10 @@
 import { sqlDatetime, sqlLit } from "./attest.ts";
 import type { LeaseHistoryRecord } from "./lease-client.ts";
 
-const STATUSES = new Set(["active", "released", "completed", "expired"]);
+// 'reaped' (#105): the GC closed the interval because the grant's referent was
+// observed merged, closed, or gone. Terminal like released/completed/expired,
+// and kept distinct so a backstop expiry stays a monitorable anomaly.
+const STATUSES = new Set(["active", "released", "completed", "expired", "reaped"]);
 
 /** Watermarks: the max projected fencing per item, read from the projection
  *  itself. Items never projected simply do not appear (watermark 0). */

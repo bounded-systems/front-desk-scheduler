@@ -143,6 +143,34 @@ test("the renew/release round trip works through the shell", async () => {
   assert.equal(after.body.fencing, f, "the counter survives release");
 });
 
+test("the bind/reap round trip works through the shell (#105)", async () => {
+  const obj = new LeaseObject(fakeCtx());
+  const c = await call(obj, post("/claim", { agent: "alice", ttl_sec: 3600 }));
+  const f = c.body.fencing;
+  const referent = { kind: "pr", id: "bounded-systems/front-desk-scheduler#103" };
+
+  const bound = await call(obj, post("/bind", { agent: "alice", fencing: f, ttl_sec: 86400, referent }));
+  assert.equal(bound.body.bound, true);
+  assert.deepEqual(bound.body.referent, referent);
+
+  const status = await call(obj, new Request("https://lease.invalid/status?item_id=prx%2312"));
+  assert.deepEqual(status.body.referent, referent, "the reaper reads the referent from /status");
+
+  const wrongRef = await call(obj, post("/reap", { fencing: f, referent: { kind: "pr", id: "other/repo#1" } }));
+  assert.equal(wrongRef.body.reaped, false);
+  assert.equal(wrongRef.body.reason, "referent-mismatch");
+
+  const reaped = await call(obj, post("/reap", { fencing: f, referent }));
+  assert.equal(reaped.body.reaped, true);
+
+  const hist = await call(obj, new Request("https://lease.invalid/history?item_id=prx%2312"));
+  assert.equal(hist.body.records[0].status, "reaped", "history distinguishes a reap from an expiry");
+
+  const junk = await call(obj, post("/bind", { agent: "alice", fencing: f, ttl_sec: 60, referent: "not-an-object" }));
+  assert.equal(junk.status, 400);
+  assert.match(junk.body.error, /referent/);
+});
+
 // ── the router: auth gates writes, reads stay open ───────────────────────────
 
 import worker from "./index.mjs";

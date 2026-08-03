@@ -1,0 +1,36 @@
+-- 2026-08-03 — a third way for a grant interval to end: the GC observed it done.
+--
+-- #105 split the two jobs `expiresAt` was doing. A lease now pins to a
+-- REFERENT (its PR, bound after the claim via bind-ticket.yml), a reaper
+-- (reap-leases.yml) releases leases whose referent is merged, closed, or gone,
+-- and the TTL survives only as a backstop sized to "the reaper has been broken
+-- for a day". That gives the claims history a close it could not previously
+-- express:
+--
+--   released / completed   the holder said so (the release window, #104)
+--   expired                the backstop fired — an ANOMALY now, worth alerting
+--                          on, because the reaper should always get there first
+--   reaped                 the GC observed the referent close; the normal end
+--                          of a session-held lease whose PR merged
+--
+-- Collapsing reaped into released would erase exactly the observable #105
+-- exists to create: with the TTL demoted, an `expired` row means the liveness
+-- path is broken — but only if nothing else is allowed to masquerade as one of
+-- the other statuses.
+--
+-- The enum is EXTENDED, not reordered — existing rows keep their values, and
+-- rows written by the pre-#105 worker never carry 'reaped', so this is safe on
+-- any history. The projector (src/lease-projection.ts) allowlists the new
+-- status in the same change; until this migration is applied, a projected
+-- 'reaped' row fails the enum check loudly in lease-projection.yml, which
+-- names this file as the fix — same window as every schema/write skew.
+--
+-- MODIFY COLUMN rather than conditional DDL — Dolt has no ALTER ... IF; the
+-- runner's `schema_migrations` ledger is what makes application once-only.
+-- Re-running MODIFY to the same definition is a no-op anyway.
+--
+-- Apply:  gh workflow run mirror-migrate.yml \
+--           -f migration=2026-08-03-claims-status-reaped.sql -f dry_run=false
+
+ALTER TABLE `claims` MODIFY COLUMN `status`
+  enum('active','released','completed','expired','reaped') NOT NULL DEFAULT 'active';

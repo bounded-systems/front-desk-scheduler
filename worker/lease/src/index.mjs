@@ -37,7 +37,9 @@
 import { authenticate, namespaceAgent } from "./auth.mjs";
 import {
   canonicalItemId,
+  decideBind,
   decideClaim,
+  decideReap,
   decideRelease,
   decideRenew,
   describe,
@@ -106,6 +108,19 @@ export class LeaseObject {
         case "/renew": {
           const req = { agent: body.agent, fencing: body.fencing, ttlSec: body.ttl_sec };
           return json(await this.applyTransition("renew", req, (s, now) => decideRenew(s, req, now)));
+        }
+        case "/bind": {
+          // Attach the referent and re-size the expiry into the backstop. The
+          // holder-facing half of #105; gated like /renew.
+          const req = { agent: body.agent, fencing: body.fencing, ttlSec: body.ttl_sec, referent: body.referent };
+          return json(await this.applyTransition("bind", req, (s, now) => decideBind(s, req, now)));
+        }
+        case "/reap": {
+          // The collector's release. No agent field on purpose — the reaper is
+          // not the holder and does not pretend to be; the router's auth gate
+          // still applies (it is a POST), and the DO checks fencing + referent.
+          const req = { fencing: body.fencing, referent: body.referent };
+          return json(await this.applyTransition("reap", req, (s, now) => decideReap(s, req, now)));
         }
         case "/release": {
           const req = { agent: body.agent, fencing: body.fencing, status: body.status };

@@ -26,7 +26,10 @@ import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
 import { type RawItem, type RawTypedEdge, SQL } from "./scheduling.ts";
 import { type ClaimPlaneName, resolveClaimPlane, warnIfPlaneCannotExclude } from "./claim-plane.ts";
 import {
+  bindReferentRemote,
+  type BindOutcome,
   claimLease,
+  type LeaseReferent,
   releaseLeaseDetailed,
   type ReleaseOutcome,
   renewLeaseRemote,
@@ -567,6 +570,31 @@ export async function renewLease(
     `SELECT agent FROM leases WHERE item_id = '${id}' AND ${LEASE_LIVE()}`,
   );
   return rows[0]?.agent === agent;
+}
+
+/**
+ * Bind the lease to its referent — the #105 "first push upgrades" move. Lease
+ * plane ONLY, and deliberately so: the referent is what the reaper polls, the
+ * reaper reads it from the DO's /status, and the Dolt planes have neither a
+ * fencing token to gate the bind nor a surface the reaper reads. Offering a
+ * no-op bind on the SQL planes would report a lease as GC-managed when nothing
+ * will ever collect it.
+ */
+export async function bindReferent(
+  itemId: string,
+  agent: string,
+  fencing: number,
+  referent: LeaseReferent,
+  ttlSec: number,
+): Promise<BindOutcome> {
+  const plane = resolveClaimPlane();
+  if (plane.name !== "lease") {
+    throw new Error(
+      `bind requires the lease plane (FDS_CLAIM_ENDPOINT); the '${plane.name}' plane has no ` +
+        "referent surface for a reaper to poll, so a bind there would be a promise nothing keeps",
+    );
+  }
+  return bindReferentRemote(itemId, agent, fencing, referent, ttlSec);
 }
 
 /**

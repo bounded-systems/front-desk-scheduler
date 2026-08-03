@@ -1,0 +1,183 @@
+name: bind-ticket
+# The third pane of the ticket window (#105): let a Claude Code cloud session
+# PIN a lease it took through `claim-ticket.yml` to the PR that now carries the
+# work — after which the reaper (reap-leases.yml) releases the lease when the
+# PR merges or closes, and the TTL is demoted to a backstop.
+#
+# WHY THIS EXISTS
+# ---------------
+# Same reason as the claim and release windows, one verb over: a session's
+# `GH_TOKEN` is the sentinel `proxy-injected`, so `POST /bind` refuses in the
+# Worker's router exactly as `/claim` and `/release` do. The identity is what
+# is missing, and `github.token` is the identity this file supplies.
+#
+# WHY BINDING IS WORTH A DISPATCH WHEN HEARTBEATING WAS NOT
+# ---------------------------------------------------------
+# #105 priced a session heartbeat at one runner boot per beat — 60 boots/hour
+# to move one integer. A bind is ONE dispatch per lease, at the moment the PR
+# opens, and it replaces every heartbeat that would have followed: from bind
+# onward the PR's own lifecycle is the liveness signal and GitHub runs the
+# state machine. That is the entire trade.
+#
+# WHEN TO DISPATCH IT
+# -------------------
+# Immediately after opening your PR. The claim's short ttl (default 3600) is
+# the time budget for GETTING a referent to exist, not for the task: a lease
+# that never binds lapses on that short fuse (a session that died before
+# pushing holds nothing for long), and a lease that binds outlives any task
+# honestly — the reaper frees it the moment the PR closes.
+#
+# WHY `fencing` IS REQUIRED AND NOT INFERRED
+# ------------------------------------------
+# Same argument as release-ticket.yml, sharpened: the referent decides when
+# the lease DROPS, so `decideBind` accepts it only from the fenced holder.
+# Looking the token up would reconstruct the caller's belief from current
+# state, which is precisely the belief being checked. It is in the
+# FDS-CLAIM-RESULT line of the claim run that granted the lease.
+#
+# ONE DEFINITION
+# --------------
+# Shells out to the same `bind` verb the CLI and MCP expose (#59). The only
+# things this file adds are the identity and a parseable verdict.
+on:
+  workflow_dispatch:
+    inputs:
+      agent_label:
+        description: >-
+          The SAME label you claimed with, e.g. "session-7". The Worker
+          namespaces it under the verified identity, so it must match the
+          holder it recorded (`gha/<label>`) or the bind is refused.
+        required: true
+        type: string
+      item_id:
+        description: 'The project item id from the claim verdict, e.g. "PVTI_lADO…".'
+        required: true
+        type: string
+      fencing:
+        description: >-
+          The fencing token from the claim's FDS-CLAIM-RESULT line. The
+          referent decides when the lease drops, so only the fenced holder may
+          set it.
+        required: true
+        type: string
+      pr:
+        description: 'The referent: your open PR as "owner/repo#number", e.g. "bounded-systems/front-desk-scheduler#103".'
+        required: true
+        type: string
+      ttl:
+        description: >-
+          BACKSTOP seconds, not a task estimate — sized to "the reaper has
+          been broken for a day". It should essentially never fire; when it
+          does, that expiry is the signal the GC is down.
+        required: false
+        default: "86400"
+        type: string
+
+# Nothing here mutates the repo; the bind write leaves GitHub over HTTPS. Read
+# is all `github.token` needs — the Worker checks installation coverage of this
+# repo, which any installation token can answer regardless of its scopes.
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize per label, matching the other two panes, so a double-dispatch
+  # cannot race itself.
+  group: bind-ticket-${{ inputs.agent_label }}
+  cancel-in-progress: false
+
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      # Same pin the org's repo-standard.yml uses, so there is one SHA to bump.
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies (frozen)
+        run: deno install --frozen
+
+      - name: Bind
+        id: bind
+        env:
+          # The whole point of the window: github.token is an installation token
+          # covering this repo, which auth.mjs branch 2 accepts.
+          GH_TOKEN: ${{ github.token }}
+          FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+          # Pinned rather than auto-detected, matching claim-ticket.yml.
+          FDS_READS: dolthub
+          FDS_JSON: "1"
+          AGENT_LABEL: ${{ inputs.agent_label }}
+          ITEM_ID: ${{ inputs.item_id }}
+          FENCING: ${{ inputs.fencing }}
+          PR_REF: ${{ inputs.pr }}
+          TTL: ${{ inputs.ttl }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::error::FDS_CLAIM_ENDPOINT is unset — there is no lease plane to bind against."
+            echo "::error::It is published by lease-deploy.yml as a repo/org Actions variable."
+            exit 1
+          fi
+
+          case "$FENCING" in
+            ''|*[!0-9]*)
+              echo "::error::fencing must be the integer from the claim's FDS-CLAIM-RESULT line (got '$FENCING')."
+              exit 1 ;;
+          esac
+
+          # The reaper will parse this exact shape (src/reaper.ts); refusing a
+          # malformed one HERE keeps a typo from parking as a referent the GC
+          # then reports as malformed every sweep.
+          case "$PR_REF" in
+            */*#*) : ;;
+            *)
+              echo "::error::pr must be \"owner/repo#number\" (got '$PR_REF')."
+              exit 1 ;;
+          esac
+
+          args=(bind --itemId "$ITEM_ID" --agent "$AGENT_LABEL" --fencing "$FENCING" --ref "$PR_REF" --ttl "$TTL")
+
+          # stdout is the verdict, stderr is the diagnosis. Keep them apart so a
+          # transport error cannot be parsed as a refusal.
+          set +e
+          out="$(node scripts/fds.ts "${args[@]}" 2>/tmp/bind.err)"
+          rc=$?
+          set -e
+
+          if [ $rc -ne 0 ]; then
+            # An ERROR is not a refusal. No verdict means the lease's state is
+            # unknown — it may or may not be bound — which is a different fact
+            # from "the DO declined", and must not be reported as one.
+            echo "::error::bind failed before a verdict was reached (exit $rc)."
+            sed 's/^/::error::/' /tmp/bind.err
+            exit 1
+          fi
+
+          # One greppable line, so a session can read the verdict from the job
+          # log without downloading the run summary. Mirrors FDS-CLAIM-RESULT.
+          echo "FDS-BIND-RESULT $out"
+          echo "result=$out" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### bind-ticket"
+            echo '```json'
+            echo "$out"
+            echo '```'
+            echo "Bound: the reaper releases this lease when the PR closes; the ttl is"
+            echo "now a backstop. NOT bound: the reason names which belief was stale."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # A REFUSAL IS AN ANSWER, so the run succeeds — same call as the other
+          # panes. stale-fencing gets the same shout as release-ticket.yml: it
+          # means a newer grant exists and the caller should STOP.
+          if [ "$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);process.stdout.write(String(!v.bound&&v.reason==="stale-fencing"))})')" = "true" ]; then
+            echo "::warning::bind refused as stale-fencing — a newer grant exists. STOP working this item."
+          fi

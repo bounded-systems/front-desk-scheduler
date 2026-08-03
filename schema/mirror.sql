@@ -138,7 +138,10 @@ CREATE TABLE IF NOT EXISTS `claims` (
   `claimed_at`  datetime     NOT NULL,
   `ttl_sec`     int          NOT NULL,
   `released_at` datetime,
-  `status`      enum('active','released','completed','expired') NOT NULL DEFAULT 'active',
+  -- 'reaped' (#105): the GC closed the interval — the grant's referent (its
+  -- PR) was observed merged, closed, or gone. Distinct from released/completed
+  -- (the holder said so) and expired (the backstop fired; an anomaly).
+  `status`      enum('active','released','completed','expired','reaped') NOT NULL DEFAULT 'active',
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`, `status`),
   UNIQUE KEY `uq_claim_item_fencing` (`item_id`, `fencing`),

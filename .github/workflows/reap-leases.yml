@@ -1,0 +1,95 @@
+name: reap-leases
+# The lease garbage collector (#105) — the reaper half of "GC as ref".
+#
+# WHY THIS EXISTS
+# ---------------
+# `expiresAt` used to be asked two questions at once: "how long is the task?"
+# and "when is the holder dead?" No number answers both — #93 was held for 52
+# idle minutes after its PR merged (too long), and a 3600s lease on a
+# three-hour task lapses mid-flight (too short). So the lease now pins to a
+# REFERENT (the PR, bound via bind-ticket.yml), and this workflow is the actor
+# that watches referents and releases leases whose referent is merged, closed,
+# or provably gone. Precise, event-shaped, no holder cooperation — the holder
+# may be dead, which is the point.
+#
+# The TTL survives as a BACKSTOP sized to "this workflow has been broken for a
+# day" (86400s at bind). If leases are EXPIRING rather than being reaped or
+# released, this workflow is down — that is a monitorable anomaly now, not
+# normal operation.
+#
+# WHY A WORKFLOW: the same identity argument as every window (#95). The reap
+# write needs a GitHub identity the Worker accepts; `github.token` is one
+# (auth.mjs branch 2). The PR probes ride the same token. Sessions cannot hold
+# either; this file does.
+#
+# WHAT A SWEEP CAN AND CANNOT SEE — stated in src/reaper.ts and reported in
+# the FDS-REAP-RESULT ledger every run:
+#   - candidates come from the public mirror (schedulable ∪ recently-closed ∪
+#     projected-active), because DO namespaces cannot be enumerated (#84). A
+#     lease outside that union waits for the projection to reveal it; the
+#     backstop bounds the wait.
+#   - per candidate, /status is DO ground truth — no lag; the fencing+referent
+#     presented to /reap come from that one snapshot and the DO refuses the
+#     pair if the world moved in between (idempotent by refusal).
+#   - UNOBSERVABLE IS NOT CLOSED: a probe that cannot distinguish "gone" from
+#     "not visible to this token" skips. An oracle outage releases nothing.
+on:
+  schedule:
+    - cron: "13,43 * * * *" # twice hourly; offset from lease-projection's :29
+  workflow_dispatch: {}
+
+# The reap write leaves GitHub over HTTPS; nothing here mutates the repo, and
+# unlike lease-projection there is no mirror write to serialize on — the
+# `mirror-write` group is deliberately NOT taken.
+permissions:
+  contents: read
+
+concurrency:
+  # One sweep at a time. Overlap would be safe (the DO refuses stale evidence)
+  # but would double-probe every referent for nothing.
+  group: reap-leases
+  cancel-in-progress: false
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    env:
+      FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      # No dependency install: the script imports lease-client (fetch), dolthub
+      # (fetch; its scheduling import is type-only past the SQL strings) and
+      # reaper (pure) — Node 24 strips the types natively, same as
+      # lease-projection.
+      - name: Sweep
+        env:
+          # The identity for the /reap write (auth.mjs branch 2) AND the PR
+          # probes. Repo-scoped: a probe of a repo this token cannot see reads
+          # as UNOBSERVABLE and releases nothing, by design.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::notice::FDS_CLAIM_ENDPOINT is unset — no lease plane deployed, nothing to reap."
+            exit 0
+          fi
+          set +e
+          node scripts/reap-leases.ts | tee /tmp/reap.out
+          rc=$?
+          set -e
+          {
+            echo "### reap-leases"
+            echo '```'
+            grep -h "FDS-REAP-RESULT" /tmp/reap.out || echo "no verdict line — the sweep errored before reporting"
+            echo '```'
+            echo "Collecting requires a POSITIVE observation (merged/closed/gone);"
+            echo "unobservable releases nothing. An INCOMPLETE sweep fails the run;"
+            echo "the backstop TTL bounds what a broken reaper can cost."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc

@@ -52,7 +52,12 @@ on:
         required: false
         type: string
       ttl:
-        description: "Lease seconds. The lease EXPIRES on its own — a dead claimant's grip lapses."
+        description: >-
+          Lease seconds — since #105 this is the REFERENT-LESS grace window
+          (time to open a PR and dispatch bind-ticket.yml), not a task
+          estimate. A lease that never binds lapses on this short fuse; a bound
+          lease is re-sized to the reaper's backstop and released when its PR
+          closes.
         required: false
         default: "3600"
         type: string

@@ -170,6 +170,135 @@ test("renewing an expired lease fails even for the last holder, with nobody else
   assert.equal(r.response.reason, "expired");
 });
 
+// ── the referent (#105): bind, then reap ─────────────────────────────────────
+// TTL used to be asked two questions at once — "how long is the task?" and
+// "when is the holder dead?" — and no number answers both. What is pinned here:
+// the referent materializes only through a fenced bind, the reaper can collect
+// only against the CURRENT fencing AND the CURRENT referent, and a lease that
+// never materialized a referent is the backstop's to collect, never the
+// reaper's.
+
+import { decideBind, decideReap, validateReferent } from "./lease-core.mjs";
+
+const PR = { kind: "pr", id: "bounded-systems/front-desk-scheduler#103" };
+
+test("a claim starts referent-less; the holder binds one and the expiry re-sizes", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  assert.equal(c.state.referent, null, "a fresh grant never has a referent");
+  const b = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 10_000);
+  assert.equal(b.response.bound, true);
+  assert.deepEqual(b.state.referent, PR);
+  assert.equal(b.state.expiresAt, T0 + 10_000 + 86_400_000, "binding re-sizes the expiry into the backstop");
+  assert.equal(b.state.fencing, 1, "binding does not re-fence");
+});
+
+test("bind is gated like renew: non-holder, stale token, and lapsed lease are all refused", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const notHolder = decideBind(c.state, { agent: "bob", fencing: 1, ttlSec: 60, referent: PR }, T0 + 1);
+  assert.equal(notHolder.response.bound, false);
+  assert.equal(notHolder.response.reason, "not-holder");
+  assert.equal(notHolder.state, c.state, "a refused bind must not set the release trigger");
+
+  const stale = decideBind(c.state, { agent: "alice", fencing: 99, ttlSec: 60, referent: PR }, T0 + 1);
+  assert.equal(stale.response.reason, "stale-fencing");
+
+  const lapsed = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 60, referent: PR }, T0 + 61_000);
+  assert.equal(lapsed.response.reason, "expired");
+});
+
+test("the holder may re-bind — a PR can be closed and superseded", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const b1 = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 1);
+  const PR2 = { kind: "pr", id: "bounded-systems/front-desk-scheduler#110" };
+  const b2 = decideBind(b1.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR2 }, T0 + 2);
+  assert.equal(b2.response.bound, true);
+  assert.deepEqual(b2.state.referent, PR2, "last fenced bind wins");
+});
+
+test("the reaper collects a bound lease against the current fencing and referent", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const b = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 1);
+  const r = decideReap(b.state, { fencing: 1, referent: PR }, T0 + 500_000);
+  assert.equal(r.response.reaped, true);
+  assert.equal(r.response.holder, "alice", "the reap reports whose grip it broke");
+  assert.equal(r.state.holder, null);
+  assert.equal(r.state.referent, null);
+  assert.equal(r.state.fencing, 1, "reap retains the counter exactly as release does");
+  assert.equal(claim(r.state, "bob", T0 + 500_001).response.fencing, 2, "next grant still out-fences");
+});
+
+test("a referent-less lease is NEVER reapable — that corpse belongs to the backstop", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const r = decideReap(c.state, { fencing: 1, referent: PR }, T0 + 1);
+  assert.equal(r.response.reaped, false);
+  assert.equal(r.response.reason, "no-referent");
+  assert.equal(r.state, c.state);
+});
+
+test("a reap on stale evidence is refused: old fencing, or a referent since re-bound", () => {
+  // The reaper read /status, then the world moved. Both staleness axes refuse.
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const b = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 1);
+
+  const staleFence = decideReap(b.state, { fencing: 0, referent: PR }, T0 + 2);
+  assert.equal(staleFence.response.reaped, false);
+  assert.equal(staleFence.response.reason, "stale-fencing");
+
+  const PR2 = { kind: "pr", id: "bounded-systems/front-desk-scheduler#110" };
+  const rebound = decideBind(b.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR2 }, T0 + 3);
+  const staleRef = decideReap(rebound.state, { fencing: 1, referent: PR }, T0 + 4);
+  assert.equal(staleRef.response.reaped, false);
+  assert.equal(staleRef.response.reason, "referent-mismatch");
+  assert.deepEqual(staleRef.response.referent, PR2, "the refusal names what the lease is actually pinned to");
+  assert.equal(staleRef.state, rebound.state, "no refused reap may free the lease");
+});
+
+test("a repeated reap is idempotent — the second lands on not-held", () => {
+  const c = claim(EMPTY_STATE, "alice", T0);
+  const b = decideBind(c.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 1);
+  const first = decideReap(b.state, { fencing: 1, referent: PR }, T0 + 2);
+  const second = decideReap(first.state, { fencing: 1, referent: PR }, T0 + 3);
+  assert.equal(second.response.reaped, false);
+  assert.equal(second.response.reason, "not-held");
+});
+
+test("a takeover after a reap works, and the zombie's old token stays dead", () => {
+  // The end-to-end #105 story: alice binds her PR, it merges, the reaper frees
+  // the item, bob claims it — and alice's grant-1 token can do nothing.
+  const alice = claim(EMPTY_STATE, "alice", T0);
+  const bound = decideBind(alice.state, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 1);
+  const reaped = decideReap(bound.state, { fencing: 1, referent: PR }, T0 + 2);
+  const bob = claim(reaped.state, "bob", T0 + 3);
+  assert.equal(bob.response.granted, true);
+  assert.equal(bob.response.fencing, 2);
+  assert.equal(bob.response.reason, "free", "a reaped lease reads as free, not as a corpse takeover");
+  const zombie = decideRelease(bob.state, { agent: "alice", fencing: 1 }, T0 + 4);
+  assert.equal(zombie.response.released, false);
+});
+
+test("referent validation refuses junk rather than storing it", () => {
+  const held = claim(EMPTY_STATE, "alice", T0).state;
+  for (const bad of [null, undefined, "pr", 42, [], {}, { kind: "pr" }, { id: "x" },
+    { kind: "", id: "x" }, { kind: "pr", id: "" }, { kind: "x".repeat(33), id: "y" },
+    { kind: "pr", id: "y".repeat(257) }]) {
+    assert.throws(() => decideBind(held, { agent: "alice", fencing: 1, ttlSec: 60, referent: bad }, T0 + 1), /referent/);
+    assert.throws(() => decideReap(held, { fencing: 1, referent: bad }, T0 + 1), /referent/);
+  }
+  assert.deepEqual(validateReferent({ kind: " pr ", id: " a#1 " }), { kind: "pr", id: "a#1" }, "trimmed, same as item ids");
+});
+
+test("a pre-referent stored state (no referent key) reads and transitions cleanly", () => {
+  // States written by the deployed worker predate the field. Absent and null
+  // must be the same fact everywhere.
+  const legacy = { holder: "alice", expiresAt: T0 + 60_000, fencing: 3 };
+  assert.equal(describe(legacy, T0).referent, null);
+  const r = decideReap(legacy, { fencing: 3, referent: PR }, T0 + 1);
+  assert.equal(r.response.reason, "no-referent");
+  const b = decideBind(legacy, { agent: "alice", fencing: 3, ttlSec: 86_400, referent: PR }, T0 + 1);
+  assert.equal(b.response.bound, true);
+  assert.deepEqual(b.state.referent, PR);
+});
+
 // ── the routing key (A2′) ────────────────────────────────────────────────────
 
 test("canonicalItemId collapses the variants that would split the item", () => {
@@ -198,7 +327,7 @@ test("a bad ttl or agent is rejected rather than stored", () => {
 test("describe reports liveness rather than making callers compare clocks", () => {
   const c = claim(EMPTY_STATE, "alice", T0);
   assert.deepEqual(describe(c.state, T0 + 1_000), {
-    holder: "alice", fencing: 1, expiresAt: T0 + 60_000, live: true,
+    holder: "alice", fencing: 1, expiresAt: T0 + 60_000, live: true, referent: null,
   });
   const lapsed = describe(c.state, T0 + 61_000);
   assert.equal(lapsed.live, false);
@@ -216,7 +345,7 @@ import { effectiveStatus, historyStep, normalizeDecidedAt } from "./lease-core.m
 
 /** Drive a decide* + historyStep pair the way the shell does — one event. */
 function step(hist, type, state, req, now) {
-  const decide = { claim: decideClaim, renew: decideRenew, release: decideRelease }[type];
+  const decide = { claim: decideClaim, renew: decideRenew, release: decideRelease, bind: decideBind, reap: decideReap }[type];
   const { state: after, response } = decide(state, req, now);
   return { state: after, response, hist: historyStep(hist, { type, request: req, before: state, after, response }, now) };
 }
@@ -230,7 +359,7 @@ test("a grant opens an interval; release closes it with the caller's status", ()
     {
       fencing: 1, agent: "alice", decidedAtCommit: "v0110csl2jph0aeeij7rhhurrbjcft6g",
       grantedAt: T0, ttlSec: 60, expiresAt: T0 + 60_000, releasedAt: null,
-      status: "active", reason: "free",
+      status: "active", reason: "free", referent: null,
     },
   );
   ({ state: s, hist: h } = step(h, "release", s, { agent: "alice", fencing: 1, status: "completed" }, T0 + 30_000));
@@ -290,6 +419,36 @@ test("history over many cycles: one interval per fencing ordinal, all closed but
   assert.deepEqual(h.map((r) => r.fencing), [1,2,3,4,5,6,7,8,9], "one interval per ordinal, in order");
   assert.equal(new Set(h.map((r) => r.fencing)).size, 9, "no ordinal appears twice");
   for (const r of h.slice(0, -1)) assert.notEqual(r.status, "active", "every superseded interval is closed");
+});
+
+test("bind lands the referent on the open interval; reap closes it as 'reaped'", () => {
+  // The distinguishability the #105 checklist asks for: released/completed (the
+  // holder said so), expired (the backstop fired), reaped (the GC observed the
+  // referent close) are three different ends and history keeps them apart.
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 3600 }, T0));
+  assert.equal(h[0].referent, null);
+  ({ state: s, hist: h } = step(h, "bind", s, { agent: "alice", fencing: 1, ttlSec: 86_400, referent: PR }, T0 + 60_000));
+  assert.equal(h.length, 1, "bind UPDATES the interval, never appends");
+  assert.deepEqual(h[0].referent, PR);
+  assert.equal(h[0].ttlSec, 86_400, "the backstop ttl is recorded, not the claim's");
+  assert.equal(h[0].expiresAt, T0 + 60_000 + 86_400_000);
+  assert.equal(h[0].status, "active");
+
+  ({ state: s, hist: h } = step(h, "reap", s, { fencing: 1, referent: PR }, T0 + 500_000));
+  assert.equal(h.length, 1);
+  assert.equal(h[0].status, "reaped", "distinguishable from released, completed AND expired");
+  assert.equal(h[0].releasedAt, T0 + 500_000);
+  assert.deepEqual(h[0].referent, PR, "the closed interval keeps what it was pinned to");
+});
+
+test("a refused bind or reap records NOTHING", () => {
+  let s = EMPTY_STATE, h = [];
+  ({ state: s, hist: h } = step(h, "claim", s, { agent: "alice", ttlSec: 60 }, T0));
+  const before = JSON.stringify(h);
+  ({ hist: h } = step(h, "bind", s, { agent: "bob", fencing: 1, ttlSec: 60, referent: PR }, T0 + 1)); // not-holder
+  ({ hist: h } = step(h, "reap", s, { fencing: 1, referent: PR }, T0 + 2)); // no-referent
+  assert.equal(JSON.stringify(h), before, "no refused event may touch the record");
 });
 
 test("effectiveStatus reads expiry off the clock without a write", () => {

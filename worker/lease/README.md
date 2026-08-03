@@ -38,13 +38,28 @@ All endpoints take `?item_id=` and a JSON body.
 |---|---|---|
 | `POST /claim` | `{agent, ttl_sec}` | `{granted, holder, fencing, expiresAt, reason}` |
 | `POST /renew` | `{agent, fencing, ttl_sec}` | `{renewed, holder, fencing, expiresAt}` |
+| `POST /bind` | `{agent, fencing, ttl_sec, referent}` | `{bound, holder, fencing, referent, expiresAt}` |
 | `POST /release` | `{agent, fencing}` | `{released, fencing}` |
-| `GET /status` | — | `{holder, fencing, expiresAt, live}` |
+| `POST /reap` | `{fencing, referent}` | `{reaped, holder, fencing, referent}` |
+| `GET /status` | — | `{holder, fencing, expiresAt, live, referent}` |
 | `GET /health` | — | `{ok: true}` |
 
 `reason` distinguishes cases that look identical from the outside: `free` vs
 `expired` on a grant, and `held` vs `already-held-by-you` / `not-holder` /
 `stale-fencing` on a refusal.
+
+`/bind` and `/reap` are the two halves of #105. Bind (gated like renew: holder
++ current fencing + live) pins the lease to a typed, opaque **referent** —
+`{kind, id}`, the PR whose lifecycle is the work's — and re-sizes the expiry
+into a backstop. Reap is the garbage collector's release: no `agent` on
+purpose (the premise is that the holder is finished or dead and cannot speak);
+what gates it is the CURRENT fencing and the CURRENT referent, both read from
+`/status` in the same sweep, so stale evidence is refused (`stale-fencing`,
+`referent-mismatch`) and a referent-less lease is never reapable
+(`no-referent` — that corpse belongs to the backstop TTL). A reap closes the
+grant interval as `reaped`, distinct in history from `released`/`completed`
+(the holder said so) and `expired` (the backstop fired — an anomaly, now that
+the reaper should always get there first).
 
 ## Fencing
 
@@ -83,7 +98,7 @@ property of the mechanism. The experiment that binds it is `production-a2` in
 
 ## Authentication
 
-Writes (`/claim`, `/renew`, `/release`) require `Authorization: Bearer` with a
+Writes (`/claim`, `/renew`, `/bind`, `/release`, `/reap`) require `Authorization: Bearer` with a
 **GitHub token the caller already holds** — a session's `GH_TOKEN`, a
 workflow's `github.token`, a broker-minted App token. The worker validates it
 against GitHub in the **router** (never the DO — validation awaits the network,

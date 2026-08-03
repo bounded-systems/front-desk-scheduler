@@ -249,7 +249,7 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
 
 // ── claim / release (the agent work loop; writes the authoritative local mirror) ──
 
-import { claimNext, releaseClaim } from "./mirror.ts";
+import { bindReferent, claimNext, releaseClaim } from "./mirror.ts";
 
 /**
  * The ranked candidate list a claim latches from.
@@ -316,6 +316,46 @@ export const claimVerb = defineVerb({
     o.won
       ? `claimed #${o.number} [${o.repository}] — ${o.reason}\n  ${o.title}`
       : `no claim: ${o.reason}`,
+});
+
+export const bindVerb = defineVerb({
+  id: "bind",
+  summary:
+    "Pin a held lease to its referent (the open PR) and re-size the expiry into the #105 backstop — from here the reaper releases it when the referent closes.",
+  actor: "front-desk",
+  input: z.object({
+    itemId: z.string(),
+    agent: z.string(),
+    // Gated exactly like renew in the Worker: the referent decides when the
+    // lease DROPS, so only the fenced holder may set it.
+    fencing: z.coerce.number().int(),
+    kind: z.string().default("pr"),
+    ref: z.string(),
+    // The BACKSTOP, not a task estimate: sized to "the reaper has been broken
+    // for a day", because once the referent exists the reaper is the primary
+    // release path and this number should essentially never fire.
+    ttl: z.coerce.number().int().min(1).default(86400),
+  }),
+  output: z.object({
+    bound: z.boolean(),
+    reason: z.string(),
+    holder: z.string().nullable(),
+    expiresAt: z.number().nullable(),
+  }),
+  run: async (input) => {
+    const out = await bindReferent(
+      input.itemId,
+      input.agent,
+      input.fencing,
+      { kind: input.kind, id: input.ref },
+      input.ttl,
+    );
+    return { bound: out.bound, reason: out.reason, holder: out.holder, expiresAt: out.expiresAt };
+  },
+  render: (o) =>
+    o.bound
+      ? `bound (backstop expiry ${o.expiresAt ? new Date(o.expiresAt).toISOString() : "?"})`
+      : `NOT bound: ${o.reason}${o.holder ? ` — held by ${o.holder}` : ""}`,
 });
 
 export const releaseVerb = defineVerb({
@@ -560,10 +600,19 @@ export const listVerb: VerbSpec<typeof ListInput, typeof ListOutput, Deps> = def
     ].join("\n"),
 });
 
+// `renew` is DELIBERATELY not a verb — decided in #105, not left to omission.
+// The referent design removes the only caller that would have wanted one: a
+// session never heartbeats (its PR does the talking, via `bind` + the reaper),
+// and a dispatch-per-beat would cost a runner boot per minute against the
+// shared App bucket (#60). The one caller that both needs renew and holds a
+// credential is the syncer renewing its own lease, and it calls
+// `renewLeaseRemote` directly (src/mirror.ts). If a second in-workflow holder
+// ever appears, promote it then.
 export const VERBS: Registry = {
   "next": nextVerb,
   "graph": graphVerb,
   "list": listVerb,
   "claim": claimVerb,
+  "bind": bindVerb,
   "release": releaseVerb,
 };

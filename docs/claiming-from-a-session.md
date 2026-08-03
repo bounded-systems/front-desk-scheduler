@@ -91,13 +91,53 @@ broken endpoint and reading it as a busy queue.
 `test/claim-ticket-summary.test.ts` pins the property that a refusal and an error
 never render as each other.
 
-## After you hold it — give it back through the other window
+## After you hold it — bind your PR (#105)
 
-The lease **expires on its own** — a dead claimant's grip lapses, which is the
-whole reason this is a lease and not a lock. But letting it lapse is the fallback,
-not the plan: a session that finishes in eight minutes on a 3600s lease holds a
-closed item for another fifty-two, and every `next` in that window sees it held.
-That is measured, not hypothetical (#104).
+The claim's ttl (default 3600s) is **not** a task estimate. It is the
+referent-less grace window: the time you have to make the work exist somewhere
+with a queryable lifecycle — your PR — and pin the lease to it. Dispatch
+`bind-ticket.yml` **immediately after opening your PR**:
+
+```
+mcp__github__actions_run_trigger
+  owner: bounded-systems   repo: front-desk-scheduler
+  workflow: bind-ticket.yml   ref: main
+  inputs:
+    agent_label: "session-7"        # the SAME label you claimed with
+    item_id:     "PVTI_lADO…"       # from the claim verdict
+    fencing:     "1"                # from the claim verdict
+    pr:          "bounded-systems/front-desk-scheduler#110"
+```
+
+Read the one `FDS-BIND-RESULT` line from the job log. Once bound, the lease's
+expiry is re-sized to a **backstop** (default 24h) and the primary release path
+becomes the reaper (`reap-leases.yml`): it polls bound referents and releases
+any lease whose PR is merged, closed, or gone. Your lease now lives exactly as
+long as your work — a three-hour task no longer lapses mid-flight, and a merged
+PR no longer holds its item for the rest of a timer.
+
+A lease that never binds simply lapses on the short claim ttl, which is the
+right outcome for a session that died before producing anything.
+
+Two consequences worth knowing:
+
+- **One dispatch replaces every heartbeat.** #105 priced a session heartbeat at
+  one runner boot per beat; a bind is one dispatch per lease, ever, and GitHub
+  runs the liveness state machine from there.
+- **An `expired` interval is now an anomaly.** With the reaper as the primary
+  release, a lease that reaches its backstop means the GC has been down for a
+  day — `history` keeps `expired` and `reaped` distinct precisely so that is
+  visible.
+
+## Give it back through the other window
+
+Binding does not replace the explicit release — the reaper frees your lease
+when the PR closes, but saying "I am done" yourself is still faster and carries
+the released-vs-completed distinction that effort calibration reads. Letting
+the backstop lapse is the fallback of last resort: a session that finishes in
+eight minutes on a 3600s lease holds a closed item for another fifty-two, and
+every `next` in that window sees it held. That is measured, not hypothetical
+(#104).
 
 So release explicitly. `release-ticket.yml` is the same window, one verb over —
 the session cannot `POST /release` for exactly the reason it cannot `POST /claim`.
@@ -150,8 +190,9 @@ the item before re-dispatching.
 
 ## What is not covered
 
-There is no `renew` window. `decideRenew` exists in the Worker and is exposed as
-`/renew`, but it is not a registered verb, and a session cannot heartbeat through a
-workflow dispatch at any sane cost — one runner boot per beat. So a session's lease
-cannot currently be *extended*, only taken and given back. Whether the lease should
-be time-based at all is the open question in #105.
+There is no `renew` window, and — decided in #105, not left to omission — there
+will not be one. `decideRenew` exists in the Worker and the syncer uses it for
+its own lease, but a session never heartbeats: the referent design makes the PR
+the liveness signal, and `bind` is the one dispatch that replaces every beat a
+renew window would have cost. If you find yourself wanting to *extend* a
+session-held lease, what you actually want is to bind it to your PR.

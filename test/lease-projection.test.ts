@@ -82,6 +82,18 @@ test("the plan respects the watermark and lands in grant order", () => {
   assert.match(plan[1], /, 9, /, "ordered by fencing, not arrival");
 });
 
+test("a reaped interval projects as 'reaped' — never collapsed into released (#105)", () => {
+  // The distinction is the observable #105 exists to create: once the TTL is a
+  // backstop, an 'expired' row means the liveness path is broken — but only if
+  // a GC close cannot masquerade as any other status.
+  const sql = projectionUpsertSql("prx#12", rec({
+    releasedAt: T0 + 30_000, status: "reaped", effective_status: "reaped",
+  }));
+  assert.match(sql, /'reaped'/);
+  assert.doesNotMatch(sql, /'released'/);
+  assert.doesNotMatch(sql, /released_at = NULL/, "the GC's close reaches the UPDATE clause");
+});
+
 test("everything interpolated is escaped — the DO being ours is not a trust argument", () => {
   const sql = projectionUpsertSql("it'; DROP TABLE claims; --", rec({ agent: "o'brien" }));
   assert.match(sql, /'it''; DROP TABLE claims; --'/, "item_id neutralised");

@@ -119,6 +119,54 @@ test("a caller error from the worker surfaces as an error, not a refusal", withW
   await assert.rejects(() => claimLease("prx#12", "alice", 0), /ttl_sec/);
 }));
 
+// ── the referent lifecycle over the wire (#105) ──────────────────────────────
+
+import {
+  bindReferentRemote,
+  fetchLeaseStatus,
+  reapLeaseRemote,
+} from "../src/lease-client.ts";
+
+const WIRE_PR = { kind: "pr", id: "bounded-systems/front-desk-scheduler#103" };
+
+test("claim → bind → status → reap round-trips: the reaper's whole read/write loop", withWorker(async () => {
+  const g = await claimLease("prx#12", "alice", 3600);
+  assert.ok(g.granted);
+  if (!g.granted) return;
+
+  const bound = await bindReferentRemote("prx#12", "alice", g.fencing, WIRE_PR, 86_400);
+  assert.equal(bound.bound, true);
+  assert.ok(bound.expiresAt !== null && bound.expiresAt > Date.now() + 80_000_000,
+    "binding re-sized the expiry into the backstop");
+
+  // The reaper's read: fencing and referent from ONE /status snapshot.
+  const s = await fetchLeaseStatus("prx#12");
+  assert.equal(s.live, true);
+  assert.equal(s.holder, "alice");
+  assert.deepEqual(s.referent, WIRE_PR, "the referent must survive the wire — it is what the reaper polls");
+
+  const r = await reapLeaseRemote("prx#12", s.fencing, s.referent!);
+  assert.equal(r.reaped, true);
+  assert.equal(r.holder, "alice", "the reap reports whose grip it broke");
+
+  const after = await fetchLeaseStatus("prx#12");
+  assert.equal(after.live, false);
+  assert.equal(after.referent, null);
+}));
+
+test("a reap refusal round-trips with its reason — stale evidence is a skip, not a retry", withWorker(async () => {
+  const g = await claimLease("prx#12", "alice", 3600);
+  if (!g.granted) return assert.fail("setup");
+  const unbound = await reapLeaseRemote("prx#12", g.fencing, WIRE_PR);
+  assert.equal(unbound.reaped, false);
+  assert.equal(unbound.reason, "no-referent", "a referent-less lease belongs to the backstop, not the reaper");
+
+  await bindReferentRemote("prx#12", "alice", g.fencing, WIRE_PR, 86_400);
+  const stale = await reapLeaseRemote("prx#12", g.fencing + 1, WIRE_PR);
+  assert.equal(stale.reaped, false);
+  assert.equal(stale.reason, "stale-fencing");
+}));
+
 // ── grant history over the wire (the projection's source) ────────────────────
 
 import { _resetSkewWarning, fetchLeaseHistory, type LeaseHistoryRecord } from "../src/lease-client.ts";
