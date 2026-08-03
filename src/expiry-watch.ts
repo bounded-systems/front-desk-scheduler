@@ -72,8 +72,13 @@ export const ALARM_WINDOW_DAYS = 7;
 
 /** How long reap-leases may be silent before that alone is the alarm.
  *
- *  The reaper runs twice an hour (`13,43 * * * *`), so three hours is six
- *  missed sweeps — comfortably past a flake, well short of a backstop.
+ *  The reaper's cron is twice hourly (`13,43 * * * *`), but a SCHEDULED cron is
+ *  not a guarantee — GitHub delays them under load, and the observed gap
+ *  between real consecutive successes has reached 83 minutes (19:57 → 21:20 on
+ *  2026-08-03). So this is calibrated against what the lane actually does
+ *  rather than against what its cron says: three hours is roughly double the
+ *  worst gap seen, which keeps a delayed-but-healthy reaper from crying wolf
+ *  while staying far inside the 24h backstop.
  *
  *  This is the LEADING indicator and the reason it is worth more than the
  *  expiry count: a dead GC shows up here within hours, whereas the first
