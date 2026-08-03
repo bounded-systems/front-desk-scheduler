@@ -28,6 +28,10 @@ export interface ClaimVerdict {
   repository: string | null;
   title: string | null;
   reason: string;
+  /** The fencing token (#114). Optional here, not because it is optional in the
+   *  verb — it is not — but because a verdict recorded by a run that PREDATES
+   *  the field must still render rather than crash the summary step. */
+  fencing?: number | null;
 }
 
 /** The one greppable line a session reads out of the job log. */
@@ -56,9 +60,17 @@ export function renderVerdict(verdict: ClaimVerdict, agentLabel: string): string
       `- item: \`${verdict.itemId}\``,
       `- agent: \`${agentLabel}\` (recorded under the verified identity as \`gha/${agentLabel}\`)`,
       `- reason: ${verdict.reason}`,
+      // The token is an INPUT to the caller's next dispatch, so it is called out
+      // rather than left inside `reason` for them to parse (#114). A verdict
+      // from a run predating the field says so instead of rendering "null".
+      verdict.fencing === null || verdict.fencing === undefined
+        ? `- fencing: **not reported** — this run predates #114; read it from the \`reason\` above`
+        : `- fencing: \`${verdict.fencing}\` — pass this to \`bind-ticket\` / \`release-ticket\``,
       "",
-      "The lease EXPIRES on its own — a dead claimant's grip lapses. Release it when",
-      "done, or let it lapse.",
+      "**Bind it now.** The ttl above is the referent-less grace window, not a task",
+      "estimate (#105): dispatch `bind-ticket.yml` with the item, the fencing token and",
+      "your PR, and the reaper releases the lease when that PR closes. A lease that",
+      "never binds lapses on the short ttl.",
     );
   } else {
     lines.push(
