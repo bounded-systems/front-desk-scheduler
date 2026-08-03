@@ -79,8 +79,49 @@ test("a grant reports the NAMESPACED agent, not just the caller's label", () => 
   assert.match(out, /gha\/session-7/);
 });
 
-test("a grant says the lease expires on its own", () => {
-  assert.match(renderVerdict(granted, "a"), /EXPIRES on its own/);
+test("a grant tells the caller to BIND, not to wait for the clock", () => {
+  // Pre-#105 this said "the lease EXPIRES on its own", which was the whole
+  // guidance. It is now the fallback: the primary release path is the reaper
+  // observing the bound PR close, and the ttl is a referent-less grace window.
+  const out = renderVerdict(granted, "a");
+  assert.match(out, /Bind it now/);
+  assert.match(out, /bind-ticket\.yml/);
+  assert.match(out, /never binds lapses/);
+});
+
+// ── the fencing token (#114) ─────────────────────────────────────────────────
+// It used to live ONLY inside `reason`, while the docs promised a field and both
+// bind-ticket and release-ticket require one as input. Nothing caught it because
+// every test called claimLease() directly and saw the client's typed token — the
+// shape a WORKFLOW caller gets is the verb's JSON, which nothing exercised.
+
+test("a grant surfaces the fencing token as an input to the next dispatch", () => {
+  const out = renderVerdict({ ...granted, fencing: 7 }, "a");
+  assert.match(out, /fencing/);
+  assert.match(out, /`7`/, "the token itself must be readable, not buried in prose");
+  assert.match(out, /bind-ticket/, "and named as the thing it is FOR");
+});
+
+test("the token round-trips through the greppable line", () => {
+  const parsed = JSON.parse(resultLine({ ...granted, fencing: 7 }).slice(RESULT_MARKER.length + 1));
+  assert.equal(parsed.fencing, 7, "a session greps this line and needs the token from it");
+});
+
+test("a verdict predating #114 renders honestly instead of printing null", () => {
+  // Old runs recorded no such field. The summary must say so and point at the
+  // reason string, rather than rendering "- fencing: null" as if that were the
+  // token — which is the failure mode of treating absent as zero.
+  for (const v of [{ ...granted }, { ...granted, fencing: null }]) {
+    const out = renderVerdict(v as ClaimVerdict, "a");
+    assert.match(out, /not reported/);
+    assert.doesNotMatch(out, /fencing: `null`/);
+  }
+});
+
+test("a null token on a refusal does not claim a lease was fenced", () => {
+  const out = renderVerdict({ ...refused, fencing: null }, "a");
+  assert.match(out, /NOT GRANTED/);
+  assert.doesNotMatch(out, /bind-ticket/, "nothing to bind when nothing was granted");
 });
 
 test("a missing title does not render as 'undefined'", () => {
@@ -110,5 +151,45 @@ test("the verdict summary embeds the raw JSON", () => {
     const out = renderVerdict(v, "a");
     const json = out.slice(out.indexOf("```json") + 7, out.lastIndexOf("```")).trim();
     assert.deepEqual(JSON.parse(json), v);
+  }
+});
+
+// ── the verb's OUTPUT CONTRACT (#114) ────────────────────────────────────────
+// The gap that hid the bug was one of altitude: the client returns a typed
+// LeaseGrant carrying `fencing`, so every claimLease() test saw the token —
+// while the verb quietly dropped it on the way out. Asserting the schema here
+// means a future refactor that stops returning it fails validation rather than
+// silently reintroducing "read a field that does not exist".
+
+import { claimVerb } from "../src/verbs.ts";
+
+const grantedOutput = {
+  won: true,
+  itemId: "i_kwDOabc123",
+  number: 58,
+  repository: "front-desk-scheduler",
+  title: "t",
+  reason: "leased 3600s (fencing 7)",
+  fencing: 7,
+};
+
+test("the claim verb's output REQUIRES a fencing field", () => {
+  const { fencing: _dropped, ...withoutToken } = grantedOutput;
+  assert.throws(
+    () => claimVerb.output.parse(withoutToken),
+    "dropping the token must fail the output contract, not pass silently",
+  );
+  assert.equal(claimVerb.output.parse(grantedOutput).fencing, 7);
+});
+
+test("the token may be null — the Dolt planes have no ordinal to offer", () => {
+  // Null is information (no total order on that plane), not an omission. The
+  // schema must admit it without admitting a missing field.
+  assert.equal(claimVerb.output.parse({ ...grantedOutput, fencing: null }).fencing, null);
+});
+
+test("a non-integer token is refused rather than coerced", () => {
+  for (const bad of [1.5, "7", true, {}]) {
+    assert.throws(() => claimVerb.output.parse({ ...grantedOutput, fencing: bad }));
   }
 });

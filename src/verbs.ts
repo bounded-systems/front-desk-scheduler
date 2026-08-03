@@ -286,6 +286,24 @@ const ClaimOutput = z.object({
   repository: z.string().nullable(),
   title: z.string().nullable(),
   reason: z.string(),
+  /**
+   * The fencing token, first-class (#114).
+   *
+   * It used to appear ONLY inside `reason` ("leased 3600s (fencing 1)"), while
+   * `docs/claiming-from-a-session.md` told callers to read a `fencing` field —
+   * and `release-ticket.yml` / `bind-ticket.yml` both REQUIRE one as input. So
+   * the documented path was: read a field that does not exist, then regex an
+   * integer out of an English sentence nothing pins.
+   *
+   * Nothing caught it because every test calls `claimLease()` directly and gets
+   * a typed `LeaseGrant` with the token on it; the shape a WORKFLOW caller
+   * actually receives is this verb's rendered JSON, which no test exercised.
+   *
+   * Null on the Dolt planes, which have no ordinal to offer — `claimNext`
+   * already returns `fencing: null` there, so this is plumbing rather than new
+   * semantics, and the null stays information rather than an omission.
+   */
+  fencing: z.number().int().nullable(),
 });
 
 export const claimVerb = defineVerb({
@@ -310,11 +328,16 @@ export const claimVerb = defineVerb({
       repository: meta?.repository ?? null,
       title: meta?.title ?? null,
       reason: res.reason,
+      fencing: res.fencing ?? null,
     };
   },
   render: (o) =>
     o.won
-      ? `claimed #${o.number} [${o.repository}] — ${o.reason}\n  ${o.title}`
+      ? `claimed #${o.number} [${o.repository}] — ${o.reason}\n  ${o.title}` +
+        // Named on its own line because it is an INPUT to the next thing the
+        // caller does (bind-ticket / release-ticket both require it), not a
+        // detail of what just happened.
+        (o.fencing === null ? "" : `\n  fencing: ${o.fencing}`)
       : `no claim: ${o.reason}`,
 });
 
