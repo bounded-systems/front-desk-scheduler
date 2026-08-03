@@ -60,19 +60,19 @@ if (cheap.out.length !== legacy.out.length) {
 for (const c of cheap.out) {
   const l = byId.get(c.id);
   if (!l) {
-    diffs.push(`${c.id} (#${c.number}): present in cheap, absent from legacy`);
+    diffs.push(`${c.id} (${c.repository}#${c.number}): present in cheap, absent from legacy`);
     continue;
   }
   for (const f of ["number", "title", "repository", "status", "kind", "effort", "value"] as const) {
-    if (c[f] !== l[f]) diffs.push(`#${c.number} ${f}: cheap=${JSON.stringify(c[f])} legacy=${JSON.stringify(l[f])}`);
+    if (c[f] !== l[f]) diffs.push(`${c.repository}#${c.number} ${f}: cheap=${JSON.stringify(c[f])} legacy=${JSON.stringify(l[f])}`);
   }
   if (JSON.stringify(c.dependsOn) !== JSON.stringify(l.dependsOn)) {
-    diffs.push(`#${c.number} dependsOn: cheap=${JSON.stringify(c.dependsOn)} legacy=${JSON.stringify(l.dependsOn)}`);
+    diffs.push(`${c.repository}#${c.number} dependsOn: cheap=${JSON.stringify(c.dependsOn)} legacy=${JSON.stringify(l.dependsOn)}`);
   }
 }
 for (const l of legacy.out) {
   if (!cheap.out.some((c) => c.id === l.id)) {
-    diffs.push(`${l.id} (#${l.number}): present in legacy, MISSING from cheap`);
+    diffs.push(`${l.id} (${l.repository}#${l.number}): present in legacy, MISSING from cheap`);
   }
 }
 
