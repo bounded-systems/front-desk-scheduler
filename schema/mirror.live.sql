@@ -27,6 +27,7 @@ CREATE TABLE `claims` (
   `released_at` datetime,
   `status` enum('active','released','completed','expired','reaped') NOT NULL DEFAULT '1',
   `fencing` int,
+  `referent` varchar(255),
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`,`status`),
   UNIQUE KEY `uq_claim_item_fencing` (`item_id`,`fencing`),
