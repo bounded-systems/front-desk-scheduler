@@ -9,6 +9,7 @@
     "npm:@jsr/bounded-systems__verbspec@0.4": "0.4.0",
     "npm:@modelcontextprotocol/sdk@^1.29.0": "1.30.0_zod@4.4.3",
     "npm:@types/node@^26.1.1": "26.1.2",
+    "npm:hono@^4.12.34": "4.12.34",
     "npm:mysql2@^3.11.0": "3.23.2_@types+node@26.1.2",
     "npm:zod@4": "4.4.3",
     "npm:zod@^4.4.3": "4.4.3"
@@ -35,7 +36,7 @@
     }
   },
   "npm": {
-    "@hono/node-server@2.0.12_hono@4.12.33": {
+    "@hono/node-server@2.0.12_hono@4.12.34": {
       "integrity": "sha512-eWpQYr67tqJLeaSUl0Q+TquuYfUdTibpOJlUMV2FfUP7+KqCC5TufnwnlXL6mobZBJbGAYRd7ZvEBDCbLInjhg==",
       "dependencies": [
         "hono"
@@ -344,8 +345,8 @@
         "function-bind"
       ]
     },
-    "hono@4.12.33": {
-      "integrity": "sha512-+SwvkaiJtxsiPjhy9LivY/1m7UsNqCJetM1BrZl9A5DkQhlbHQDU730mMiDPWjnoCYOM8Chf3WrCJw27kNTPFQ=="
+    "hono@4.12.34": {
+      "integrity": "sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA=="
     },
     "http-errors@2.0.1": {
       "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",
@@ -635,6 +636,7 @@
     "dependencies": [
       "jsr:@bounded-systems/verbspec-mcp@0.1",
       "jsr:@bounded-systems/verbspec@0.4",
+      "npm:hono@^4.12.34",
       "npm:zod@^4.4.3"
     ],
     "packageJson": {
