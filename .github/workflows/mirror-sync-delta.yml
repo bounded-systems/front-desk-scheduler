@@ -87,7 +87,10 @@ jobs:
           node scripts/sync-delta.ts
           cd mirror
           if [ -n "$(dolt status --porcelain 2>/dev/null || dolt diff --stat)" ]; then
-            dolt add -A && dolt commit -m "delta: incremental refresh" && dolt push origin main
+            # Converges on a concurrent writer rather than dying on its push
+            # (#129) — this workflow is the one that cannot join `mirror-write`,
+            # because its cancel-in-progress coalesces webhook bursts.
+            dolt add -A && dolt commit -m "delta: incremental refresh" && ../scripts/dolt-push.sh origin main
           else
             echo "no changes"
           fi

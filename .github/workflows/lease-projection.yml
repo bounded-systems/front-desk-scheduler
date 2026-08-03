@@ -34,7 +34,11 @@ on:
     - cron: "29 */6 * * *" # offset from mirror-sync's 17 */6
   workflow_dispatch: {}
 concurrency:
-  group: mirror-write # NEVER race the syncer or a migration on the mirror
+  # Serializes against mirror-sync and mirror-migrate. NOT against
+  # mirror-sync-delta, which cannot join this group without losing the
+  # cancel-in-progress that coalesces webhook bursts — that gap is real and is
+  # covered at the push instead (scripts/dolt-push.sh, #129), not here.
+  group: mirror-write
   cancel-in-progress: false
 permissions:
   id-token: write # OIDC → broker (DoltHub credential)
@@ -134,7 +138,8 @@ jobs:
           # together — same ordering as mirror-migrate, same non-fatal posture:
           # losing the row costs provenance, not correctness.
           node scripts/attest.ts --dir mirror --audience dolthub-cred-broker || true
-          cd mirror && dolt push origin main
+          # Converges on a concurrent writer rather than dying on its push (#129).
+          cd mirror && ../scripts/dolt-push.sh origin main
 
       - name: Summary
         if: always()

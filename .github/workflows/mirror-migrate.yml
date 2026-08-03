@@ -114,7 +114,10 @@ on:
         default: true
         type: boolean
 concurrency:
-  group: mirror-write # never race the syncer or another migration
+  # Serializes against mirror-sync and lease-projection. NOT against
+  # mirror-sync-delta — see scripts/dolt-push.sh (#129) for why that one cannot
+  # join and how its race is covered instead.
+  group: mirror-write
   cancel-in-progress: false
 permissions:
   id-token: write # OIDC → broker
@@ -259,7 +262,11 @@ jobs:
 
       - name: Push mirror → DoltHub
         if: ${{ inputs.dry_run == false }}
-        run: cd mirror && dolt push origin main
+        # Converges on a concurrent writer rather than dying on its push (#129).
+        # A migration is the writer with the most to lose from a rejected push:
+        # the DDL has already been applied to the clone, and the run is gated on
+        # a human approval that would have to be given again.
+        run: cd mirror && ../scripts/dolt-push.sh origin main
 
       - name: Regenerate the checked-in projection
         # Applying a migration makes schema/mirror.live.sql stale, which turns the
