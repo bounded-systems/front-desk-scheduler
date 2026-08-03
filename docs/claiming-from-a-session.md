@@ -166,7 +166,15 @@ does *not* look one up — looking it up would reconstruct the caller's belief f
 current state, which is the very belief being checked.
 
 The token is the `fencing` field of the `FDS-CLAIM-RESULT` line from the run that
-granted your lease.
+granted your lease, and it is also called out in that run's summary.
+
+> Runs before 2026-08-03 do **not** carry that field — the verb did not emit one
+> until #114, and the token appeared only inside the `reason` string
+> (`"leased 3600s (fencing 1)"`). If you are reading an older verdict, take it
+> from there. Do **not** substitute `/status`: that reports the lease's CURRENT
+> token, whereas what you must present is the one **you were granted**, and the
+> two differ exactly when you have become a zombie — the case the check exists
+> to catch.
 
 ### Four outcomes, and one of them is a stop signal
 
