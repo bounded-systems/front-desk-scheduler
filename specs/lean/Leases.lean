@@ -20,9 +20,15 @@
   met when claims route through a shared server, not when they do not — rather
   than a latent assumption nobody could see (see the note on it).
 
-  Mirrors src/mirror.ts (claimNext / releaseClaim) and schema/mirror.sql.
+  Mirrors src/mirror.ts (claimNext / releaseClaim) and schema/mirror.sql; the
+  referent section at the bottom mirrors worker/lease/src/lease-core.mjs
+  (decideClaim / decideBind / decideRelease / decideReap), which is where the
+  lease decision actually lives since the DO became ground truth for exclusion.
   No mathlib — core `Nat`/`List` + `decide`/`omega` — so it builds from the
   toolchain alone, like FrontDesk.lean.
+
+  A1 and A2 below are the whole-file assumptions. The referent section adds two
+  of its own (A3, A4) at the point where it needs them.
 -/
 
 namespace FrontDesk.Leases
@@ -259,5 +265,293 @@ theorem bump_monotone (seen t : Token) : seen ≤ bump seen t := by
   by_cases h : seen < t
   · rw [if_pos h]; exact Nat.le_of_lt h
   · rw [if_neg h]; exact Nat.le_refl seen
+
+/-! ## The referent, and the collector (#105)
+
+Everything above models ONE transition: `latch`, the claim. That was adequate
+while claiming was the only way the cell changed — but #105 added two more, and
+one of them is a shape this file had never seen:
+
+  `bind`   the holder pins the lease to a REFERENT (its PR), which is what
+           decides when the lease drops. Gated on holder + current fencing.
+  `reap`   a COLLECTOR frees the lease, having observed the referent merged,
+           closed, or gone. Gated on the current fencing AND the current
+           referent — and deliberately NOT on the caller being the holder,
+           because the whole premise is a holder who is finished or dead.
+
+`reap` is the first transition that frees a lease and the first performed by a
+non-holder, so the obligations it carries are new. Note precisely what that
+does to `runAll_preserves_holder` above: the theorem is still TRUE — it
+quantifies over schedules of latches — but its informal reading ("once held,
+nothing displaces the holder") is now wrong, because a reap displaces the
+holder on purpose. Leaving that gap unstated is the 2026-07-27 failure mode
+exactly: not a wrong proof, a proof of a narrower obligation than the one the
+reader believes. So the model is widened here rather than the reading being
+left to trust.
+
+WHAT THIS SECTION ABSTRACTS AWAY (stated, per this file's house rule)
+
+  A3  LIVENESS IS THE CELL, NOT THE CLOCK. The implementation's `isLive` also
+      consults `expiresAt`; here "held" is `holder ≠ none`. This is the SAME
+      abstraction the sections above make, and it is sound for the safety
+      properties below — every one of them is of the form "this transition
+      cannot free/grant the wrong thing", and a clock can only make a
+      transition refuse MORE often, never less. What it means is that the
+      BACKSTOP is not modelled: "an unreaped lease eventually lapses" is a
+      liveness property resting on the clock, and it is not proven here.
+
+  A4  THE ORACLE IS NOT MODELLED. Whether a PR really is merged/closed/gone is
+      `verdictFromPrProbe` in src/reaper.ts — tested, not proven, and it
+      cannot be proven here because it is a fact about GitHub. What IS proven
+      below is that a reaper acting on STALE or WRONG evidence changes
+      nothing, which is the half that does not depend on the oracle. -/
+
+/-- An opaque referent identity. The implementation's `{kind, id}` collapses to
+    a `Nat` here because nothing in these proofs inspects a referent — they
+    only ever COMPARE two, which is precisely the DO's own posture: it stores
+    and matches the referent, and only the reaper interprets `kind`. -/
+abbrev Ref := Nat
+
+/-- The lease cell, carrying what #105 added. Still ONE holder slot — which is
+    why exclusion survives the new transitions for free (see below). -/
+structure St where
+  holder   : Option Agent
+  fencing  : Token
+  referent : Option Ref
+  deriving DecidableEq, Repr
+
+/-- The empty lease. Mirrors `EMPTY_STATE` in worker/lease/src/lease-core.mjs. -/
+def St.empty : St := { holder := none, fencing := 0, referent := none }
+
+/-- `decideClaim`. Granted only when free; every grant strictly out-fences, and
+    starts REFERENT-LESS — a fresh grant never inherits the previous holder's
+    referent, or the collector could free it on somebody else's merge. -/
+def claim (a : Agent) (s : St) : St :=
+  match s.holder with
+  | none   => { holder := some a, fencing := s.fencing + 1, referent := none }
+  | some _ => s
+
+/-- `decideBind`. Holder + current fencing; sets the referent, touching neither
+    the holder nor the counter. -/
+def bind (a : Agent) (f : Token) (r : Ref) (s : St) : St :=
+  if s.holder = some a ∧ f = s.fencing then { s with referent := some r } else s
+
+/-- `decideRelease`. Holder + current fencing; frees, RETAINING the counter. -/
+def release (a : Agent) (f : Token) (s : St) : St :=
+  if s.holder = some a ∧ f = s.fencing then
+    { holder := none, fencing := s.fencing, referent := none }
+  else s
+
+/-- `decideReap`. No agent gate — the holder cannot speak. The gates are the
+    CURRENT fencing and the CURRENT referent, both read from one `/status`
+    snapshot, and the counter is retained exactly as `release` retains it. -/
+def reap (f : Token) (r : Ref) (s : St) : St :=
+  if s.holder ≠ none ∧ f = s.fencing ∧ s.referent = some r then
+    { holder := none, fencing := s.fencing, referent := none }
+  else s
+
+/-! ### What a reap cannot do -/
+
+/-- **A reap never grants.** It frees or it does nothing; no agent can come to
+    hold the lease by way of a reap. This is what keeps the collector outside
+    the exclusion argument entirely. -/
+theorem reap_never_grants (f : Token) (r : Ref) (s : St) (a : Agent)
+    (h : (reap f r s).holder = some a) : s.holder = some a := by
+  unfold reap at h
+  split at h
+  · exact absurd h (by simp)
+  · exact h
+
+/-- **A reap retains the counter.** Resetting it would let a later grant reuse
+    a token an old zombie still carries — the same reason `release` retains it. -/
+theorem reap_preserves_fencing (f : Token) (r : Ref) (s : St) :
+    (reap f r s).fencing = s.fencing := by
+  unfold reap; split <;> rfl
+
+/-- **A stale collector is a no-op.** The reaper read `/status`, the world
+    moved, and its reap lands against a fencing it no longer matches. This is
+    the zombie-release theorem one actor over: the collector's belief is
+    checked against the cell rather than trusted. -/
+theorem stale_reap_noop {f : Token} {r : Ref} {s : St} (h : f ≠ s.fencing) :
+    reap f r s = s := by
+  unfold reap
+  rw [if_neg]
+  intro hc
+  exact h hc.2.1
+
+/-- **A reap against a referent the lease is no longer pinned to is a no-op.**
+    The holder re-bound (a PR closed and was superseded); evidence gathered
+    against the old one is stale. -/
+theorem mismatched_reap_noop {f : Token} {r : Ref} {s : St} (h : s.referent ≠ some r) :
+    reap f r s = s := by
+  unfold reap
+  rw [if_neg]
+  intro hc
+  exact h hc.2.2
+
+/-- **A referent-less lease is NEVER reapable.** Nothing materialized, so no
+    observation about a referent can mean anything for it. That corpse belongs
+    to the backstop TTL — which is why #105 demotes expiry rather than deleting
+    it, and why an unrecognised referent kind cannot mean "immortal". -/
+theorem referentless_never_reaped {f : Token} {r : Ref} {s : St} (h : s.referent = none) :
+    reap f r s = s :=
+  mismatched_reap_noop (by simp [h])
+
+/-- **The race the collector had to survive, end to end.** Alice holds the item
+    with her PR bound. The reaper reads `/status` — fencing `s.fencing`,
+    referent `r` — and *then*, before its reap lands, alice releases and bob
+    claims. The stale reap must not free bob's brand-new lease.
+
+    It is refused TWICE OVER, which is the belt and braces worth having: bob's
+    grant out-fences what the reaper observed, AND bob's grant is
+    referent-less. Either gate alone suffices. -/
+theorem reaper_cannot_free_the_new_holder
+    (alice bob : Agent) (r : Ref) (s : St)
+    (hheld : s.holder = some alice) :
+    reap s.fencing r (claim bob (release alice s.fencing s)) = claim bob (release alice s.fencing s) := by
+  have hrel : release alice s.fencing s = { holder := none, fencing := s.fencing, referent := none } := by
+    unfold release; rw [if_pos ⟨hheld, rfl⟩]
+  rw [hrel]
+  -- bob's grant: fencing s.fencing + 1, referent none. Refused on both counts;
+  -- we discharge it on the referent, the gate that needs no arithmetic.
+  exact referentless_never_reaped rfl
+
+/-- And the counter really did move, so alice's old token can never be reused —
+    the premise `fencing_excludes` above needs to keep excluding her. -/
+theorem takeover_after_release_outfences (alice bob : Agent) (s : St)
+    (hheld : s.holder = some alice) :
+    s.fencing < (claim bob (release alice s.fencing s)).fencing := by
+  have hrel : release alice s.fencing s = { holder := none, fencing := s.fencing, referent := none } := by
+    unfold release; rw [if_pos ⟨hheld, rfl⟩]
+  rw [hrel]
+  exact Nat.lt_succ_self s.fencing
+
+/-! ### What a bind cannot do
+
+`bind` sets the trigger that decides when the lease DROPS, so a stranger who
+could set it would have a release primitive on someone else's lease. It is
+gated like renew for exactly that reason. -/
+
+/-- Binding never moves the holder — it cannot grant or free. -/
+theorem bind_preserves_holder (a : Agent) (f : Token) (r : Ref) (s : St) :
+    (bind a f r s).holder = s.holder := by
+  unfold bind; split <;> rfl
+
+/-- Binding never re-fences: the token is stable for the life of a grant, which
+    is the one number the effect side depends on not moving. -/
+theorem bind_preserves_fencing (a : Agent) (f : Token) (r : Ref) (s : St) :
+    (bind a f r s).fencing = s.fencing := by
+  unfold bind; split <;> rfl
+
+/-- A non-holder cannot arm another agent's lease for collection. -/
+theorem nonholder_bind_noop {a : Agent} {f : Token} {r : Ref} {s : St}
+    (h : s.holder ≠ some a) : bind a f r s = s := by
+  unfold bind
+  rw [if_neg]
+  intro hc
+  exact h hc.1
+
+/-- Nor can a holder presenting a superseded token. -/
+theorem stale_bind_noop {a : Agent} {f : Token} {r : Ref} {s : St}
+    (h : f ≠ s.fencing) : bind a f r s = s := by
+  unfold bind
+  rw [if_neg]
+  intro hc
+  exact h hc.2
+
+/-! ### S1 and fencing, over the ENLARGED transition set
+
+The obligation this section exists to discharge. Above, a schedule was a list
+of agents (latches). Here it is a list of arbitrary transitions, so the
+quantifier finally covers the machine that actually runs. -/
+
+/-- One step of the real lease machine. -/
+inductive Step where
+  | claim   (a : Agent)
+  | bind    (a : Agent) (f : Token) (r : Ref)
+  | release (a : Agent) (f : Token)
+  | reap    (f : Token) (r : Ref)
+
+/-- Deliberately NOT `Step.apply`: defining it in the `Step` namespace opens
+    that namespace for the body, where `claim`/`bind`/`reap` would resolve to
+    the CONSTRUCTORS rather than to the transitions above — a shadowing that
+    typechecks into nonsense. -/
+def applyStep : Step → St → St
+  | .claim a,     s => claim a s
+  | .bind a f r,  s => bind a f r s
+  | .release a f, s => release a f s
+  | .reap f r,    s => reap f r s
+
+/-- One list is one interleaving; quantifying over the list quantifies over
+    every schedule of every size, now mixing all four transitions. -/
+def runSteps : List Step → St → St
+  | [],      s => s
+  | st :: rest, s => runSteps rest (applyStep st s)
+
+/-- **S1, over the enlarged set.** At most one agent observes itself as holder,
+    in any state reachable by ANY schedule of claims, binds, releases and
+    reaps. The proof still needs nothing: the state is still a cell, so two
+    holders remain unrepresentable. That is the point worth recording — adding
+    a collector did not reintroduce the shape the 2026-07-27 bug lived in. -/
+theorem exclusion_over_mixed_schedules (steps : List Step) (s : St) {a b : Agent}
+    (ha : (runSteps steps s).holder = some a)
+    (hb : (runSteps steps s).holder = some b) : a = b := by
+  rw [ha] at hb
+  exact Option.some.inj hb
+
+/-- Every single step leaves the counter where it was or raises it. -/
+theorem fencing_monotone_step (st : Step) (s : St) : s.fencing ≤ (applyStep st s).fencing := by
+  cases st with
+  | claim a =>
+    simp only [applyStep, claim]
+    split
+    · exact Nat.le_succ s.fencing
+    · exact Nat.le_refl s.fencing
+  | bind a f r =>
+    simp only [applyStep]
+    exact Nat.le_of_eq (bind_preserves_fencing a f r s).symm
+  | release a f =>
+    simp only [applyStep, release]
+    split <;> exact Nat.le_refl s.fencing
+  | reap f r =>
+    simp only [applyStep]
+    exact Nat.le_of_eq (reap_preserves_fencing f r s).symm
+
+/-- **The fencing counter never decreases, under any schedule.** This is what
+    makes the sink watermark above (`fencing_excludes`) applicable to the new
+    world: a token that has been superseded stays superseded, so a holder the
+    COLLECTOR displaced is refused by the effect side exactly as one the clock
+    displaced was. Reap frees the queue slot; fencing is what excludes the
+    reaped holder from the world. -/
+theorem fencing_monotone (steps : List Step) (s : St) :
+    s.fencing ≤ (runSteps steps s).fencing := by
+  induction steps generalizing s with
+  | nil => exact Nat.le_refl s.fencing
+  | cons st rest ih => exact Nat.le_trans (fencing_monotone_step st s) (ih (applyStep st s))
+
+/-- No schedule can make the lease grant itself: a held state is only ever
+    reached by a `claim` step, never by a bind, release or reap. Stated as the
+    contrapositive that matters — from a FREE lease, no schedule of binds,
+    releases and reaps produces a holder. -/
+theorem no_grant_without_claim (steps : List Step) (s : St)
+    (hfree : s.holder = none)
+    (hnoclaim : ∀ st ∈ steps, ∀ a, st ≠ Step.claim a) :
+    (runSteps steps s).holder = none := by
+  induction steps generalizing s with
+  | nil => exact hfree
+  | cons st rest ih =>
+    have hstep : (applyStep st s).holder = none := by
+      cases st with
+      | claim a => exact absurd rfl (hnoclaim (Step.claim a) List.mem_cons_self a)
+      | bind a f r =>
+        simp only [applyStep]
+        rw [bind_preserves_holder]; exact hfree
+      | release a f =>
+        simp only [applyStep]
+        unfold release; split <;> simp_all
+      | reap f r =>
+        simp only [applyStep]
+        unfold reap; split <;> simp_all
+    exact ih (applyStep st s) hstep (fun x hx => hnoclaim x (List.mem_cons_of_mem st hx))
 
 end FrontDesk.Leases
