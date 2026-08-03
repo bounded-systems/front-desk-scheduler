@@ -10,7 +10,7 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { parsePrReferent, planReap, verdictFromPrProbe } from "../src/reaper.ts";
+import { candidateIds, CANDIDATE_SQL, parsePrReferent, planReap, verdictFromPrProbe } from "../src/reaper.ts";
 import type { LeaseStatus } from "../src/lease-client.ts";
 
 const base: LeaseStatus = {
@@ -88,4 +88,33 @@ test("every other oracle failure is unobservable and releases nothing", () => {
   }
   // A 200 whose body did not carry a recognisable state is equally unusable.
   assert.deepEqual(verdictFromPrProbe({ prHttpStatus: 200 }), { collect: false, why: "unobservable" });
+});
+
+test("the candidate union is one definition, deduped — the expiry monitor (#113) shares it", () => {
+  // Extracted from the runner so the monitor enumerates the SAME set: its blind
+  // spot is then this sweep's blind spot by construction, not by coincidence.
+  const answers: Record<string, { item_id: string }[]> = {
+    [CANDIDATE_SQL.schedulable]: [{ item_id: "A" }, { item_id: "B" }],
+    [CANDIDATE_SQL.recentlyClosed]: [{ item_id: "B" }, { item_id: "C" }],
+    [CANDIDATE_SQL.projectedActive]: [{ item_id: "C" }, { item_id: "D" }],
+  };
+  return candidateIds((sql) => Promise.resolve(answers[sql] ?? [])).then((ids) => {
+    assert.deepEqual([...ids].sort(), ["A", "B", "C", "D"], "the union over-approximates but never repeats");
+  });
+});
+
+test("a mirror with no claims table degrades to empty — but only for THAT named absence", async () => {
+  const missing = (sql: string) =>
+    sql === CANDIDATE_SQL.projectedActive
+      ? Promise.reject(new Error("table not found: claims"))
+      : Promise.resolve([{ item_id: "A" }]);
+  assert.deepEqual(await candidateIds(missing), ["A"]);
+
+  // Any other failure must propagate: silently shrinking the candidate set is
+  // how a sweep reports a clean pass over items it never looked at.
+  const broken = (sql: string) =>
+    sql === CANDIDATE_SQL.projectedActive
+      ? Promise.reject(new Error("DoltHub HTTP 503"))
+      : Promise.resolve([{ item_id: "A" }]);
+  await assert.rejects(() => candidateIds(broken), /503/);
 });

@@ -36,6 +36,16 @@
 
 import type { LeaseReferent, LeaseStatus } from "./lease-client.ts";
 
+/** How far back a CLOSED item is still enumerated as a candidate.
+ *
+ * Comfortably wider than any backstop. Exported as a number rather than left
+ * inline in the SQL because expiry-watch.ts's alarm window (#113) has to stay
+ * inside it — a monitor hunting for expiries on items this union has stopped
+ * enumerating would report a clean pass it did not earn — and the coupling is
+ * asserted in test/expiry-watch.test.ts rather than described in a comment.
+ */
+export const CANDIDATE_CLOSED_WINDOW_DAYS = 14;
+
 /** Candidate item_ids, from the mirror over the unauthenticated read plane.
  *
  * Three bounded queries, not one whole-table walk (#88): the schedulable set is
@@ -47,11 +57,33 @@ import type { LeaseReferent, LeaseStatus } from "./lease-client.ts";
 export const CANDIDATE_SQL = {
   schedulable: "SELECT item_id FROM items WHERE status <> 'Done' AND closed_at IS NULL",
   // The marquee case (#93/#103): the merge auto-closed the item while the lease
-  // had 52 minutes left. 14 days is comfortably wider than any backstop.
+  // had 52 minutes left.
   recentlyClosed:
-    "SELECT item_id FROM items WHERE closed_at IS NOT NULL AND closed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 14 DAY)",
+    `SELECT item_id FROM items WHERE closed_at IS NOT NULL AND closed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${CANDIDATE_CLOSED_WINDOW_DAYS} DAY)`,
   projectedActive: "SELECT DISTINCT item_id FROM claims WHERE status = 'active'",
 } as const;
+
+/** The union, resolved. Both the sweep (scripts/reap-leases.ts) and the expiry
+ *  monitor (scripts/expiry-watch.ts) enumerate through THIS function rather than
+ *  each assembling the three queries, so the monitor's blind spot is the
+ *  reaper's blind spot by construction instead of by coincidence — the same
+ *  one-definition discipline #59 imposes on the ready rule.
+ *
+ *  `q` is injected so this stays testable without a network and works against
+ *  either read adapter. */
+export async function candidateIds(q: (sql: string) => Promise<{ item_id: string }[]>): Promise<string[]> {
+  const [schedulable, recentlyClosed, projectedActive] = await Promise.all([
+    q(CANDIDATE_SQL.schedulable),
+    q(CANDIDATE_SQL.recentlyClosed),
+    // A mirror that predates the claims table (or a wiped scratch mirror) has
+    // no active grants to reveal, which is different from the query failing for
+    // an unknown reason — only the named absence degrades to empty.
+    q(CANDIDATE_SQL.projectedActive).catch((e: unknown) =>
+      /table not found: claims/i.test(String(e)) ? [] : Promise.reject(e)
+    ),
+  ]);
+  return [...new Set([...schedulable, ...recentlyClosed, ...projectedActive].map((r) => r.item_id))];
+}
 
 /** What one /status snapshot tells the sweep to do next. */
 export type ReapPlan =

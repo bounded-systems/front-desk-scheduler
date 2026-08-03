@@ -32,7 +32,7 @@
 import { fetchLeaseStatus, reapLeaseRemote } from "../src/lease-client.ts";
 import { query } from "../src/dolthub.ts";
 import {
-  CANDIDATE_SQL,
+  candidateIds,
   emptyReport,
   planReap,
   type PrProbe,
@@ -77,23 +77,12 @@ async function probePr(pr: PrRef): Promise<PrProbe> {
   return { prHttpStatus: prRes.status };
 }
 
-async function candidates(): Promise<string[]> {
-  const [schedulable, recentlyClosed, projectedActive] = await Promise.all([
-    query<{ item_id: string }>(CANDIDATE_SQL.schedulable),
-    query<{ item_id: string }>(CANDIDATE_SQL.recentlyClosed),
-    // A mirror that predates the claims table (or a wiped scratch mirror) has
-    // no active grants to reveal, which is different from the query failing for
-    // an unknown reason — only the named absence degrades to empty.
-    query<{ item_id: string }>(CANDIDATE_SQL.projectedActive).catch((e: unknown) =>
-      /table not found: claims/i.test(String(e)) ? [] : Promise.reject(e)
-    ),
-  ]);
-  return [...new Set([...schedulable, ...recentlyClosed, ...projectedActive].map((r) => r.item_id))];
-}
-
 async function main(): Promise<void> {
   const report = emptyReport();
-  const ids = await candidates();
+  // The union lives in src/reaper.ts so the expiry monitor (#113) enumerates the
+  // SAME set — its blind spot is then this sweep's blind spot by construction
+  // rather than by coincidence.
+  const ids = await candidateIds((sql) => query<{ item_id: string }>(sql));
   report.candidates = ids.length;
 
   const CONCURRENCY = 8;

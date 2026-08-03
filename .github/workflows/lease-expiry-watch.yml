@@ -1,0 +1,127 @@
+name: lease-expiry-watch
+# The observer for the observable #105 built (#113).
+#
+# WHY THIS EXISTS
+# ---------------
+# #105's stated payoff was not the reaper. It was that once the TTL is a
+# backstop, an expiry becomes a MONITORABLE ANOMALY — it means the GC is down.
+# The distinguishability shipped (`reaped` is recorded apart from `expired`,
+# and specs/lean/Leases.lean proves they are different transitions) and then
+# nothing looked at it. Grepping `expired` outside tests turned up type
+# declarations and the claim-race audit. This lane is the looking.
+#
+# WHAT IT ASKS, AND WHY IT IS TWO QUESTIONS
+#   1. Did any BOUND lease close as `expired` in the last 7 days? A bound lease
+#      reaching its 24h backstop means the reaper never observed its referent.
+#      A REFERENT-LESS lapse on the short claim ttl is ordinary — a session died
+#      before opening a PR, reap-leases would have skipped it as `no-referent`,
+#      and it is counted rather than alarmed.
+#   2. Has reap-leases actually run? This is the LEADING half. A dead collector
+#      shows up here in hours; the first `expired` row confirming it is a
+#      backstop away. The expiry is the lagging confirmation, not the signal.
+#
+# WHY IT READS THE DOs AND NOT `claims` — the design decision #113 asked to be
+# made deliberately rather than by whichever was easier. Argued in full in
+# src/expiry-watch.ts; the short form is that the cheap read cannot answer:
+#   - `claims` has NO REFERENT column (projectionUpsertSql drops it), so it
+#     cannot tell the ordinary expiry from the alarming one at all. The only
+#     proxy is ttl_sec, which is bind-ticket.yml's default rather than an
+#     invariant.
+#   - the projection's watermark FREEZES intervals projected mid-life, and a
+#     bound lease live for 24h spans four projection runs — so the exact case
+#     this lane exists to catch is the one most likely never to be projected
+#     as expired.
+# Both are #119 and neither blocks this lane. /history is also the
+# one-definition path (#59): the DO computes `effective_status` on read, where a
+# claims-side query would have to restate it as SQL over claimed_at + ttl_sec.
+#
+# WHAT IT CANNOT SEE, STATED
+#   candidates   A DurableObjectNamespace cannot be enumerated (#84), so the
+#                candidate set comes from the mirror — deliberately via
+#                `candidateIds` in src/reaper.ts, the reaper's OWN union,
+#                imported rather than restated. This lane's blind spot is
+#                therefore identical to the sweep's by construction: a lease
+#                the reaper could never have collected is not one this lane
+#                pretends to have checked.
+#   itself       A workflow cannot detect its own non-execution. This lane
+#                checks that its SUBJECT is alive; nothing here notices if this
+#                lane stops being scheduled. That residue is #112's deferred
+#                checkbox — the general "every scheduled lane has run recently"
+#                watchdog — and it is one lane's hole rather than the class.
+#
+# WHY RED, AND WHY WINDOWED: a scheduled check that fails red is the cheap
+# option and matches broker-drift.yml's posture. It is also broker-drift that
+# supplies the caveat — a monitor that is ALWAYS red is one nobody reads,
+# exactly when its job is to be believed on the day it goes red for real. So
+# the alarm window is 7 days: a fix has to hold, and the lane returns to green
+# on its own instead of carrying one incident forever.
+on:
+  schedule:
+    # Every 3 hours, matched to the 3h reaper-silence limit so a dead collector
+    # is detected in hours. Offset from reap-leases' :13/:43 and
+    # lease-projection's :29 — this lane reads the DOs, so it does not need to
+    # follow a projection run.
+    - cron: "51 */3 * * *"
+  workflow_dispatch: {}
+
+# Nothing here writes: no mirror write to serialize on (the `mirror-write` group
+# is deliberately NOT taken), no lease write, no repo mutation. `actions: read`
+# is the ONLY capability beyond checkout, and it exists solely to ask whether
+# reap-leases has succeeded recently.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: lease-expiry-watch
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      # No dependency install: the script imports dolthub (fetch), lease-client
+      # (fetch), reaper (pure) and expiry-watch (pure) — Node 24 strips the
+      # types natively, same as reap-leases and lease-projection.
+      - name: Watch
+        env:
+          # Read-only, and used for exactly one thing: the Actions API query for
+          # reap-leases' last successful run. The /history reads are OPEN and
+          # present no credential at all.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::notice::FDS_CLAIM_ENDPOINT is unset — no lease plane deployed, nothing to watch."
+            exit 0
+          fi
+          set +e
+          node scripts/expiry-watch.ts | tee /tmp/watch.out
+          rc=$?
+          set -e
+          {
+            echo "### lease-expiry-watch"
+            echo '```'
+            grep -h "FDS-EXPIRY-RESULT" /tmp/watch.out || echo "no verdict line — the watch errored before reporting"
+            echo '```'
+            if [ "$rc" -ne 0 ]; then
+              echo "**RED.** One of three things, and the log says which:"
+              echo "- a **bound** lease reached its backstop → the reaper did not observe its referent (#105/#113)"
+              echo "- **reap-leases has not succeeded recently** → the collector is down NOW, ahead of any backstop"
+              echo "- **candidates could not be read** → this watch is INCOMPLETE and is not reporting a pass"
+            else
+              echo "A referent-less lapse is ordinary and does not turn this lane red;"
+              echo "only a BOUND lease reaching its backstop does. The window is 7 days,"
+              echo "so a fixed reaper returns this lane to green on its own."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
