@@ -191,15 +191,50 @@ export async function renewLeaseRemote(
  * signal, warned once, because the alternative is the distinction silently
  * vanishing while every call still returns true.
  */
+export interface ReleaseOutcome {
+  readonly released: boolean;
+  /** On success the recorded status; on a refusal the DO's own reason —
+   *  `not-held` | `not-holder` | `stale-fencing`. Those are operationally
+   *  different (a lapsed lease, someone else's lease, a zombie presenting a
+   *  stale token) and a caller that collapses them cannot tell a lost lease
+   *  from its own bug. */
+  readonly reason: string;
+  /** Who the DO says holds it, when it says. Never inferred. */
+  readonly holder: string | null;
+}
+
+/**
+ * Release, keeping the DO's refusal reason.
+ *
+ * `releaseLeaseRemote` below is the boolean form and stays the pinned wire
+ * contract; this is the same call with the reason not thrown away. The split
+ * exists because a *ticket window* has to report WHICH refusal happened
+ * (#104) while the wire test only cares that a stale token is refused at all.
+ */
+export async function releaseLeaseDetailed(
+  itemId: string,
+  agent: string,
+  fencing: number,
+  status: "released" | "completed" = "released",
+): Promise<ReleaseOutcome> {
+  const r = await call("/release", itemId, { agent, fencing, status });
+  if (r.released === true && r.status === undefined) warnWorkerPredatesStatus();
+  return {
+    released: r.released === true,
+    // On success prefer the worker's echo; fall back to what we asked for when
+    // it predates status recording (the skew is already warned above).
+    reason: r.released === true ? ((r.status as string) ?? status) : ((r.reason as string) ?? "refused"),
+    holder: (r.holder as string) ?? null,
+  };
+}
+
 export async function releaseLeaseRemote(
   itemId: string,
   agent: string,
   fencing: number,
   status: "released" | "completed" = "released",
 ): Promise<boolean> {
-  const r = await call("/release", itemId, { agent, fencing, status });
-  if (r.released === true && r.status === undefined) warnWorkerPredatesStatus();
-  return r.released === true;
+  return (await releaseLeaseDetailed(itemId, agent, fencing, status)).released;
 }
 
 let warnedSkew = false;

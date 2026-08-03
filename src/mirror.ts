@@ -25,7 +25,12 @@ import { budgetGate, type Budget, type CapacityReport } from "./policy.ts";
 import { parseFrontMatter, type FrontMatterResult } from "./frontmatter.ts";
 import { type RawItem, type RawTypedEdge, SQL } from "./scheduling.ts";
 import { type ClaimPlaneName, resolveClaimPlane, warnIfPlaneCannotExclude } from "./claim-plane.ts";
-import { claimLease, releaseLeaseRemote, renewLeaseRemote } from "./lease-client.ts";
+import {
+  claimLease,
+  releaseLeaseDetailed,
+  type ReleaseOutcome,
+  renewLeaseRemote,
+} from "./lease-client.ts";
 
 const pexecFile = promisify(execFile);
 
@@ -574,7 +579,7 @@ export async function releaseClaim(
   agent: string,
   status: "released" | "completed",
   fencing?: number | null,
-): Promise<void> {
+): Promise<ReleaseOutcome> {
   const plane = resolveClaimPlane();
   if (plane.name === "lease") {
     if (typeof fencing !== "number") {
@@ -587,8 +592,11 @@ export async function releaseClaim(
     // lease-projection workflow — the released-vs-completed interval effort
     // calibration reads. A worker predating status recording is detected by
     // the client (missing echo) and warned there, not silently absorbed here.
-    await releaseLeaseRemote(itemId, agent, fencing, status);
-    return;
+    //
+    // The OUTCOME is returned rather than discarded. `decideRelease` refuses a
+    // non-holder and a stale token, and a caller that reported those as a
+    // successful release would tell a zombie it had tidily finished (#104).
+    return releaseLeaseDetailed(itemId, agent, fencing, status);
   }
   const id = sqlEscape(itemId);
   const a = sqlEscape(agent);
@@ -603,6 +611,13 @@ export async function releaseClaim(
     `${status} ${itemId} by ${agent}`,
     `${agent} <${agent}@front-desk>`,
   );
+  // The SQL plane cannot answer the question the lease plane can: `claimWrite`
+  // reports no row count, so a DELETE that matched nothing is indistinguishable
+  // from one that freed a lease this caller held. `released: true` here means
+  // THE WRITE WAS APPLIED, not that the caller was the holder. Stated rather
+  // than papered over — it is the same by-configuration weakness
+  // `src/claim-plane.ts` already draws between the two planes.
+  return { released: true, reason: status, holder: null };
 }
 
 /** Item ids currently under a live lease — excluded from the ready queue. */

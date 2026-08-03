@@ -326,14 +326,29 @@ export const releaseVerb = defineVerb({
     itemId: z.string(),
     agent: z.string(),
     complete: z.coerce.boolean().default(false),
+    // Required by the lease plane, which throws without it: releasing without
+    // the token you were granted is how a woken zombie frees the NEW holder's
+    // lease. Optional here only because the SQL plane has no fencing at all.
+    fencing: z.coerce.number().int().optional(),
   }),
-  output: z.object({ released: z.boolean(), status: z.string() }),
+  output: z.object({
+    released: z.boolean(),
+    status: z.string(),
+    reason: z.string(),
+    holder: z.string().nullable(),
+  }),
   run: async (input) => {
     const status = input.complete ? "completed" : "released";
-    await releaseClaim(input.itemId, input.agent, status);
-    return { released: true, status };
+    // The outcome is REPORTED, not assumed. This used to return a hardcoded
+    // `released: true`, so a `not-holder` or `stale-fencing` refusal — which
+    // the DO returns correctly — surfaced as a clean release (#104).
+    const out = await releaseClaim(input.itemId, input.agent, status, input.fencing);
+    return { released: out.released, status, reason: out.reason, holder: out.holder };
   },
-  render: (o) => `${o.status} (${o.released ? "ok" : "failed"})`,
+  render: (o) =>
+    o.released
+      ? `${o.status} (ok)`
+      : `NOT released: ${o.reason}${o.holder ? ` — held by ${o.holder}` : ""}`,
 });
 
 // ── graph ────────────────────────────────────────────────────────────────────

@@ -125,6 +125,15 @@ Note the three outcomes: granted, **not granted** (a fact, not an error — some
 else holds it), and error (no verdict, holder unknown). Don't retry the third as
 though it were the second.
 
+**Give it back the same way.** `release-ticket.yml` is the same window one verb
+over (#104) — dispatch it with the `item_id` and the **`fencing` token from your
+claim verdict**, and read `FDS-RELEASE-RESULT`. Don't just let the TTL lapse: a
+session that finishes in eight minutes on a 3600s lease holds a closed item for
+another fifty-two, and every `next` in that window sees it held. The one refusal
+to react to is **`stale-fencing`** — it means a newer grant exists, so you are a
+zombie and should stop working the item, not retry. (Whether the lease should be
+time-based at all is the open question in #105.)
+
 **Reads are unaffected** — `/status` and `/history` are open, and the whole
 `next`/`graph`/`list` path needs no credential.
 

@@ -91,14 +91,67 @@ broken endpoint and reading it as a busy queue.
 `test/claim-ticket-summary.test.ts` pins the property that a refusal and an error
 never render as each other.
 
-## After you hold it
+## After you hold it — give it back through the other window
 
 The lease **expires on its own** — a dead claimant's grip lapses, which is the
-whole reason this is a lease and not a lock. Release it when done with the
-`release` verb, or let it lapse.
+whole reason this is a lease and not a lock. But letting it lapse is the fallback,
+not the plan: a session that finishes in eight minutes on a 3600s lease holds a
+closed item for another fifty-two, and every `next` in that window sees it held.
+That is measured, not hypothetical (#104).
+
+So release explicitly. `release-ticket.yml` is the same window, one verb over —
+the session cannot `POST /release` for exactly the reason it cannot `POST /claim`.
+
+```
+mcp__github__actions_run_trigger
+  owner: bounded-systems   repo: front-desk-scheduler
+  workflow: release-ticket.yml   ref: main
+  inputs:
+    agent_label: "session-7"        # the SAME label you claimed with
+    item_id:     "PVTI_lADO…"       # from the claim verdict
+    fencing:     "1"                # from the claim verdict — see below
+    status:      "completed"        # or "released" to hand it back unfinished
+```
+
+Then read the one `FDS-RELEASE-RESULT` line out of the job log, exactly as with a
+claim.
+
+### You must present the fencing token you were granted
+
+`decideRelease` refuses a release whose token is stale, and that check is
+load-bearing: without it a zombie that woke up and released would free the lease
+belonging to the **new** holder, handing the item to a third agent while the
+second is still working. The workflow passes your token through and deliberately
+does *not* look one up — looking it up would reconstruct the caller's belief from
+current state, which is the very belief being checked.
+
+The token is the `fencing` field of the `FDS-CLAIM-RESULT` line from the run that
+granted your lease.
+
+### Four outcomes, and one of them is a stop signal
+
+| outcome | run | meaning |
+|---|---|---|
+| **RELEASED / COMPLETED** | success | The item is free. Its grant interval is closed. |
+| **not-held** | success | The lease had already lapsed. Nobody held it. Nothing to do. |
+| **not-holder** | success | Someone else holds it. You released nothing. |
+| **stale-fencing** | success (annotated) | **You are a zombie** — a newer grant exists. |
+| **ERROR** | failure | No verdict. The lease's state is **unknown**; it may still be held. |
+
+`stale-fencing` is the one worth reacting to. For a *claim*, losing is ordinary
+contention. For a *release* it means you believed you held an item that has since
+been granted to someone else — so you may still be doing work, and your writes are
+the ones a downstream sink should be refusing. The refusal is the mechanism
+working, and it is simultaneously a signal to **stop**.
+
+The ERROR row is the mirror of the claim's: do not read it as "already released"
+and move on, or you leave a lease held with nobody watching it. Read `/status` for
+the item before re-dispatching.
 
 ## What is not covered
 
-The `release` path has no ticket window. A session that claims through this
-workflow cannot release through one; it either lets the TTL expire or a human
-releases it. Worth a follow-up if sessions start holding long leases.
+There is no `renew` window. `decideRenew` exists in the Worker and is exposed as
+`/renew`, but it is not a registered verb, and a session cannot heartbeat through a
+workflow dispatch at any sane cost — one runner boot per beat. So a session's lease
+cannot currently be *extended*, only taken and given back. Whether the lease should
+be time-based at all is the open question in #105.
