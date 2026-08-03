@@ -25,7 +25,7 @@ CREATE TABLE `claims` (
   `claimed_at` datetime NOT NULL,
   `ttl_sec` int NOT NULL,
   `released_at` datetime,
-  `status` enum('active','released','completed','expired') NOT NULL DEFAULT '1',
+  `status` enum('active','released','completed','expired','reaped') NOT NULL DEFAULT '1',
   `fencing` int,
   PRIMARY KEY (`id`),
   KEY `idx_claim_item` (`item_id`,`status`),
