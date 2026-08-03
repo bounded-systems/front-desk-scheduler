@@ -19,9 +19,11 @@ on:
     - cron: "17 */6 * * *" # every 6h — the board's freshness contract
   workflow_dispatch: {}
 concurrency:
-  # Shared with mirror-migrate: every workflow that WRITES the mirror serializes
-  # on one group, so a migration can never interleave with a sync push. Same
-  # cancel semantics as before — a running sync still finishes.
+  # Shared with mirror-migrate and lease-projection, so a migration can never
+  # interleave with a sync push. NOT every mirror writer: mirror-sync-delta
+  # keeps its own group because its cancel-in-progress coalesces webhook bursts,
+  # and one group cannot hold both cancel semantics. That writer converges at
+  # the push instead (scripts/dolt-push.sh, #129).
   group: mirror-write
   cancel-in-progress: false # a running sync finishes; syncs are cheap and serial
 permissions:
@@ -117,4 +119,5 @@ jobs:
         id: sync
       - name: Push mirror → DoltHub
         if: ${{ steps.sync.outputs.gated != 'true' }}
-        run: cd mirror && dolt push origin main
+        # Converges on a concurrent writer rather than dying on its push (#129).
+        run: cd mirror && ../scripts/dolt-push.sh origin main
