@@ -191,6 +191,38 @@ a held candidate refuses and the walk moves on — but it costs round trips, and
 means `next` and a bare `claim` disagree about the same board. Pass `item:`
 (#127) and none of it applies.
 
+## The shape contract — fixtures on every PR, the live board daily
+
+`specs/shacl/front-desk-shapes.ttl` is the declarative twin of the SQL shape
+checks. Two lanes run it, and they are **different claims**:
+
+- `test.yml` runs `--fixtures` on every PR: *the validator can still fail.* The
+  negative fixture asserts each named constraint actually fires, because a
+  validator that cannot fail is indistinguishable from a clean board (#139).
+- `shacl-mirror.yml` runs `--live` daily: *the board conforms.* It reads the
+  public DoltHub plane — **no credential, no dolt binary, no clone** — so it is a
+  plain scheduled job rather than something needing a ticket window.
+
+**Violations gate; warnings do not.** D1 (a dependency cycle) is `sh:Violation`:
+the item can never become Ready, so the board is corrupt. D2/D3 are
+`sh:Warning` — a `Todo` that should be `Blocked` is untidy, not broken. Gating on
+those would have red-lined the lane on its first run (2 warnings live on
+2026-08-04, both correct), which is exactly how `broker-drift` became a monitor
+nobody read (#124). Warnings are printed, named as `repo#number`, and counted —
+including `0 warnings` explicitly, since silence and "not checked" look identical.
+
+**`--live` paginates, and has to.** `items` was **1782 rows** on 2026-08-04 —
+already past the 1000-row cap, so an unpaginated read does not degrade, it fails.
+Keyset over the primary key, pinned with `AS OF` the resolved head, exactly as
+`list` does (#88); `item_deps` keysets over its composite PK by row-value
+comparison. And **check `query_execution_status`, not just `rows`**: an over-cap
+query returns `RowLimit` *with 1000 rows in the body*, so a client that reads
+`rows` alone validates 56% of the board and reports a pass.
+
+The verdict names the commit it derived from, and `AS OF '<commit>'` re-derives
+it. What the renderer promises the shapes is only partly written down — #143 has
+one live disagreement (`fd:number`), #139 has another (`fd:self`).
+
 ## Measuring the board — the same window, one door over
 
 `board:parity` (#58) needs ProjectV2 on both paths, so it cannot run in a session
