@@ -361,6 +361,18 @@ import { bindReferent, claimNext, releaseClaim } from "./mirror.ts";
  */
 const orderedReadyIds = async (reads: SchedulerReads, repo?: string): Promise<{ ids: string[]; at: string | null; byId: Map<string, { number: number; repository: string; title: string }> }> => {
   const read = await reads.readScheduling();
+  // `!i.leased` is PLANE-DEPENDENT, and nothing else says so. On the mirror plane
+  // `leases` is a real table and this genuinely excludes held items. On the lease
+  // plane the DO is the adjudicator and no `leases` row is ever written, so the
+  // flag is always false and this filter removes NOTHING — `claim` then walks
+  // candidates that are held.
+  //
+  // Deliberately left as-is rather than given the live check `next` uses (#135):
+  // the DO refuses a held candidate and claimNext moves on, so the outcome is
+  // already correct and the cost is round trips, not wrong answers. Adding a
+  // second probe fan-out here would duplicate the adjudication that follows it.
+  // The visible consequence is that `next` and a bare `claim` can disagree about
+  // the same board; passing `item:` (#127) bypasses the ranking entirely.
   const board = read.items.filter(
     (i) => i.status !== "Done" && !i.leased && (!repo || i.repository === repo),
   );

@@ -173,8 +173,23 @@ intact rather than emptying it, and says `could not be checked` so a degraded
 exclusion is never silent. And it is **off** when `FDS_CLAIM_ENDPOINT` is unset,
 so the no-credential path is unchanged.
 
-`graph` and `list` do **not** do this yet — they still read the mirror's flag,
-which means they still show held items as ready.
+`graph` does this too now (#115), and additionally reports the holder and — when
+the lease is bound — the PR, since a bound lease and a lapsing one are different
+answers to "wait, or take something else?".
+
+**`list` never read the flag at all**, and an earlier version of this line said it
+did. It has no `leased` field in its output and no `leased` filter on its input:
+it is the everything-including-Done surface, so it lists held items the same way
+it lists Done ones — present, not offered. There is nothing to fix there.
+
+Where the flag IS still read on a plane that never writes it: `orderedReadyIds`
+in `src/verbs.ts` — the ranked candidate list a **claim** latches from. On the
+mirror plane `leases` is a real table and `!i.leased` genuinely excludes; on the
+lease plane it is always false, so the same filter is **inert** and `claim` walks
+candidates that are held. That is not a correctness bug — the DO adjudicates, so
+a held candidate refuses and the walk moves on — but it costs round trips, and it
+means `next` and a bare `claim` disagree about the same board. Pass `item:`
+(#127) and none of it applies.
 
 ## Measuring the board — the same window, one door over
 
