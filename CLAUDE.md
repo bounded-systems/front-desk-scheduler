@@ -316,9 +316,24 @@ carries — ProjectV2 exposes item-level `updatedAt` only.
 (`organization_projects:write`, the same token the syncer mints). `apply` defaults
 to **false** and the first dispatch prints the plan, which matters more here than
 for a repair: deriving moves *every* disagreeing card, including ones reading
-Blocked with nothing in the graph to justify them. #5 was exactly that on
-2026-08-04 — `status="Blocked"`, `depends_on` empty, zero `item_deps` rows, a
-standing D2 violation — and it derives to Todo.
+Blocked with nothing in the graph to justify them.
+
+**The #5 example this paragraph originally carried was wrong, and the way it was
+wrong is the point.** It read `status="Blocked"`, `depends_on` empty, *zero
+`item_deps` rows*, a standing D2 violation deriving to Todo. Measured on the same
+board on 2026-08-04: `depends_on` is indeed empty, but `item_deps` has **one** row
+(#5 → #1), #1 is open, so `openBlockers = 1` and #5 derives to **Blocked** —
+which is what its card already says. There is no disagreement on #5 and nothing
+to move.
+
+`depends_on` is the free-text column; `item_deps` is the typed edge table, and
+they are not redundant — an item can have edges with an empty `depends_on`, which
+is exactly #5. `openBlockersOf` in `src/writeback.ts` reads the **edges**, same as
+`assembleScheduling`, so the code was never at risk; only the prose was. That is
+the trap worth remembering: **reading `depends_on` to predict what the derivation
+will do gives a different answer than the derivation**, and the live SHACL lane
+agreed with the code — `0 warnings` at 12:53Z, whereas a Blocked item with no open
+dependency is precisely what D2 would have reported.
 
 **Two things it deliberately refuses to derive.** `deriveStatus` returns `null`
 for both, meaning "leave the card alone":
