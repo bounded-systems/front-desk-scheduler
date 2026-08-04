@@ -125,6 +125,16 @@ Note the three outcomes: granted, **not granted** (a fact, not an error — some
 else holds it), and error (no verdict, holder unknown). Don't retry the third as
 though it were the second.
 
+**Handed a specific issue? Pass `item: repo#number`** (#127). Without it the
+dispatch latches whatever ranks top, which is a *different* item than the one you
+were given — and `repo:` does not save you, because a freshly filed issue is not
+in the mirror yet. Naming an item changes only the selection: it is still
+resolved through `SCHEDULABLE` + `isEligible`, so a named claim cannot hold a
+Done, closed or blocked item. The verdict is now a field with four values, and
+the two refusals to keep apart are **`not-eligible`** (the item has to change —
+don't retry) and **`not-in-mirror`** (the syncer hasn't caught up — retry later,
+and it says nothing about who holds it).
+
 **Bind your PR as soon as it exists.** The claim's ttl (default 3600s) is the
 referent-less grace window, not a task estimate (#105): dispatch
 `bind-ticket.yml` with the `item_id`, your `fencing` token, and the PR as
@@ -234,9 +244,10 @@ there is no benign reading of "the cheap query returns a different board".
     failed, it has not been tried. Every newly-added lane would have tripped
     it. Distinguish "no data" from "bad data" in anything that alarms.
 
-  Two smaller notes from the same day. `claim` latches the **top-ranked** ready
-  item and has no item selector, so you cannot claim a named issue — #129 was
-  worked leaseless for that reason (#127 tracks it). And `mirror-sync-delta` is
+  Two smaller notes from the same day. `claim` latched the **top-ranked** ready
+  item and had no item selector, so a named issue could not be claimed — #129
+  was worked leaseless for that reason. **Fixed in #127: pass `item` to
+  `claim-ticket.yml` as `repo#number`.** And `mirror-sync-delta` is
   webhook-driven, so its inter-run gaps ranged from ~90s to over an hour in one
   evening: for any lane like that, the cron is a *backstop*, and a tolerance
   derived from observed rate would call a quiet weekend an outage.

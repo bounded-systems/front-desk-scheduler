@@ -10,14 +10,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  type ClaimVerdict,
+  type ClaimResult,
   RESULT_MARKER,
   renderError,
   renderVerdict,
   resultLine,
 } from "../scripts/claim-ticket-summary.ts";
 
-const granted: ClaimVerdict = {
+const granted: ClaimResult = {
   won: true,
   itemId: "i_kwDOabc123",
   number: 58,
@@ -26,7 +26,7 @@ const granted: ClaimVerdict = {
   reason: "claimed",
 };
 
-const refused: ClaimVerdict = {
+const refused: ClaimResult = {
   won: false,
   itemId: null,
   number: null,
@@ -59,6 +59,47 @@ test("an error never claims to know the holder", () => {
 test("an error with no diagnostic still says something", () => {
   assert.match(renderError("   ", 2), /\(no diagnostic output\)/);
   assert.match(renderError("", 2), /exit 2/);
+});
+
+// ── the three refusals are not one refusal (#127) ────────────────────────────
+// Same shape as the refusal/error split above, one level in: all three succeed
+// and all three are answers, but only ONE of them can be turned into a grant by
+// dispatching again. Rendering them identically would tell a caller to retry a
+// blocked item forever, and would read a mirror gap as contention.
+
+test("a not-eligible refusal does not tell the caller to dispatch again", () => {
+  const out = renderVerdict(
+    { ...refused, verdict: "not-eligible", reason: "front-desk-scheduler#5 is not ready: it has 2 open blockers" },
+    "session-7",
+  );
+  assert.match(out, /NOT ELIGIBLE/);
+  assert.match(out, /normal outcome, not a failure/);
+  assert.match(out, /ready rule refuses it/);
+  assert.match(out, /Re-dispatching cannot change that/);
+  assert.doesNotMatch(out, /Another claimant holds it/, "must not read as contention");
+});
+
+test("a not-in-mirror refusal says nothing about who holds the item", () => {
+  const out = renderVerdict(
+    { ...refused, verdict: "not-in-mirror", reason: "front-desk-scheduler#118 is not in the mirror" },
+    "session-7",
+  );
+  assert.match(out, /NOT IN MIRROR/);
+  assert.match(out, /never heard of this item/);
+  assert.match(out, /CAN succeed/, "this is the one refusal a later retry can fix");
+  assert.doesNotMatch(
+    out,
+    /Another claimant holds it/,
+    "the mirror's ignorance of an item is not evidence about the lease plane",
+  );
+});
+
+test("a payload predating #127 still renders — absent verdict falls back to not-granted", () => {
+  // Same reason `fencing` is optional in this interface: a run recorded before
+  // the field existed must render rather than crash the summary step.
+  const out = renderVerdict(refused, "session-7");
+  assert.match(out, /NOT GRANTED/);
+  assert.match(out, /Another claimant holds it/);
 });
 
 // ── The grant ────────────────────────────────────────────────────────────────
@@ -112,7 +153,7 @@ test("a verdict predating #114 renders honestly instead of printing null", () =>
   // reason string, rather than rendering "- fencing: null" as if that were the
   // token — which is the failure mode of treating absent as zero.
   for (const v of [{ ...granted }, { ...granted, fencing: null }]) {
-    const out = renderVerdict(v as ClaimVerdict, "a");
+    const out = renderVerdict(v as ClaimResult, "a");
     assert.match(out, /not reported/);
     assert.doesNotMatch(out, /fencing: `null`/);
   }
@@ -165,6 +206,7 @@ import { claimVerb } from "../src/verbs.ts";
 
 const grantedOutput = {
   won: true,
+  verdict: "granted" as const,
   itemId: "i_kwDOabc123",
   number: 58,
   repository: "front-desk-scheduler",

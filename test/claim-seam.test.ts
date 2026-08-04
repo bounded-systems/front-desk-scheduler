@@ -132,9 +132,16 @@ test("the claim path reads through the seam, not the local clone", () => {
   // `spawn dolt ENOENT` anywhere without a clone (e.g. a cloud session).
   const verbs = readFileSync(new URL("../src/verbs.ts", import.meta.url), "utf8");
   const fn = /const orderedReadyIds[\s\S]*?\n};/.exec(verbs)?.[0] ?? "";
-  assert.match(fn, /currentReads\(\)\.readScheduling\(\)/, "must read through the seam");
+  // The seam arrives as a PARAMETER since #127, so that the ranked path and the
+  // named path provably read the same plane — a named claim resolved against a
+  // different database than the one it latches on is the A2 bug with a new
+  // selector. What must not come back is a read that bypasses the seam.
+  assert.match(fn, /reads\.readScheduling\(\)/, "must read through the seam it is given");
   assert.doesNotMatch(fn, /readMirrorScheduling\(\)/, "must not bypass it to the local clone");
   assert.match(fn, /at: read\.at/, "and must carry the pin out for the claim to record");
+  // And the seam it is given must still default to the process-wide one.
+  const deps = /deps: \(\): ClaimDeps[\s\S]*?\n/.exec(verbs)?.[0] ?? "";
+  assert.match(deps, /currentReads\(\)/, "claim's deps must resolve the process-wide read plane");
 });
 
 test("claimNext records decided_at_commit, shape-checked, NULL when unpinnable", () => {
