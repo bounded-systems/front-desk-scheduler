@@ -34,7 +34,7 @@ def uri(item_id: str) -> str:
 
 
 def render_turtle() -> str:
-    items = dsql("SELECT item_id, number, status, kind, effort, value FROM items")
+    items = dsql("SELECT item_id, number, status, kind, effort, value, origin FROM items")
     edges = dsql("SELECT item_id, dep_item_id FROM item_deps")
     lines = [f"@prefix fd: <{NS}> .",
              "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .", ""]
@@ -42,10 +42,13 @@ def render_turtle() -> str:
         u = uri(it["item_id"])
         parts = [f"{u} a fd:Item",
                  f'fd:self {u}',
+                 f'fd:origin "{it["origin"]}"',
                  f'fd:status "{it["status"]}"',
                  f'fd:kind "{it["kind"]}"',
                  f'fd:effort "{it["effort"]}"^^xsd:double',
                  f'fd:value "{it["value"]}"^^xsd:double']
+        # Absent iff dolt-born (#143): number is github identity, and the shapes
+        # agree — fd:GithubIdentityShape reds a github-origin item without one.
         if it["number"] is not None:
             parts.append(f'fd:number "{it["number"]}"^^xsd:integer')
         lines.append(" ;\n  ".join(parts) + " .")
@@ -78,6 +81,7 @@ EXPECTED_VIOLATIONS = [
     ("D1 — dependency cycle",             "Item participates in a dependency cycle"),
     ("D2 — unjustified block",            "Blocked item has no open dependency recorded"),
     ("D3 — Todo that should be Blocked",  "Todo item has open dependencies"),
+    ("github-origin item w/o a number",   "GitHub-origin item has no fd:number"),
 ]
 
 

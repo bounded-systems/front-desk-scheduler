@@ -11,18 +11,22 @@
 #   - a Blocked item WITH an open dependency (D2 satisfied)
 #   - a Todo item whose only dependency is Done (D3 satisfied — not "no deps",
 #     which would pass D3 trivially and prove nothing)
+#   - a dolt-origin item with NO fd:number (#143 — legal absence; the github
+#     conditional in fd:GithubIdentityShape must not fire on it)
 
 @prefix fd:  <https://bounded.tools/ns/front-desk#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 <https://bounded.tools/ns/front-desk#item/clean-todo> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-todo> ;
+  fd:origin "github" ;
   fd:number "1"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "task" ;
   fd:effort "0"^^xsd:double ; fd:value "0"^^xsd:double .
 
 <https://bounded.tools/ns/front-desk#item/clean-done> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-done> ;
+  fd:origin "github" ;
   fd:number "2"^^xsd:integer ;
   fd:status "Done" ; fd:kind "epic" ;
   fd:effort "10"^^xsd:double ; fd:value "100"^^xsd:double .
@@ -32,6 +36,7 @@
 # satisfy D3 without ever reaching its FILTER.
 <https://bounded.tools/ns/front-desk#item/clean-unblocked> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-unblocked> ;
+  fd:origin "github" ;
   fd:number "3"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "room" ;
   fd:effort "2.5"^^xsd:double ; fd:value "40"^^xsd:double ;
@@ -40,6 +45,7 @@
 # D2: Blocked WITH an open (non-Done) dependency — a justified block.
 <https://bounded.tools/ns/front-desk#item/clean-blocked> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-blocked> ;
+  fd:origin "github" ;
   fd:number "4"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "door" ;
   fd:effort "1"^^xsd:double ; fd:value "60"^^xsd:double ;
@@ -47,6 +53,16 @@
 
 <https://bounded.tools/ns/front-desk#item/clean-inprogress> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-inprogress> ;
+  fd:origin "github" ;
   fd:number "5"^^xsd:integer ;
   fd:status "In Progress" ; fd:kind "task" ;
   fd:effort "3"^^xsd:double ; fd:value "75"^^xsd:double .
+
+# #143: a dolt-born hidden item (scripts/hidden.ts) — no GitHub counterpart, so
+# no fd:number. This is the legal absence the fd:number shape's minCount 0
+# exists for; fd:GithubIdentityShape must not fire because origin is "dolt".
+<https://bounded.tools/ns/front-desk#item/dolt_clean-hidden> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/dolt_clean-hidden> ;
+  fd:origin "dolt" ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "3"^^xsd:double ; fd:value "50"^^xsd:double .

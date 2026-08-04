@@ -24,6 +24,12 @@
 #   2. Type `fd:effort`/`fd:value` as `xsd:double` explicitly. Plain Turtle `2.0`
 #      parses as `xsd:decimal` and fails `sh:datatype`, so a CLEAN item reports
 #      violations that look like bad data rather than a bad rendering.
+#   3. Emit `fd:origin` on every item ("github" | "dolt", the mirror's NOT NULL
+#      enum). `fd:number` is required exactly when the item is github-origin
+#      (#143), and that conditional is expressed as a SPARQL shape over
+#      fd:origin. Unlike fd:self this one fails LOUD if omitted — sh:minCount 1
+#      on fd:origin reports the missing property — so a renderer that skips it
+#      reds the lane rather than silently passing numberless github rows.
 #
 # The fixtures are what keep both honest: fixtures/clean.ttl must conform,
 # fixtures/violations.ttl must NOT, and `npm run shacl:fixtures` asserts both.
@@ -48,8 +54,22 @@ fd:ItemShape
   a sh:NodeShape ;
   sh:targetClass fd:Item ;
   sh:property [
+    # OPTIONAL by decision (#143): fd:number is the GitHub issue/PR number, so
+    # it exists iff the item is github-origin. Dolt-born hidden items
+    # (`dolt:<local>` ids, scripts/hidden.ts) legitimately have none until
+    # captured, and the mirror column is nullable for exactly that reason.
+    # "Required when github-origin" lives in fd:GithubIdentityShape below —
+    # a blanket sh:minCount 1 here would call a legal board state corruption.
     sh:path fd:number ;
     sh:datatype xsd:integer ; sh:minInclusive 1 ;
+    sh:minCount 0 ; sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    # Mirror column `origin` enum('github','dolt') NOT NULL — renderer
+    # requirement 3 in the header. minCount 1 is what keeps
+    # fd:GithubIdentityShape from going vacuous on a renderer that omits it.
+    sh:path fd:origin ;
+    sh:in ( "github" "dolt" ) ;
     sh:minCount 1 ; sh:maxCount 1 ;
   ] ;
   sh:property [
@@ -77,6 +97,26 @@ fd:ItemShape
     # No self-dependency (mirror: chk_no_self_dep). REQUIRES the renderer to
     # emit `fd:self` — see the header. Vacuously true without it.
     sh:disjoint fd:self ;
+  ] .
+
+# The conditional half of the #143 decision: a GITHUB-origin item without a
+# number IS corruption — the syncer writes `number` on every github row it
+# upserts and drops draft/numberless content at normalize (src/board.ts), so a
+# github row with NULL number means the mirror lost the item's identity.
+# sh:Violation deliberately: this is the case the old blanket minCount 1 was
+# actually guarding, kept at full severity now that the legal absence is legal.
+fd:GithubIdentityShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:severity sh:Violation ;
+  sh:sparql [
+    sh:prefixes fd:prefixes ;
+    sh:message "GitHub-origin item has no fd:number — mirror identity lost" ;
+    sh:select """
+      SELECT $this WHERE {
+        $this fd:origin "github" .
+        FILTER NOT EXISTS { $this fd:number ?n }
+      }""" ;
   ] .
 
 # D2 — a Blocked item must have at least one non-Done dependency (justified block).
