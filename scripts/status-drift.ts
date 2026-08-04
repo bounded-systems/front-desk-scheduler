@@ -35,7 +35,16 @@
  * work on a card someone forgot to drag (schema-export --check gates PRs, but
  * there the tree CONTAINS the projection; here it contains nothing to fix).
  * The scheduled run is the one that gates — the way org-drift works — and its
- * red names the card to drag, which is the entire remediation.
+ * red names the card to move.
+ *
+ * REMEDIATION IS NO LONGER ALWAYS BY HAND (#148)
+ * ----------------------------------------------
+ * This header used to end "which is the entire remediation", true only while
+ * dragging was the sole way to move a card. `board-writeback.yml` now closes the
+ * derivable half: a closed issue implies Done, so that direction is dispatched,
+ * not dragged. The other direction stays manual on purpose — a Done card on an
+ * open issue is a human claim, and no workflow should guess whether to close the
+ * issue or move the card back. See src/writeback.ts for the asymmetry.
  *
  * Reads the public DoltHub SQL API via src/dolthub.ts: no credential, no
  * GitHub budget, no npm dependencies — safe in schema-drift.yml's no-install
@@ -65,7 +74,8 @@ for (const r of rows) {
   const ref = `${r.repository}#${r.number}`;
   if (r.closed_at) {
     console.log(`  ${ref}  card="${r.status}" but the issue CLOSED ${r.closed_at}`);
-    console.log(`      → drag the card to Done (the queue already refuses to rank it — see #89)`);
+    console.log(`      → dispatch board-writeback.yml to move it to Done, or drag it by hand`);
+    console.log(`        (derivable — the queue already refuses to rank it, see #89)`);
   } else {
     console.log(`  ${ref}  card="Done" but the issue is still OPEN on GitHub`);
     console.log(`      → close the issue, or move the card back if work remains`);

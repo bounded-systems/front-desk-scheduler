@@ -249,6 +249,39 @@ the cost is a difference of `remaining` on a shared counter, so a concurrent
 Unlike a claim, a parity **failure is not an answer**: it fails the run, because
 there is no benign reading of "the cheap query returns a different board".
 
+## Fixing the board — half of it is derivable (#148)
+
+`status-drift` reports rows where the card and GitHub's open/close disagree, and
+its remediation used to be "drag the card". Half of that is now a dispatch:
+**`board-writeback.yml`** moves a closed issue's card to Done with the Front Desk
+App identity (`organization_projects:write`, the same token the syncer mints).
+
+**Only the closed→Done direction, and that asymmetry is the point.** A closed
+issue implies Done — nobody decided the card should stay Todo, nothing was there
+to move it. An open issue wearing a Done card is a *human claim*, and resolving it
+means either closing the issue or moving the card back; no workflow should guess.
+`syncPullDelta` already draws this exact line in the mirror ("deliberately
+conservative: only sets closed→Done"), and `src/writeback.ts` is that same rule
+applied to the live board rather than a second, subtly different one.
+
+**A card that should be `Blocked` is not drift and never appears here** — both
+`SQL.statusDrift` clauses key on `closed_at`, so an open item with the wrong
+open-status disagrees with nothing. That stays hand-dragged permanently (#5 is
+the standing example). "The board self-heals now" is the wrong summary; "the
+mechanical half self-heals" is the right one.
+
+`apply` defaults to **false** — the first dispatch prints the plan. The plan
+guards on the *live* card status, not the mirror's, so it is idempotent: a second
+apply run after a successful one writes nothing, and a card dragged by hand
+minutes ago is skipped as a stale mirror row rather than rewritten.
+
+**It is new, so it is not on the broker's allowlist until someone adds it.**
+`verifyOIDC` pins `job_workflow_ref`; until `board-writeback.yml` is in the
+`front-desk` tier's `GH_APPS` entry, every run fails at the mint step. That is
+the #112 shape exactly, so the mint step names that cause instead of failing with
+a bare curl error — and the first dispatch is what proves the entry landed.
+Dispatch it; don't assume it.
+
 ## Working here
 
 - **Install deps with `deno install --frozen`, never `npm install`.** `deno.lock` is
