@@ -1,0 +1,71 @@
+name: lane-watch
+# The watchdog for every scheduled lane in this repo (#124).
+#
+# WHAT THIS EXISTS TO CATCH
+# -------------------------
+# `lease-projection` ran 24 times and failed 24 times before anyone noticed
+# (#112). `broker-drift` was permanently red for a different reason and became
+# unread. Neither is "a workflow broke" — both are "a red or absent scheduled
+# lane looks exactly like a healthy one unless somebody opens the Actions tab".
+#
+# #113 built the mechanism for one lane (lease-expiry-watch checks that
+# reap-leases has succeeded recently) and could not close #112's checkbox,
+# because A WORKFLOW CANNOT DETECT ITS OWN NON-EXECUTION. Every scheduled lane
+# has that hole. This one checks all of them, taking ~10 holes to 1.
+#
+# THE ONE THAT IS LEFT
+# --------------------
+# If THIS lane stops running, nothing notices. That is accepted, not solved, and
+# the runner prints it on every run so a reader hits it where they are already
+# looking. Closing it needs an observer outside Actions (a Worker cron reading
+# the Actions API), which is separate infrastructure with its own liveness
+# question — and claiming zero holes without it would be exactly the unearned
+# guarantee this repo keeps finding.
+#
+# WHY IT GATES ON A SCHEDULE BUT ONLY REPORTS ON A PR
+# ---------------------------------------------------
+# Same split as schema-drift.yml's status-drift step. The health of the DEPLOYED
+# lanes is not something a PR causes or can fix, so failing a PR on it would
+# block unrelated work on someone else's broken lane. The scheduled run is the
+# one that gates, and it is the one whose red means something.
+on:
+  schedule:
+    # Every 3h, offset from lease-expiry-watch's :51 and reap-leases' :13,:43.
+    # Frequent enough that a broken lane is caught within a working session;
+    # rare enough that the watchdog is not itself a source of noise.
+    - cron: "07 */3 * * *"
+  pull_request:
+    # Report-only here — see above. Not path-filtered, deliberately: a check
+    # skipped on some PRs cannot be made required without the
+    # skipped-required-check problem, same reasoning as schema-drift.yml.
+  workflow_dispatch: {}
+concurrency:
+  group: lane-watch-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  # The whole point. Reading other workflows' run history needs this, and #113
+  # verified live that it is genuinely granted (run 30857400150).
+  actions: read
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+
+      # No dependency install: the script imports only src/lane-watch.ts, which
+      # has no runtime dependencies. Node 24 strips the types natively, same as
+      # schema-drift.yml and lease-projection.yml.
+      - name: Watch every scheduled lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # NOT `cond && '' || '--gate'`: an empty string is FALSY in GitHub
+        # expressions, so that form gates PRs too. The truthy branch must be the
+        # one carrying the flag — the same trap schema-drift.yml documents.
+        run: node scripts/lane-watch.ts ${{ github.event_name != 'pull_request' && '--gate' || '' }}
