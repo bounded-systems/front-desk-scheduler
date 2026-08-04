@@ -174,6 +174,12 @@ export const SQL = {
   allItemsLegacy:
     "SELECT item_id, number, title, repository, status, kind, effort, value, depends_on, " +
     "DATEDIFF(UTC_TIMESTAMP(), created_at) AS age_days FROM items",
+  // The derivation read (#148). Status is a projection, so computing it needs the
+  // two columns the scheduling read drops: `origin` (dolt rows have no second
+  // authority and are never derived) and `closed_at` (the completion ground
+  // truth). Whole-table and therefore walked by `readPaged`, never issued bare —
+  // items crossed the 1000-row cap in July (#88).
+  derivationItems: "SELECT item_id, number, repository, status, origin, closed_at FROM items",
   // Live leases — the held set, excluded from the ready queue. Reads `leases`
   // (one row per held item, PK-enforced), NOT the append-only `claims` history.
   leases:

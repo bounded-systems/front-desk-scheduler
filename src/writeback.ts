@@ -1,70 +1,71 @@
 /**
  * @module writeback
- * The ONE direction of status drift a machine is allowed to resolve.
+ * Render the derived Status onto the live board (#148).
  *
- * WHY ONLY ONE DIRECTION (front-desk-scheduler#148)
- * -------------------------------------------------
- * `status-drift` (SQL.statusDrift) reports both disagreements between the two
- * completion authorities. They are not symmetric, and only one of them is
- * mechanically derivable:
+ * WHAT CHANGED, AND WHY THE NARROW RULE WENT AWAY
+ * -----------------------------------------------
+ * This module first shipped as a repair for ONE transition (closed→Done),
+ * because that was the only disagreement between the card and GitHub that could
+ * be resolved without guessing. That framing presumed two authorities and a
+ * merge rule — and every candidate merge rule is wrong in a different way. A
+ * join/max over a status lattice is monotone and cannot express a REOPEN
+ * (`closed_at` going NULL is a decrease). "Most recent transition wins" needs a
+ * per-field timestamp neither the mirror nor ProjectV2 carries.
  *
- *   closed_at set, card ≠ Done   → DERIVABLE. GitHub closed the issue; "Done"
- *                                  is the only card value consistent with that.
- *                                  Nobody decided the card should stay Todo —
- *                                  nothing was there to move it.
- *   card = Done, closed_at NULL  → NOT derivable. Someone marked the card Done
- *                                  while the issue is open. That is a human
- *                                  claim about the work, and the resolution
- *                                  (close the issue? move the card back?) is a
- *                                  judgement this module must never make.
+ * Under `deriveStatus` (src/status.ts) there is exactly one authority per
+ * component and nothing to merge: the card is output. So this module no longer
+ * repairs a disagreement, it renders a projection, and "drift" becomes the gap
+ * between a derived value and what the board currently shows.
  *
- * The delta syncer already draws this exact line in the mirror: `syncPullDelta`
- * is "deliberately conservative: only sets closed→Done (the transition that goes
- * stale); open items keep their board status (Todo/In Progress/Blocked)". This
- * module is that same rule applied to the second surface — the live board — and
- * it is deliberately the same rule rather than a new one.
+ * The rule itself is NOT stated here (#59) — `deriveStatus` owns it. This module
+ * owns only: which rows to feed it, how to compute `openBlockers`, and which of
+ * its answers are safe to write.
  *
- * WHAT THIS DOES NOT COVER
- * ------------------------
- * A card that should be *Blocked* is not drift and never appears here: both of
- * SQL.statusDrift's clauses key on `closed_at`, and an open item with the wrong
- * open-status disagrees with nothing. Deciding an item is blocked is a human
- * judgement with no second authority to derive it from, so that card stays
- * hand-dragged permanently. Front Desk #5 is the standing example.
- *
- * Pure: no network, no `gh`, no clock. The runner (scripts/status-writeback.ts)
- * supplies both inputs and performs the mutation, so the decision of WHICH
- * cards move is testable without a board.
+ * WHAT IT STILL REFUSES TO WRITE
+ * ------------------------------
+ *  - anything `deriveStatus` returns null for (dolt-origin rows; an unreadable
+ *    lease plane that would otherwise downgrade "In Progress" — #84);
+ *  - a row with no card on the live board, since there is no project-item id to
+ *    target and inventing one is not an option;
+ *  - a row whose LIVE card already reads the derived value, which is what makes
+ *    the pass idempotent and what stops a hand-drag from being rewritten while
+ *    the mirror is still catching up.
  */
 
 import type { BoardItem } from "./board.ts";
+import { deriveStatus, isStatus } from "./status.ts";
+import type { Status } from "./status.ts";
 
-/** The card value that a closed issue implies. Matches the `items.status` enum. */
-export const DONE = "Done";
-
-/**
- * One row of SQL.statusDrift. `number` is `number | string` for the #101 reason:
- * the DoltHub HTTP plane returns every column as a JSON string while `dolt sql
- * -r json` returns a real number, and this type describes the intent rather than
- * the runtime. `planWriteback` coerces rather than trusting either.
- */
-export interface DriftRow {
-  readonly repository: string;
+/** One row of SQL.derivationItems. */
+export interface DerivationRow {
+  readonly item_id: string;
+  /**
+   * `number | string` for the #101 reason: the DoltHub HTTP plane returns every
+   * column as a JSON string while `dolt sql -r json` returns a real number.
+   */
   readonly number: number | string | null;
+  readonly repository: string;
   readonly status: string;
+  readonly origin: string;
   readonly closed_at: string | null;
 }
 
-/** A card this run intends to move, with the evidence that justifies moving it. */
+/** One row of SQL.edges — a dependency arrow from `item_id` to `dep_item_id`. */
+export interface DepEdge {
+  readonly item_id: string;
+  readonly dep_item_id: string;
+}
+
 export interface PlannedWrite {
   readonly ref: string;
   /** The project-item id (PVTI_…) the mutation targets. */
   readonly itemId: string;
   readonly from: string;
-  readonly closedAt: string;
+  readonly to: Status;
+  /** Which authority produced `to` — printed, so a surprising write is explicable. */
+  readonly because: string;
 }
 
-/** A drift row deliberately left alone, and why — printed, never silent. */
 export interface SkippedWrite {
   readonly ref: string;
   readonly reason: string;
@@ -81,56 +82,105 @@ export function refOf(repository: string, number: number | string | null): strin
 }
 
 /**
- * Decide which drifting cards to move to Done.
+ * The open set, as SCHEDULABLE defines it: not card-Done AND not GitHub-closed.
  *
- * `rows` is the mirror's account of the disagreement; `board` is what the live
- * board says RIGHT NOW. Both are needed and neither is sufficient:
+ * Deliberately the SAME predicate the ranking uses rather than a derived-only
+ * one, so a blocker count here means what it means in `next`. It reads the card
+ * as well as `closed_at`, which is mildly self-referential while a stale card
+ * exists — a row wrongly reading Done counts as complete for one pass, then the
+ * write lands and the next pass sees the corrected value. It converges rather
+ * than oscillating, because `closed_at` is never itself derived.
+ */
+function openIdsOf(rows: readonly DerivationRow[]): Set<string> {
+  return new Set(
+    rows.filter((r) => r.status !== "Done" && !r.closed_at).map((r) => r.item_id),
+  );
+}
+
+/**
+ * Count, per item, how many of its dependencies are still open.
  *
- *  - the mirror carries `closed_at`, which the board read has no field for, and
- *    it is the authority on completion (authority.ts: "realized completion");
- *  - the board carries the project-item id the mutation needs, and its status is
- *    fresher than the mirror's — the mirror can lag a webhook, so a card already
- *    dragged by hand still appears in `rows` for a few minutes.
+ * Same rule as `assembleScheduling`: a dep pointing OUTSIDE the open set is
+ * complete and therefore satisfied, so only deps that ARE in the set count.
+ */
+function openBlockersOf(
+  edges: readonly DepEdge[],
+  openIds: ReadonlySet<string>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const e of edges) {
+    if (openIds.has(e.dep_item_id)) counts.set(e.item_id, (counts.get(e.item_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Why a derived value came out the way it did, for the plan's printed output. */
+function because(row: DerivationRow, openBlockers: number, to: Status): string {
+  if (to === "Done") return `issue closed ${row.closed_at}`;
+  if (to === "Blocked") return `${openBlockers} open dependency(ies)`;
+  if (to === "In Progress") return "a live lease holds it";
+  return "open, unblocked, unheld";
+}
+
+/**
+ * Plan the board writes that would make every card equal its derived value.
  *
- * Guarding on the LIVE status is what keeps this idempotent: re-running after a
- * successful run plans nothing, because the board now agrees.
+ * `leaseHeldIds` is nullable on purpose and the two cases are NOT the same:
+ * a Set means the lease plane was read and an absent id genuinely means unheld;
+ * `null`/`undefined` means it could not be read, which `deriveStatus` turns into
+ * a refusal to touch "In Progress" rather than a downgrade (#84, and the #124
+ * lesson that zero data is not the same as negative data).
  */
 export function planWriteback(
-  rows: readonly DriftRow[],
+  rows: readonly DerivationRow[],
+  edges: readonly DepEdge[],
   board: readonly BoardItem[],
+  leaseHeldIds?: ReadonlySet<string> | null,
 ): WritebackPlan {
   const byRef = new Map(board.map((i) => [refOf(i.repository, i.number), i]));
+  const openIds = openIdsOf(rows);
+  const blockers = openBlockersOf(edges, openIds);
+
   const writes: PlannedWrite[] = [];
   const skipped: SkippedWrite[] = [];
 
   for (const row of rows) {
     const ref = refOf(row.repository, row.number);
+    const item = byRef.get(ref);
 
-    // The non-derivable direction. Reported by status-drift, never written here.
-    if (!row.closed_at) {
-      skipped.push({
-        ref,
-        reason: `card="${DONE}" but the issue is OPEN — a human claim, not a derivable fact`,
-      });
+    // Derive from the LIVE card where we have one: the mirror's `status` lags a
+    // hand-drag, and the "In Progress" preservation rule keys on current value.
+    const current = item?.status ?? row.status;
+    if (!isStatus(current)) {
+      skipped.push({ ref, reason: `unrecognised current status "${current}"` });
       continue;
     }
 
-    const item = byRef.get(ref);
+    const openBlockers = blockers.get(row.item_id) ?? 0;
+    const to = deriveStatus({
+      origin: row.origin,
+      closedAt: row.closed_at,
+      openBlockers,
+      leaseHeld: leaseHeldIds ? leaseHeldIds.has(row.item_id) : undefined,
+      current,
+    });
+
+    if (to === null) {
+      // Only worth reporting for rows that would otherwise have moved; a dolt
+      // row that already reads right is noise, not a decision.
+      if (row.origin !== "github") continue;
+      skipped.push({ ref, reason: "lease plane unreadable — preserving \"In Progress\" (#84)" });
+      continue;
+    }
+
     if (!item) {
-      // The mirror knows the row but the board read did not return it: either it
-      // was removed from the project, or the board read was truncated. Either
-      // way there is no project-item id to target, and inventing one is not an
-      // option — say so rather than dropping it silently.
       skipped.push({ ref, reason: "not found on the live board — no project-item id to target" });
       continue;
     }
 
-    if (item.status === DONE) {
-      skipped.push({ ref, reason: `board already reads "${DONE}" — the mirror row is stale` });
-      continue;
-    }
+    if (current === to) continue; // already correct; silence is the common case
 
-    writes.push({ ref, itemId: item.id, from: item.status, closedAt: row.closed_at });
+    writes.push({ ref, itemId: item.id, from: current, to, because: because(row, openBlockers, to) });
   }
 
   return { writes, skipped };

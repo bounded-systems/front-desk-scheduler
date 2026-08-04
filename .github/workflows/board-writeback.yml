@@ -21,25 +21,44 @@ name: board-writeback
 # ask, and CLAUDE.md's rule applies ("when you find you can't do something, the
 # usual right answer is to build a ticket window").
 #
-# WHY ONLY closed→Done
-# --------------------
-# `status-drift` reports both directions; only one is derivable. A closed issue
-# implies "Done" and nothing decided otherwise. An open issue with a Done card is
-# a human claim, and resolving it means either closing the issue or moving the
-# card back — a judgement no workflow should make. src/writeback.ts is where that
-# asymmetry is stated and tested; this file does not restate it (#59).
+# WHAT IT WRITES — A PROJECTION, NOT A REPAIR
+# -------------------------------------------
+# Status is derived from state the system already holds, so there is exactly one
+# authority per component and nothing to merge:
 #
-# It also cannot fix a card that should be *Blocked*: that disagrees with no
-# second authority, so it never appears in the drift set. Front Desk #5 is the
-# standing example, and it stays hand-dragged permanently.
+#   Done         ⟸ closed_at IS NOT NULL      SCHEDULABLE, the #89 Lean invariant
+#   Blocked      ⟸ openBlockers > 0           D2/D3 in the shapes
+#   In Progress  ⟸ a held lease               the DO (#135/#115)
+#   Todo         ⟸ none of the above
+#
+# The shapes already said this and only lacked a direction: D2 ("a Blocked item
+# must have at least one non-Done dependency") and D3 ("a Todo item with an open
+# dependency should be Blocked") are together the biconditional
+# Blocked ⟺ openBlockers > 0. src/status.ts states the rule; this file does not
+# restate it (#59).
+#
+# THE LEASE PLANE IS NOT READ, AND THAT IS DELIBERATE
+# ---------------------------------------------------
+# There is no batch route to the Durable Object (#84), so a whole-board pass
+# cannot know who holds what. It passes `null` rather than an empty Set, which
+# `deriveStatus` turns into a refusal to touch "In Progress" — an empty Set would
+# assert "nothing is held" and downgrade every held card to Todo. So this pass
+# derives Done and Blocked, preserves In Progress, and never promotes Todo →
+# In Progress until #84 lands a batch route.
 #
 # WHY `apply` DEFAULTS TO FALSE
 # -----------------------------
 # This is the only automated path in the repo that mutates the live board, and
-# the board is what the whole mirror is derived from. The first dispatch prints
-# the plan against real data; you dispatch again with apply=true to write. The
-# plan is idempotent and guards on the LIVE card status, so a second apply run
-# after a successful one writes nothing.
+# the board is what the whole mirror is derived from. Deriving rather than
+# repairing makes the first apply potentially LARGE — every card that disagrees
+# with its derived value moves, including cards reading Blocked with nothing in
+# the dependency graph to justify them (a D2 violation, which derives to Todo).
+# So the first dispatch prints the plan against real data and writes nothing.
+# Read it before you dispatch again with apply=true.
+#
+# The plan is idempotent and guards on the LIVE card status, so a second apply
+# run after a successful one writes nothing, and a card dragged by hand while the
+# mirror lags is left alone rather than rewritten.
 #
 # ── PREREQUISITE: THE BROKER ALLOWLIST ────────────────────────────────────────
 # `verifyOIDC` pins `job_workflow_ref`, so the broker only releases the Front Desk
