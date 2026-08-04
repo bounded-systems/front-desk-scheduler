@@ -158,6 +158,43 @@ should stop working the item, not retry.
 **Reads are unaffected** — `/status` and `/history` are open, and the whole
 `next`/`graph`/`list` path needs no credential.
 
+**`item_id` on the lease plane is the ProjectV2 node id (`PVTI_…`), and a wrong
+one reads back CLEAN** (2026-08-04). `canonicalItemId` in
+`worker/lease/src/lease-core.mjs` accepts any non-empty string — it trims and
+lowercases, nothing more — and the router derives the DO name from it. So
+`GET /status?item_id=front-desk-scheduler%233` does not 404: it mints a fresh
+Durable Object for a name nobody has ever claimed under and returns
+`{"holder":null,"fencing":0,"live":false}`. That is indistinguishable from "this
+item has never been claimed", and it is how this session first concluded — wrongly
+— that no lease had ever existed for #3. With the real id the same call returned
+`fencing: 3` and a history of three grants.
+
+Two rules follow. **Resolve the id from the mirror**, never construct it:
+`SELECT item_id FROM items WHERE repository='<repo>' AND number=<n>` (note the
+column is `repository`, not `repo`). And **read `fencing`, not just `holder`**:
+`fencing: N` with `holder: null` is positive evidence you reached the right
+object — it has issued N grants and is free now. `fencing: 0` is the ambiguous
+one: it means no grant has *ever* been issued under that name, which is equally
+consistent with a never-claimed item and with a typo, and **the read cannot tell
+you which**. Treat 0 as "unconfirmed" rather than "free", and confirm the id
+against the mirror before concluding anything from it. Nothing can close that
+gap for you — a `DurableObjectNamespace` cannot be enumerated (#84), so there is
+no route that reports a name as not-a-real-item.
+
+**#127 fixed named claims; it does not make anyone use them.** On 2026-08-04 two
+sessions worked #143 concurrently and opened PR #145 and PR #146 **seventeen
+seconds apart**, neither aware of the other, and #146 was merged before #145 was
+noticed. Both had reached the same decision independently, so nothing was lost
+but the duplicated afternoon — that was luck, not the process working. Neither
+session held a lease. The apparatus that exists precisely to prevent this
+(`claim-ticket.yml` + `item: repo#number`) was available to both and dispatched
+by neither; #129 was worked leaseless because no item selector existed, and that
+excuse died with #127. So this is the #112 shape aimed at the claiming path
+itself: nothing is broken, nobody runs it. **Dispatch `claim-ticket.yml` with
+`item:` before you start, and `bind-ticket.yml` the moment the PR exists** — a
+bound lease is the only thing that would have made either session visible to the
+other, because `next` only excludes what the DO says is held (#135).
+
 **`next` now excludes items that are actually held — but only the top N** (#135).
 The mirror's `leases` table is empty on the lease plane by design (the DO is the
 adjudicator), so the `leased` flag excluded nothing and held items ranked as
@@ -279,9 +316,24 @@ carries — ProjectV2 exposes item-level `updatedAt` only.
 (`organization_projects:write`, the same token the syncer mints). `apply` defaults
 to **false** and the first dispatch prints the plan, which matters more here than
 for a repair: deriving moves *every* disagreeing card, including ones reading
-Blocked with nothing in the graph to justify them. #5 was exactly that on
-2026-08-04 — `status="Blocked"`, `depends_on` empty, zero `item_deps` rows, a
-standing D2 violation — and it derives to Todo.
+Blocked with nothing in the graph to justify them.
+
+**The #5 example this paragraph originally carried was wrong, and the way it was
+wrong is the point.** It read `status="Blocked"`, `depends_on` empty, *zero
+`item_deps` rows*, a standing D2 violation deriving to Todo. Measured on the same
+board on 2026-08-04: `depends_on` is indeed empty, but `item_deps` has **one** row
+(#5 → #1), #1 is open, so `openBlockers = 1` and #5 derives to **Blocked** —
+which is what its card already says. There is no disagreement on #5 and nothing
+to move.
+
+`depends_on` is the free-text column; `item_deps` is the typed edge table, and
+they are not redundant — an item can have edges with an empty `depends_on`, which
+is exactly #5. `openBlockersOf` in `src/writeback.ts` reads the **edges**, same as
+`assembleScheduling`, so the code was never at risk; only the prose was. That is
+the trap worth remembering: **reading `depends_on` to predict what the derivation
+will do gives a different answer than the derivation**, and the live SHACL lane
+agreed with the code — `0 warnings` at 12:53Z, whereas a Blocked item with no open
+dependency is precisely what D2 would have reported.
 
 **Two things it deliberately refuses to derive.** `deriveStatus` returns `null`
 for both, meaning "leave the card alone":
