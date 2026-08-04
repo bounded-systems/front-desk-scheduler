@@ -101,7 +101,7 @@ def read_live():
     items, last = [], ""
     while True:
         page = dhub(
-            f"SELECT item_id, number, repository, status, kind, effort, value FROM items AS OF {sql_quote(head)} "
+            f"SELECT item_id, number, repository, status, kind, effort, value, origin FROM items AS OF {sql_quote(head)} "
             f"WHERE item_id > {sql_quote(last)} ORDER BY item_id LIMIT {PAGE_ROWS}",
             paginated=True,
         )
@@ -134,7 +134,7 @@ def uri(item_id: str) -> str:
 def read_dolt():
     """The whole board from a local dolt clone. Needs the binary and ./mirror."""
     return (
-        dsql("SELECT item_id, number, repository, status, kind, effort, value FROM items"),
+        dsql("SELECT item_id, number, repository, status, kind, effort, value, origin FROM items"),
         dsql("SELECT item_id, dep_item_id FROM item_deps"),
         None,
     )
@@ -150,7 +150,8 @@ def render_turtle(items, edges) -> str:
                  f'fd:status "{it["status"]}"',
                  f'fd:kind "{it["kind"]}"',
                  f'fd:effort "{it["effort"]}"^^xsd:double',
-                 f'fd:value "{it["value"]}"^^xsd:double']
+                 f'fd:value "{it["value"]}"^^xsd:double',
+                 f'fd:origin "{it["origin"]}"']
         if it["number"] is not None:
             parts.append(f'fd:number "{it["number"]}"^^xsd:integer')
         lines.append(" ;\n  ".join(parts) + " .")
@@ -210,6 +211,7 @@ EXPECTED_VIOLATIONS = [
     ("D1 — dependency cycle",             "Item participates in a dependency cycle"),
     ("D2 — unjustified block",            "Blocked item has no open dependency recorded"),
     ("D3 — Todo that should be Blocked",  "Todo item has open dependencies"),
+    ("github-origin row with no number",  "must carry its issue number"),
 ]
 
 

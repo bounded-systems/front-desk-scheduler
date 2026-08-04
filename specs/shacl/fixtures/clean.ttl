@@ -17,12 +17,14 @@
 
 <https://bounded.tools/ns/front-desk#item/clean-todo> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-todo> ;
+  fd:origin "github" ;
   fd:number "1"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "task" ;
   fd:effort "0"^^xsd:double ; fd:value "0"^^xsd:double .
 
 <https://bounded.tools/ns/front-desk#item/clean-done> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-done> ;
+  fd:origin "github" ;
   fd:number "2"^^xsd:integer ;
   fd:status "Done" ; fd:kind "epic" ;
   fd:effort "10"^^xsd:double ; fd:value "100"^^xsd:double .
@@ -32,6 +34,7 @@
 # satisfy D3 without ever reaching its FILTER.
 <https://bounded.tools/ns/front-desk#item/clean-unblocked> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-unblocked> ;
+  fd:origin "github" ;
   fd:number "3"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "room" ;
   fd:effort "2.5"^^xsd:double ; fd:value "40"^^xsd:double ;
@@ -40,6 +43,7 @@
 # D2: Blocked WITH an open (non-Done) dependency — a justified block.
 <https://bounded.tools/ns/front-desk#item/clean-blocked> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-blocked> ;
+  fd:origin "github" ;
   fd:number "4"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "door" ;
   fd:effort "1"^^xsd:double ; fd:value "60"^^xsd:double ;
@@ -47,6 +51,18 @@
 
 <https://bounded.tools/ns/front-desk#item/clean-inprogress> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/clean-inprogress> ;
+  fd:origin "github" ;
   fd:number "5"^^xsd:integer ;
   fd:status "In Progress" ; fd:kind "task" ;
   fd:effort "3"^^xsd:double ; fd:value "75"^^xsd:double .
+
+# Dolt-born hidden work: captured in the DoltHub write surface before any GitHub
+# issue exists, so it has NO fd:number — and that is legal (#143). syncPush()
+# creates the issue and drops this placeholder, after which the next pull
+# re-absorbs it as a github-origin row with a real number. The URI mirrors the
+# renderer's `item_id.replace(':', '_')` for a `dolt:` id.
+<https://bounded.tools/ns/front-desk#item/dolt_captured-1> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/dolt_captured-1> ;
+  fd:origin "dolt" ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .

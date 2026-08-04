@@ -220,8 +220,22 @@ query returns `RowLimit` *with 1000 rows in the body*, so a client that reads
 `rows` alone validates 56% of the board and reports a pass.
 
 The verdict names the commit it derived from, and `AS OF '<commit>'` re-derives
-it. What the renderer promises the shapes is only partly written down — #143 has
-one live disagreement (`fd:number`), #139 has another (`fd:self`).
+it. What the renderer promises the shapes is only partly written down — #139 has
+one live disagreement (`fd:self`); #143 was the other and is now closed.
+
+**`fd:number` is required of `github`-origin rows only** (#143). The three layers
+disagreed — nullable column, renderer emitting it only `if … is not None`, shapes
+demanding it — and the resolution is that absence is *legal for dolt-born rows and
+corruption for github ones*, so the constraint splits on `fd:origin` rather than
+relaxing. Two things are worth carrying forward from it. The issue blamed
+**ProjectV2 drafts, and that trigger is unreachable**: `normalize()` in
+`src/board.ts` drops any item whose `content.number` is absent, and the board
+query has no `... on DraftIssue` fragment, so a draft never reaches the mirror to
+be validated. What *is* reachable is `syncPush()`'s captured-work flow — a
+`dolt:`-prefixed row exists before its GitHub issue does. And a blanket
+`sh:minCount 0` would have modelled that correctly while **giving up the check
+that matters**; when a constraint is wrong for one class of row, split it on the
+discriminator instead of dropping it.
 
 ## Measuring the board — the same window, one door over
 

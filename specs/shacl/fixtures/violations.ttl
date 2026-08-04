@@ -22,6 +22,7 @@
 # status outside the ENUM, kind outside the ENUM, effort above 10, value above 100
 <https://bounded.tools/ns/front-desk#item/bad-enums> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/bad-enums> ;
+  fd:origin "github" ;
   fd:number "1"^^xsd:integer ;
   fd:status "Whatever" ; fd:kind "sandwich" ;
   fd:effort "11"^^xsd:double ; fd:value "101"^^xsd:double .
@@ -29,6 +30,7 @@
 # number below sh:minInclusive 1
 <https://bounded.tools/ns/front-desk#item/bad-number> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/bad-number> ;
+  fd:origin "github" ;
   fd:number "0"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .
@@ -38,6 +40,7 @@
 # pinned here explicitly rather than left to be caught by the cycle shape.
 <https://bounded.tools/ns/front-desk#item/self-dep> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/self-dep> ;
+  fd:origin "github" ;
   fd:number "2"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
@@ -48,6 +51,7 @@
 # self-dependency check — this one requires the transitive path to fire.
 <https://bounded.tools/ns/front-desk#item/cycle-a> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/cycle-a> ;
+  fd:origin "github" ;
   fd:number "3"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
@@ -55,6 +59,7 @@
 
 <https://bounded.tools/ns/front-desk#item/cycle-b> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/cycle-b> ;
+  fd:origin "github" ;
   fd:number "4"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
@@ -63,6 +68,7 @@
 # ── D2: Blocked with NO open dependency (sh:sparql, Warning) ─────────────────
 <https://bounded.tools/ns/front-desk#item/unjustified-block> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/unjustified-block> ;
+  fd:origin "github" ;
   fd:number "5"^^xsd:integer ;
   fd:status "Blocked" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .
@@ -70,7 +76,20 @@
 # ── D3: Todo with an open dependency — should be Blocked (sh:sparql, Warning) ─
 <https://bounded.tools/ns/front-desk#item/should-be-blocked> a fd:Item ;
   fd:self <https://bounded.tools/ns/front-desk#item/should-be-blocked> ;
+  fd:origin "github" ;
   fd:number "6"^^xsd:integer ;
   fd:status "Todo" ; fd:kind "task" ;
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
   fd:dependsOn <https://bounded.tools/ns/front-desk#item/unjustified-block> .
+
+# ── github-origin row with no fd:number (#143) ───────────────────────────────
+# The counterpart of clean.ttl's dolt-born item: absence is legal for `dolt`
+# origin and CORRUPTION for `github` origin, because the syncer cannot produce
+# one (src/board.ts `normalize()` drops any item whose content.number is absent).
+# Pinned here so relaxing fd:number to allow the dolt case cannot silently
+# relax it for the github case too.
+<https://bounded.tools/ns/front-desk#item/github-no-number> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/github-no-number> ;
+  fd:origin "github" ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .
