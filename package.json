@@ -21,6 +21,7 @@
     "schema:check": "node scripts/schema-export.ts --check",
     "triage:coverage": "node scripts/triage-coverage.ts",
     "shacl": ".venv/bin/python scripts/shacl_validate.py",
+    "shacl:fixtures": "python3 scripts/shacl_validate.py --fixtures",
     "fds": "node scripts/fds.ts",
     "mcp": "node scripts/mcp.ts"
   },
