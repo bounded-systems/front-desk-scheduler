@@ -19,6 +19,7 @@ import {
 } from "./capability.ts";
 import { assembleGraph, assembleScheduling, type SchedulingItem } from "./scheduling.ts";
 import { formatSelector, parseItemSelector, selectorMatches } from "./selector.ts";
+import { renderExclusion, type StatusProbe, verifyHeld } from "./held.ts";
 import {
   budgetGate,
   isEligible,
@@ -90,6 +91,35 @@ const NextOutput = z.object({
   // contributes zero rows, which is indistinguishable from a repo that does not
   // exist. See src/coverage.ts.
   excludes: z.array(z.object({ repo: z.string(), reason: z.string(), ranking: z.string() })),
+  /**
+   * Live lease exclusion for the pick and the top N (#135).
+   *
+   * On the lease plane the mirror's `leases` table is empty by design, so the
+   * `leased` flag excluded nothing and held items ranked as ready. This reports
+   * what was actually verified against the adjudicating DO, because an
+   * exclusion you cannot see is one you cannot trust: `unobserved > 0` means it
+   * partly did not run and a held item may still be listed.
+   *
+   * `configured: false` means `FDS_CLAIM_ENDPOINT` is unset — nothing was
+   * probed and nothing is claimed about who holds what.
+   */
+  liveExclusion: z.object({
+    configured: z.boolean(),
+    checked: z.number(),
+    unobserved: z.number(),
+    /**
+     * The items dropped, with what each lease is pinned to. A bound lease is
+     * someone working; a referent-less one is on the short ttl and about to
+     * lapse — the distinction #115 asked for, for the window this covers.
+     */
+    held: z.array(z.object({
+      number: z.number(),
+      repository: z.string(),
+      title: z.string(),
+      holder: z.string().nullable(),
+      boundTo: z.string().nullable(),
+    })),
+  }),
 });
 
 interface Deps {
@@ -100,6 +130,13 @@ interface Deps {
    * declare its own capabilities rather than inheriting this process's.
    */
   readonly actor?: ActorCapabilities;
+  /**
+   * How to ask the adjudicating DO whether an item is held (#135). Injected so
+   * the fan-out is testable without a Worker — and so a test can force the
+   * fail-open path, which is the branch that decides whether a degraded
+   * exclusion is visible or silent.
+   */
+  readonly probe?: StatusProbe;
 }
 
 /**
@@ -167,13 +204,25 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
       };
     };
 
+    // ── live lease exclusion, for the pick and the top N (#135) ─────────────
+    // The mirror's `leases` table is EMPTY on the lease plane by design, so the
+    // `leased` filter above removes nothing there and held items ranked as
+    // ready — #127 sat at rank 1 while a session held it. Ask the adjudicating
+    // DO about the window the caller is about to see. Bounded, open (no
+    // credential), and fail-open: see src/held.ts.
+    const window = ranked.slice(0, input.top);
+    const live = await verifyHeld(window.map((r) => scoped[r.number].id), deps?.probe);
+    const ranked2 = live.held.size === 0
+      ? ranked
+      : ranked.filter((r) => !live.held.has(scoped[r.number].id));
+
     // The capability partition. NOT a re-ranking: both lists stay in the score
     // order `prioritize` produced, and no score is touched. #58 was ranked
     // first correctly — effort-1, and #60/#62 are sized off the number it
     // produces — it just needs `gh`, which a cloud session does not have. The
     // useful output is two lists, not one reordered list (#86).
-    const executableRanked = ranked.filter((r) => toQ(r).missing.length === 0);
-    const otherRanked = ranked.filter((r) => toQ(r).missing.length > 0);
+    const executableRanked = ranked2.filter((r) => toQ(r).missing.length === 0);
+    const otherRanked = ranked2.filter((r) => toQ(r).missing.length > 0);
 
     // The pick is the top item this caller can ACTUALLY do. A pick the caller
     // cannot execute is what cost a full session on 2026-07-31.
@@ -187,9 +236,12 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
       derivedFrom: read.at,
       budget: budget.id,
       remaining,
-      eligible: ranked.length,
+      // `eligible` counts the queue AFTER live exclusion: an item someone holds
+      // is not work this caller can pick up, and reporting it as eligible is
+      // the exact overstatement #135 was filed about.
+      eligible: ranked2.length,
       executable: executableRanked.length,
-      untriagedCount: ranked.filter((r) => toQ(r).untriaged).length,
+      untriagedCount: ranked2.filter((r) => toQ(r).untriaged).length,
       queue: executableRanked.slice(0, input.top).map(toQ),
       otherActors: otherRanked.slice(0, input.top).map(toQ),
       actor: {
@@ -202,10 +254,34 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
       // Scoping to one repo does not narrow the gaps: a caller asking for `infra`
       // specifically is the one MOST likely to be misled by `ready: 0`.
       excludes: COVERAGE_GAPS.map((g) => ({ ...g })),
+      liveExclusion: {
+        configured: live.configured,
+        checked: live.checked,
+        unobserved: live.unobserved,
+        held: [...live.held.values()].map((h) => {
+          const it = board.find((i) => i.id === h.itemId);
+          return {
+            number: it?.number ?? 0,
+            repository: it?.repository ?? "",
+            title: it?.title ?? "",
+            holder: h.holder,
+            // Rendered rather than passed through as {kind,id}: the referent is
+            // opaque to everything except the reaper (#105), and a caller
+            // reading the queue wants "pr:owner/repo#n", not a tagged union.
+            boundTo: h.referent ? `${h.referent.kind}:${h.referent.id}` : null,
+          };
+        }),
+      },
     };
   },
   render: (o) => {
     const w = (s: string, n: number) => String(s).padEnd(n).slice(0, n);
+    const exclusionNote = renderExclusion({
+      checked: o.liveExclusion.checked,
+      unobserved: o.liveExclusion.unobserved,
+      configured: o.liveExclusion.configured,
+      heldCount: o.liveExclusion.held.length,
+    });
     const lines = [
       `Front Desk — next   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}` +
         (o.derivedFrom ? `\nderived from commit ${o.derivedFrom} — \`AS OF '${o.derivedFrom}'\` re-derives this exact queue` : ""),
@@ -243,6 +319,23 @@ export const nextVerb: VerbSpec<typeof NextInput, typeof NextOutput, Deps> = def
             `  Declare via issue-body frontmatter (kind/effort/value/depends-on) — see .github/ISSUE_TEMPLATE/task.md.`,
           ]
         : []),
+      // Held items are DROPPED from the queue above, so without this they
+      // simply vanish — and a caller cannot tell "nobody is on it" from "you
+      // can't see who is". Names the holder and, when the lease is bound, the
+      // PR it is pinned to (#105/#115).
+      ...(o.liveExclusion.held.length
+        ? [
+            `\n⊙ held right now, excluded from the queue (${o.liveExclusion.held.length}):`,
+            ...o.liveExclusion.held.map(
+              (h) =>
+                `  ${w("#" + h.number, 6)} ${w(h.repository, 16)} ${h.holder ?? "unknown holder"}` +
+                (h.boundTo
+                  ? ` — bound to ${h.boundTo}`
+                  : " — NOT bound; on the short claim ttl, so it may lapse back into the queue"),
+            ),
+          ]
+        : []),
+      ...(exclusionNote ? ["\n" + exclusionNote] : []),
       ...renderCoverage(o.excludes),
     ];
     return lines.join("\n");
