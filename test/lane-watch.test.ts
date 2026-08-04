@@ -113,6 +113,17 @@ test("never having succeeded is its own state — the #112 shape", () => {
   assert.ok(isRed(s));
 });
 
+test("a lane with NO runs at all is unknown, not never — zero attempts is not evidence", () => {
+  // Found by running it, not by a test: on its first real run this watchdog
+  // accused ITSELF of the #112 shape, reporting `NEVER (0/0 recent runs
+  // failed)`. #112 was 24 attempts and 24 failures; a lane merged an hour ago
+  // has not failed, it has not been tried. Any newly added lane hit this.
+  const s = classifyLane(obs({ lastSuccessMs: null, recent: [] }), T, 2 * HOUR);
+  assert.equal(s.state, "unknown");
+  assert.ok(!isRed(s), "a lane that has never been tried must not be red");
+  assert.match(describeLane("lane-watch.yml", s), /newly added|still in flight/);
+});
+
 test("a lane that keeps failing and recovering is FLAPPING, not live — the #129 shape", () => {
   // lease-projection failed twice in ten minutes and then succeeded. A recency
   // check alone read `live` throughout while two projections were being lost.

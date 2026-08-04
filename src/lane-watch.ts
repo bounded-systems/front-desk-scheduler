@@ -312,6 +312,14 @@ export function classifyLane(obs: LaneObservation, now: number, tolerance: numbe
     const allCountable = obs.recent.filter(
       (r) => r.conclusion !== "skipped" && r.conclusion !== "cancelled",
     );
+    // NO RUNS AT ALL is not the #112 shape and must not be red. #112 was 24
+    // attempts and 24 failures; zero attempts is no evidence of anything. A
+    // lane merged an hour ago has not failed — it has not been tried, and the
+    // first thing this watchdog did on its own first run was accuse itself.
+    // Caught by running it, not by a test (#124's own lesson, applied to it).
+    if (allCountable.length === 0) {
+      return { state: "unknown", why: "no completed runs yet — newly added, or its first run is still in flight" };
+    }
     return {
       state: "never",
       failed: allCountable.filter((r) => r.conclusion !== "success").length,
