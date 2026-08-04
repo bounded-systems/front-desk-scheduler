@@ -75,6 +75,7 @@ jobs:
           failures=0
           expected_misses=0
           stale=0
+          scope_wide=0
 
           # Tiers known NOT to be on the broker's allowlists (infra#139). A 401/403
           # from one of these is the standing condition, not news, so it does not
@@ -86,6 +87,93 @@ jobs:
           EXPECTED_401="dolthub cloudflare"
 
           is_expected_401() { case " $EXPECTED_401 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+          # ── what the token must be able to DO (front-desk#97) ──────────────
+          # A non-empty token string proves the mint worked. It proves nothing
+          # about the credential's authority, so the whole class where the mint
+          # succeeds and the token is useless used to pass this lane green —
+          # twice, in runs 30373059795 (createPullRequest) and 30641376455
+          # (create-a-reference, which left schema/mirror.live.sql stale on main).
+          #
+          # `mintInstallationToken` already echoes what GitHub GRANTED, precisely
+          # so a caller can assert before doing the work. This lane is the natural
+          # consumer of that echo and used to drop it on the floor.
+          #
+          # The declared set mirrors the tier's GH_APPS entry in
+          # cloudflare/broker/wrangler.jsonc: that map is sent as the
+          # access_tokens `permissions` body, so the token is scoped DOWN to
+          # exactly it and the granted map should match unless the installation
+          # declined something.
+          #
+          # NOTE WHAT IS DELIBERATELY ABSENT: `contents:write`. It lives on the
+          # separate `front-desk-schema` entry, pinned to mirror-migrate.yml,
+          # specifically so `front-desk` — the one unpinned multi-repo fan-in —
+          # cannot write repository contents org-wide. Expecting it here would red
+          # this lane for a scope this tier must never hold.
+          min_perms_for() {
+            case "$1" in
+              github-app) echo "organization_projects:write issues:read metadata:read pull_requests:write" ;;
+              *)          echo "" ;;
+            esac
+          }
+
+          # GitHub's permission levels are ordered, so `write` satisfies a `read`
+          # minimum. Comparing strings for equality would fail a token that is
+          # strictly more capable than required, which is not drift.
+          perm_rank() { case "$1" in admin) echo 3 ;; write) echo 2 ;; read) echo 1 ;; *) echo 0 ;; esac; }
+
+          assert_granted_scope() { # name body -> 1 only when a REQUIRED scope is missing
+            local name="$1" body="$2" want="" pair="" key="" lvl="" got="" missing="" wide=""
+            want="$(min_perms_for "$name")"
+            [ -n "$want" ] || return 0   # tier carries no permissions map (not a GitHub App)
+
+            # An ABSENT map is FULL-GRANT, which is the opposite of `{}` — the token
+            # carries everything the installation holds, now and in future.
+            # mintInstallationToken never substitutes one for the other, so neither
+            # does this: reporting "no permissions" as "no authority" would invert it.
+            if ! jq -e '.permissions | type == "object"' >/dev/null 2>&1 <<<"$body"; then
+              echo "::warning::[$name] minted FULL-GRANT (no permissions map) — this token carries everything the installation holds. Expected a downscoped map: $want"
+              scope_wide=$((scope_wide+1))
+              return 0
+            fi
+
+            for pair in $want; do
+              key="${pair%%:*}"; lvl="${pair##*:}"
+              got="$(jq -r --arg k "$key" '.permissions[$k] // empty' <<<"$body")"
+              if [ "$(perm_rank "$got")" -lt "$(perm_rank "$lvl")" ]; then
+                missing="$missing $key(want $lvl, got ${got:-none})"
+              fi
+            done
+
+            # Granted ⊉ declared: real drift. The next dependent run 403s.
+            if [ -n "$missing" ]; then
+              echo "::error::[$name] GRANTED SCOPE DRIFT — the minted token is missing:$missing"
+              echo "::error::[$name] the mint SUCCEEDED and the token is real; whatever needs this scope will 403 with 'Resource not accessible by integration'. Read that as \"the broker did not ask for it\" (GH_APPS in cloudflare/broker/wrangler.jsonc), not \"the App lacks it\" — see docs/credential-chain.md."
+              return 1
+            fi
+
+            # Granted ⊋ declared: news, not breakage — same idiom as the
+            # EXPECTED_401 staleness warning above, so the declaration cannot
+            # quietly rot into one that no longer describes the tier.
+            while IFS='=' read -r key got; do
+              [ -n "$key" ] || continue
+              lvl=""
+              for pair in $want; do [ "${pair%%:*}" = "$key" ] && lvl="${pair##*:}"; done
+              if [ -z "$lvl" ]; then
+                wide="$wide $key:$got"
+              elif [ "$(perm_rank "$got")" -gt "$(perm_rank "$lvl")" ]; then
+                wide="$wide $key:$got(>$lvl)"
+              fi
+            done < <(jq -r '.permissions | to_entries[] | "\(.key)=\(.value)"' <<<"$body")
+
+            if [ -n "$wide" ]; then
+              echo "::warning::[$name] granted scope is WIDER than declared:$wide — news, not breakage. Update min_perms_for in this workflow if the widening is intended, so a future NARROWING is still caught."
+              scope_wide=$((scope_wide+1))
+            else
+              echo "::notice::[$name] granted scope matches the declared set ($want)"
+            fi
+            return 0
+          }
 
           mint_tier() { # name audience path -> writes /tmp/tok.$name on 200
             local name="$1" audience="$2" path="$3"
@@ -104,7 +192,10 @@ jobs:
               200)
                 jq -r '.token // .jwk // empty' <<<"$body" | tr -d '\n' > "/tmp/tok.$name"
                 if [ -s "/tmp/tok.$name" ]; then
-                  echo "::notice::[$name] tier healthy — mint succeeded"
+                  # Deliberately NOT "tier healthy" any more: a non-empty token
+                  # says the mint worked, and that is all it says (#97). Whether
+                  # the tier is healthy is decided by the scope assertion below.
+                  echo "::notice::[$name] mint succeeded"
                   # Good news that must not pass silently: this tier is still
                   # declared un-allowlisted, so the declaration is now wrong and
                   # would mask a future regression on a tier that really works.
@@ -112,6 +203,8 @@ jobs:
                     echo "::warning::[$name] now MINTS but is still in EXPECTED_401 — remove it from that list (infra#139) so a future failure on this tier is caught"
                     stale=$((stale+1))
                   fi
+                  # The mint is only half the check — assert what the token can DO.
+                  assert_granted_scope "$name" "$body" || return 1
                 else
                   echo "::error::[$name] HTTP 200 but no token in the body"; return 1
                 fi ;;
@@ -144,6 +237,7 @@ jobs:
             echo "failures=$failures"
             echo "expected_misses=$expected_misses"
             echo "stale=$stale"
+            echo "scope_wide=$scope_wide"
           } >> "$GITHUB_OUTPUT"
           [ "$failures" -eq 0 ] || exit 1
 
@@ -208,12 +302,20 @@ jobs:
             echo "Tests C1/C2 from specs/lean/Delegation.lean against the live broker."
             echo ""
             echo "- **red mint** = drift, or a failure on a tier expected to work (the log names which)"
+            echo "- **red scope** = the mint succeeded and the token is MISSING a declared permission —"
+            echo "  the quiet failure where the credential is real and useless (front-desk#97)"
             echo "- **red probe** = a minted token holds authority the tiers do not document"
             echo "- **known un-allowlisted tiers** (\`${{ steps.mint.outputs.expected_misses || '?' }}\` this run) 401 by standing condition and do not fail the lane — infra#139"
             echo ""
             if [ "${{ steps.mint.outputs.stale || 0 }}" != "0" ]; then
               echo "> ⚠️ A tier in \`EXPECTED_401\` now mints. Shrink that list in this workflow so a future"
               echo "> regression on it is caught — see infra#139."
+              echo ""
+            fi
+            if [ "${{ steps.mint.outputs.scope_wide || 0 }}" != "0" ]; then
+              echo "> ⚠️ A tier's granted scope is WIDER than \`min_perms_for\` declares (or it minted"
+              echo "> full-grant). Not breakage — but update the declaration so a future NARROWING is"
+              echo "> still caught, for the same reason \`EXPECTED_401\` must shrink."
               echo ""
             fi
             echo "The theorems bound the design; this run binds the deployment."
