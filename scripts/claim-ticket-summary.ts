@@ -21,7 +21,7 @@
  */
 
 /** Shape of the `claim` verb's output (see ClaimOutput in src/verbs.ts). */
-export interface ClaimVerdict {
+export interface ClaimResult {
   won: boolean;
   itemId: string | null;
   number: number | null;
@@ -32,7 +32,21 @@ export interface ClaimVerdict {
    *  verb — it is not — but because a verdict recorded by a run that PREDATES
    *  the field must still render rather than crash the summary step. */
   fencing?: number | null;
+  /**
+   * Which of the four answers this is (#127). Optional for the same reason
+   * `fencing` is: a payload from a run that predates the field must still
+   * render. Absent ⇒ fall back to `won`, which is what the two verdicts that
+   * existed then were carried by.
+   */
+  verdict?: "granted" | "not-granted" | "not-eligible" | "not-in-mirror";
 }
+
+/**
+ * @deprecated The payload's name from before it carried a `verdict` field.
+ * `ClaimVerdict` now means "which of the four answers" (src/verbs.ts); this
+ * interface is the whole result. Kept so existing importers still resolve.
+ */
+export type ClaimVerdict = ClaimResult;
 
 /** The one greppable line a session reads out of the job log. */
 export const RESULT_MARKER = "FDS-CLAIM-RESULT";
@@ -73,13 +87,41 @@ export function renderVerdict(verdict: ClaimVerdict, agentLabel: string): string
       "never binds lapses on the short ttl.",
     );
   } else {
+    // All three refusals are normal outcomes, and they want DIFFERENT next
+    // moves — which is the whole reason `verdict` exists as a field (#127).
+    // Rendering one paragraph for all of them would tell a caller to "run
+    // `next` again and dispatch afresh" after naming a blocked item, which
+    // cannot ever succeed, and would read a mirror gap as contention.
+    const guidance: Record<NonNullable<ClaimResult["verdict"]>, string[]> = {
+      granted: [], // unreachable — won is false here
+      "not-granted": [
+        "Another claimant holds it — ordinary contention. Ask `next` for another item,",
+        "or wait for the holder's PR to close; the reaper frees a bound lease then.",
+      ],
+      "not-eligible": [
+        "The board knows this item and the **ready rule refuses it** — it is blocked,",
+        "not live, or already finished. Re-dispatching cannot change that; the item",
+        "has to change. Naming an item selects which one is asked about, it does not",
+        "exempt it from the rule (#59).",
+      ],
+      "not-in-mirror": [
+        "The board has **never heard of this item** — this says nothing about who",
+        "holds it. Almost always a freshly filed issue the syncer has not picked up",
+        "yet (#127: #118 was still absent 14 minutes after it was created).",
+        "Re-dispatching after the next sync CAN succeed.",
+      ],
+    };
+    const verdictKind = verdict.verdict ?? "not-granted";
     lines.push(
-      "## claim-ticket — NOT GRANTED",
+      `## claim-ticket — ${verdictKind.toUpperCase().replace(/-/g, " ")}`,
       "",
       `No lease was taken: ${verdict.reason}`,
       "",
-      "This is a normal outcome, not a failure. Either another claimant holds the item",
-      "or nothing was eligible. Run `next` again and dispatch afresh.",
+      // True of all three, and the thing a caller must not misread: the run
+      // succeeded and the payload IS the answer. Only ERROR means no verdict.
+      "This is a normal outcome, not a failure.",
+      "",
+      ...(guidance[verdictKind] ?? guidance["not-granted"]),
     );
   }
   lines.push("", "```json", JSON.stringify(verdict, null, 2), "```");

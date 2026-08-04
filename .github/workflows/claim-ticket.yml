@@ -51,6 +51,15 @@ on:
         description: 'Restrict the pick to one repo, e.g. "front-desk-scheduler". Blank = whole board.'
         required: false
         type: string
+      item:
+        description: >-
+          Claim THIS item instead of the top-ranked pick — "repo#number" (e.g.
+          "front-desk-scheduler#127"), or a "PVTI_…" node id. Blank = ask the
+          board. Use it whenever a human hands you a specific issue: without it
+          the pick is whatever ranks top at dispatch time, which is a DIFFERENT
+          item than the one you were given (#127).
+        required: false
+        type: string
       ttl:
         description: >-
           Lease seconds — since #105 this is the REFERENT-LESS grace window
@@ -107,6 +116,7 @@ jobs:
           FDS_JSON: "1"
           AGENT_LABEL: ${{ inputs.agent_label }}
           PICK_REPO: ${{ inputs.repo }}
+          PICK_ITEM: ${{ inputs.item }}
           TTL: ${{ inputs.ttl }}
         run: |
           set -uo pipefail
@@ -119,6 +129,10 @@ jobs:
 
           args=(claim --agent "$AGENT_LABEL" --ttl "$TTL")
           [ -n "${PICK_REPO:-}" ] && args+=(--repo "$PICK_REPO")
+          # Naming an item changes the SELECTION only — `claim` resolves it
+          # through the same schedulable set and the same isEligible the ranking
+          # uses, so this is not a route around the ready rule (#127).
+          [ -n "${PICK_ITEM:-}" ] && args+=(--item "$PICK_ITEM")
 
           # stdout is the verdict, stderr is the diagnosis. Keep them apart so a
           # transport error cannot be parsed as a refusal.

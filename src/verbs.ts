@@ -17,9 +17,11 @@ import {
   currentActor,
   missingFor,
 } from "./capability.ts";
-import { assembleGraph, assembleScheduling } from "./scheduling.ts";
+import { assembleGraph, assembleScheduling, type SchedulingItem } from "./scheduling.ts";
+import { formatSelector, parseItemSelector, selectorMatches } from "./selector.ts";
 import {
   budgetGate,
+  isEligible,
   ORG_BUDGETS,
   planCapacity,
   prioritize,
@@ -264,8 +266,8 @@ import { bindReferent, claimNext, releaseClaim } from "./mirror.ts";
  * Returns the commit the ranking was derived from, so the claim can record what
  * board state it decided against (`claims.decided_at_commit`).
  */
-const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; at: string | null; byId: Map<string, { number: number; repository: string; title: string }> }> => {
-  const read = await currentReads().readScheduling();
+const orderedReadyIds = async (reads: SchedulerReads, repo?: string): Promise<{ ids: string[]; at: string | null; byId: Map<string, { number: number; repository: string; title: string }> }> => {
+  const read = await reads.readScheduling();
   const board = read.items.filter(
     (i) => i.status !== "Done" && !i.leased && (!repo || i.repository === repo),
   );
@@ -279,8 +281,36 @@ const orderedReadyIds = async (repo?: string): Promise<{ ids: string[]; at: stri
   return { ids, at: read.at, byId };
 };
 
+/**
+ * The four answers a claim can give, as a field rather than as prose (#127).
+ *
+ * `won` already carried the granted/not-granted split, and the workflow's three
+ * documented outcomes stayed readable through it because the third — ERROR —
+ * was carried by the exit code rather than the payload. A NAMED claim adds two
+ * refusals that are neither contention nor transport failure, and collapsing
+ * them into `won: false` would repeat exactly the mistake
+ * `docs/claiming-from-a-session.md` warns about one level up: "nothing eligible"
+ * and "someone holds it" are different facts and want different reactions.
+ *
+ *   granted        you hold it.
+ *   not-granted    someone else holds it. Ordinary contention; a fact.
+ *   not-eligible   the board knows the item and the ready rule refuses it —
+ *                  blocked, or not live. Re-dispatching cannot help; the item
+ *                  has to change.
+ *   not-in-mirror  the board has never heard of it. Usually a freshly filed
+ *                  issue the syncer has not picked up yet, which is the case
+ *                  #127 was filed about: #118 was still absent 14 minutes after
+ *                  it was created. Re-dispatching later CAN help.
+ *
+ * `won` stays, and stays equal to `verdict === "granted"`, because every
+ * existing consumer reads it.
+ */
+export const CLAIM_VERDICTS = ["granted", "not-granted", "not-eligible", "not-in-mirror"] as const;
+export type ClaimVerdict = (typeof CLAIM_VERDICTS)[number];
+
 const ClaimOutput = z.object({
   won: z.boolean(),
+  verdict: z.enum(CLAIM_VERDICTS),
   itemId: z.string().nullable(),
   number: z.number().nullable(),
   repository: z.string().nullable(),
@@ -306,23 +336,135 @@ const ClaimOutput = z.object({
   fencing: z.number().int().nullable(),
 });
 
+/**
+ * Why the ready rule refuses a named item, in the caller's terms.
+ *
+ * Only ever called for a row that IS in the schedulable set, so "Done" and
+ * "closed on GitHub" are not among the answers — those rows never reach here
+ * (see `SCHEDULABLE` in scheduling.ts) and are diagnosed separately.
+ *
+ * This reports the rule's decision; it does not restate it. `isEligible` is
+ * still the single definition (#59) and is what actually refuses.
+ */
+function whyNotEligible(item: SchedulingItem): string {
+  const state = statusToState(item.status);
+  if (state !== "open" && state !== "in_progress") {
+    return `its card reads "${item.status}" (${state}), and the ready rule takes only live items`;
+  }
+  return `it has ${item.openBlockers} open blocker${item.openBlockers === 1 ? "" : "s"}`;
+}
+
+/** The deps `claim` resolves through — the read plane, and the CAS itself. */
+interface ClaimDeps {
+  readonly reads: SchedulerReads;
+  readonly claim: typeof claimNext;
+}
+
 export const claimVerb = defineVerb({
   id: "claim",
   summary:
-    "Lease the top-ranked ready item for an agent — an atomic CAS (the scheduler's proven S1) with a ttl visibility timeout; a dead agent's lease auto-expires.",
+    "Lease a ready item for an agent — the top-ranked pick, or a NAMED one via --item — as an atomic CAS (the scheduler's proven S1) with a ttl visibility timeout; a dead agent's lease auto-expires.",
   actor: "front-desk",
   input: z.object({
     agent: z.string(),
     repo: z.string().optional(),
+    /**
+     * Claim THIS item instead of the top-ranked pick — `repo#number`, a bare
+     * number alongside `--repo`, or a `PVTI_…` node id (#127).
+     *
+     * The selection changes; the rule does not. A named item is resolved
+     * through the same schedulable set and the same `isEligible` the ranking
+     * uses, and is refused with `not-eligible` if it does not pass — so this is
+     * not a lease-plane door around the ready rule, which is the property that
+     * made the obvious version of this input the wrong one.
+     */
+    item: z.string().optional(),
     ttl: z.coerce.number().int().min(1).default(3600),
   }),
   output: ClaimOutput,
-  run: async (input) => {
-    const { ids, at, byId } = await orderedReadyIds(input.repo);
-    const res = await claimNext(input.agent, ids, input.ttl, at);
+  deps: (): ClaimDeps => ({ reads: currentReads(), claim: claimNext }),
+  run: async (input, deps) => {
+    const reads = deps?.reads ?? currentReads();
+    const cas = deps?.claim ?? claimNext;
+
+    // ── the named path (#127) ────────────────────────────────────────────────
+    // Resolve to ONE candidate, then hand that single-element list to the same
+    // CAS the ranked path uses. Everything below the resolution is unchanged:
+    // the lease plane stays the only authority on who holds an item, and this
+    // function stays the only thing that decided which item to ask about.
+    if (input.item !== undefined) {
+      const sel = parseItemSelector(input.item, input.repo);
+      const named = formatSelector(sel);
+      const read = await reads.readScheduling();
+      const row = read.items.find((i) => selectorMatches(sel, i));
+
+      if (!row) {
+        // Absent from the SCHEDULABLE set is two different facts. Reach for the
+        // whole-board read to tell them apart — it is the paginated one, but it
+        // is only ever taken on a path that is already refusing, so the ranked
+        // claim keeps its single read.
+        const all = await reads.readAllItems({ repo: sel.repository });
+        const known = all.items.find((i) =>
+          selectorMatches(sel, { id: i.item_id, number: Number(i.number), repository: i.repository })
+        );
+        return {
+          won: false,
+          verdict: known ? ("not-eligible" as const) : ("not-in-mirror" as const),
+          itemId: known?.item_id ?? sel.id ?? null,
+          number: known ? Number(known.number) : sel.number ?? null,
+          repository: known?.repository ?? sel.repository ?? null,
+          title: known?.title ?? null,
+          reason: known
+            ? `${named} is finished — status "${known.status}", or closed on GitHub. ` +
+              "A completed item is outside the schedulable set and cannot be held."
+            : `${named} is not in the mirror — the board read at ${read.at ?? "an unpinned commit"} ` +
+              "has never heard of it. If you just filed it, the syncer has not caught up yet; " +
+              "this is not a statement about who holds it.",
+          fencing: null,
+        };
+      }
+
+      if (!isEligible({
+        number: row.number, title: row.title, kind: row.kind, state: statusToState(row.status),
+        effort: row.effort, value: row.value, openBlockers: row.openBlockers,
+        unblocks: row.unblocks, ageDays: row.ageDays,
+      })) {
+        return {
+          won: false,
+          verdict: "not-eligible" as const,
+          itemId: row.id,
+          number: row.number,
+          repository: row.repository,
+          title: row.title,
+          reason: `${named} is not ready: ${whyNotEligible(row)}. ` +
+            "Naming an item chooses which one is asked about; it does not exempt it from the ready rule.",
+          fencing: null,
+        };
+      }
+
+      const res = await cas(input.agent, [row.id], input.ttl, read.at);
+      return {
+        won: res.won,
+        verdict: res.won ? ("granted" as const) : ("not-granted" as const),
+        itemId: row.id,
+        number: row.number,
+        repository: row.repository,
+        title: row.title,
+        // On a one-element candidate list, the CAS can only refuse for one
+        // reason, and `claimNext`'s ranked-path wording ("no unleased eligible
+        // item") would describe a search that did not happen.
+        reason: res.won ? res.reason : `${named} is held by another agent`,
+        fencing: res.fencing ?? null,
+      };
+    }
+
+    // ── the ranked path (unchanged) ──────────────────────────────────────────
+    const { ids, at, byId } = await orderedReadyIds(reads, input.repo);
+    const res = await cas(input.agent, ids, input.ttl, at);
     const meta = res.itemId ? byId.get(res.itemId) : undefined;
     return {
       won: res.won,
+      verdict: res.won ? ("granted" as const) : ("not-granted" as const),
       itemId: res.itemId ?? null,
       number: meta?.number ?? null,
       repository: meta?.repository ?? null,
@@ -338,7 +480,9 @@ export const claimVerb = defineVerb({
         // caller does (bind-ticket / release-ticket both require it), not a
         // detail of what just happened.
         (o.fencing === null ? "" : `\n  fencing: ${o.fencing}`)
-      : `no claim: ${o.reason}`,
+      // The verdict leads, so a refusal that cannot be retried into a grant does
+      // not read like one that can.
+      : `no claim (${o.verdict}): ${o.reason}`,
 });
 
 export const bindVerb = defineVerb({

@@ -49,7 +49,9 @@ every self-asserted alias under the verified identity, so `session-7` lands as
 **1. Decide.** Ask the `next` tool (or `node scripts/fds.ts next`). No credential.
 
 **2. Dispatch.** Run the `claim-ticket` workflow with `agent_label` (required),
-optionally `repo` to restrict the pick and `ttl` for the lease length.
+optionally `repo` to restrict the pick and `ttl` for the lease length. If you were
+handed a specific issue rather than asking the board, pass `item` instead — see
+[When someone hands you an issue](#when-someone-hands-you-an-issue-127).
 
 From a session, the GitHub MCP tools are the path — there is no `gh` binary in a
 cloud session:
@@ -90,6 +92,76 @@ broken endpoint and reading it as a busy queue.
 `scripts/claim-ticket-summary.ts` renders all three, and
 `test/claim-ticket-summary.test.ts` pins the property that a refusal and an error
 never render as each other.
+
+## When someone hands you an issue (#127)
+
+Everything above is the *ask-the-board* flow: you do not know what to work on, so
+you take whatever ranks top. The other flow is at least as common — a human hands
+you a specific issue — and until #127 it was not expressible. `claim-ticket.yml`
+latched the top-ranked pick, so "I intend to work #118" came out as a lease on
+whatever else happened to rank first.
+
+That is not hypothetical. On 2026-08-03 two sessions worked #118 simultaneously,
+landing two different strategies for one item, with the whole lease apparatus
+sitting unused. And restricting the pick with `repo:` would not have saved it:
+#118 was created at `21:45:52Z` and the `21:59:28Z` sync still did not contain
+it, so a repo-scoped dispatch would have **leased #113, the wrong item**, and
+left #118 unheld anyway.
+
+Pass `item`:
+
+```
+mcp__github__actions_run_trigger
+  owner: bounded-systems   repo: front-desk-scheduler
+  workflow: claim-ticket.yml   ref: main
+  inputs:
+    agent_label: "session-7"
+    item:        "front-desk-scheduler#127"
+```
+
+The form is **`repo#number`**. A bare `#127` is refused — issue numbers repeat
+across repos, and front-desk-scheduler#93 is the record of what a bare number
+costs on a multi-repo board. `owner/repo#number` is accepted too, since that is
+the shape `bind-ticket.yml` takes for its referent. A `PVTI_…` node id works, so
+a verdict you already hold can be replayed verbatim.
+
+### Naming an item does not exempt it from the ready rule
+
+This is the property that made the obvious version of this input the wrong one.
+An arbitrary `item_id` handed to the lease plane would be a way to hold an item
+that is Done, closed, or blocked — a lease-plane bypass of the rule #59 spent
+effort making single-definition.
+
+So the **selection** changes and nothing else does. A named item is resolved
+through the same schedulable set (`SCHEDULABLE`) and the same `isEligible` the
+ranking uses, and is refused if it does not pass. `test/claim-named.test.ts`
+pins that a refusal is decided *before* the CAS is reached — the same property
+the Worker has when it refuses in the router before touching the Durable Object:
+a failed claim writes nothing.
+
+### Four verdicts, and only one of them is worth retrying
+
+Every payload now carries a `verdict` field alongside `won`.
+
+| verdict | `won` | meaning | retry? |
+|---|---|---|---|
+| `granted` | true | You hold it. **Bind your PR.** | — |
+| `not-granted` | false | Someone else holds it. Ordinary contention. | Another item, or wait for their PR to close. |
+| `not-eligible` | false | The board knows it and the ready rule refuses it — blocked, not live, or finished. | **No.** The item has to change. |
+| `not-in-mirror` | false | The board has never heard of it. | **Yes, after the next sync.** |
+
+The last two are the pair worth keeping apart, for the same reason not-granted
+and error are: they want opposite reactions. `not-in-mirror` is almost always a
+freshly filed issue — the #127 case exactly — and says *nothing* about who holds
+the item; retrying after a sync can succeed. `not-eligible` is a fact about the
+item that no amount of re-dispatching will change.
+
+A malformed selector is neither: it fails the run as an **ERROR**, because
+"I cannot parse what you typed" is not a fact about the board.
+
+> `verdict` is absent from payloads recorded before #127. The summary renderer
+> falls back to `won`, which is what the two verdicts that existed then were
+> carried by.
 
 ## After you hold it — bind your PR (#105)
 
