@@ -10,11 +10,12 @@
 # renderer, and `specs/shacl/fixtures/` pins what these shapes accept and reject.
 # Wiring to conformance-kit's shared runner is #3, blocked on conformance-kit#58.
 #
-# TWO REQUIREMENTS ON ANY RENDERER (#139)
-# ---------------------------------------
-# These shapes are not renderer-agnostic. A renderer that does not meet both
-# produces a WRONG verdict rather than an error, so read this before writing a
-# second one (a JSON-LD path for conformance-kit would be the first case):
+# THREE REQUIREMENTS ON ANY RENDERER (#139, #143)
+# -----------------------------------------------
+# These shapes are not renderer-agnostic. A renderer that does not meet all
+# three produces a WRONG verdict rather than an error, so read this before
+# writing a second one (a JSON-LD path for conformance-kit would be the first
+# case):
 #
 #   1. Emit a reflexive `fd:self` edge on every item. Core SHACL cannot compare a
 #      property's values against the focus node, so `sh:disjoint fd:self` below
@@ -24,8 +25,16 @@
 #   2. Type `fd:effort`/`fd:value` as `xsd:double` explicitly. Plain Turtle `2.0`
 #      parses as `xsd:decimal` and fails `sh:datatype`, so a CLEAN item reports
 #      violations that look like bad data rather than a bad rendering.
+#   3. Emit `fd:origin` on every item. `fd:GithubNumberShape` below is CONDITIONAL
+#      on it, and the condition is the failing-open kind: with no `fd:origin`
+#      value, `sh:not [ … sh:hasValue "github" ]` succeeds, the `sh:or` is
+#      satisfied, and the number check is skipped for every item — the same
+#      vacuity trap as `fd:self` in (1). What stops it being silent is
+#      `sh:minCount 1` on `fd:origin` in `fd:ItemShape`: an omitting renderer
+#      fails loudly there instead. Keep that minCount and this requirement
+#      together — dropping either one re-arms the trap.
 #
-# The fixtures are what keep both honest: fixtures/clean.ttl must conform,
+# The fixtures are what keep all three honest: fixtures/clean.ttl must conform,
 # fixtures/violations.ttl must NOT, and `npm run shacl:fixtures` asserts both.
 
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
