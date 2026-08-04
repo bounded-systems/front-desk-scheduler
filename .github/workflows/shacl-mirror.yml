@@ -1,0 +1,60 @@
+name: shacl-mirror
+# The declarative shape contract, run against the LIVE board (#3).
+#
+# `test.yml` runs the same shapes against FIXTURES on every PR — that proves the
+# validator works. This proves the BOARD conforms, which is a different claim and
+# can only go red for a different reason: someone moved a card.
+#
+# NO CREDENTIAL, NO DOLT, NO CLONE. It reads the public DoltHub HTTP plane the
+# same way `next`/`graph`/`list` do, so it costs no GitHub rate-limit budget and
+# needs no secret. That is why it can be a plain scheduled job rather than
+# something that has to go through a ticket window.
+#
+# SCHEDULED, NOT POST-SYNC. `mirror-sync-delta` is webhook-driven and its
+# inter-run gaps ranged from ~90s to over an hour in one evening, so chaining
+# this to it would produce a lane whose cadence is a property of how busy the
+# org was that day. Daily is a TIME window (#124) and the board's shape
+# invariants do not need minute-level latency — a cycle that appears at 14:02 is
+# just as broken at 23:00.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+  # Also on changes to the shapes or the renderer: those change what the verdict
+  # MEANS, so a green run on the old definition is not evidence for the new one.
+  pull_request:
+    paths:
+      - "specs/shacl/**"
+      - "scripts/shacl_validate.py"
+      - ".github/workflows/shacl-mirror.yml"
+concurrency:
+  group: shacl-mirror-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  shacl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install SHACL deps (pinned)
+        run: python -m pip install -r specs/shacl/requirements.txt
+
+      # The fixtures first, ALWAYS, and in the same job. A live verdict is only
+      # worth reading if the validator that produced it can still fail — and
+      # `conforms: true` from a silently-disabled validator is indistinguishable
+      # from a clean board (#139). If this step fails, the live result below is
+      # meaningless rather than good.
+      - name: Fixtures (the validator must still be able to fail)
+        run: python scripts/shacl_validate.py --fixtures
+
+      # Violations gate; warnings are printed and do not. See the comment in
+      # scripts/shacl_validate.py for why — gating on D2/D3 would have red-lined
+      # this lane on its first run, which is how a monitor stops being read.
+      - name: Live board
+        run: python scripts/shacl_validate.py --live

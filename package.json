@@ -8,7 +8,9 @@
   "engines": {
     "node": ">=22.18"
   },
-  "bin": { "fds": "scripts/fds.ts" },
+  "bin": {
+    "fds": "scripts/fds.ts"
+  },
   "scripts": {
     "test": "node --test test/*.test.ts worker/lease/src/*.test.mjs",
     "sim": "node scripts/demo.ts",
@@ -23,7 +25,8 @@
     "shacl": ".venv/bin/python scripts/shacl_validate.py",
     "shacl:fixtures": "python3 scripts/shacl_validate.py --fixtures",
     "fds": "node scripts/fds.ts",
-    "mcp": "node scripts/mcp.ts"
+    "mcp": "node scripts/mcp.ts",
+    "shacl:live": ".venv/bin/python scripts/shacl_validate.py --live"
   },
   "exports": {
     ".": "./src/index.ts"
