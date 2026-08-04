@@ -70,6 +70,20 @@ export interface LiveExclusion {
   readonly configured: boolean;
 }
 
+/**
+ * How many ranked candidates a verb probes when it has no caller-supplied bound.
+ *
+ * `next` uses the caller's `top`, because the caller said how much of the queue
+ * they intend to look at. `graph` has no such input and shows the whole ready
+ * list, so it needs a default — and it must be a *number*, not "all", because
+ * probing every ready item is the whole-board case (#84) that #43 deliberately
+ * did not take.
+ *
+ * Ten matches `next`'s default, so both verbs verify the same depth and a
+ * caller comparing them does not see one contradict the other.
+ */
+export const DEFAULT_HELD_WINDOW = 10;
+
 /** Nothing probed — the shape returned when the lease plane is not configured. */
 export const NO_EXCLUSION: LiveExclusion = {
   held: new Map(),

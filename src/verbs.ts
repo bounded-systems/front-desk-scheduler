@@ -19,7 +19,7 @@ import {
 } from "./capability.ts";
 import { assembleGraph, assembleScheduling, type SchedulingItem } from "./scheduling.ts";
 import { formatSelector, parseItemSelector, selectorMatches } from "./selector.ts";
-import { renderExclusion, type StatusProbe, verifyHeld } from "./held.ts";
+import { DEFAULT_HELD_WINDOW, renderExclusion, type StatusProbe, verifyHeld } from "./held.ts";
 import {
   budgetGate,
   isEligible,
@@ -677,12 +677,45 @@ const GraphItemOut = z.object({
 const GraphBlockedOut = GraphItemOut.extend({ blockedBy: z.array(GraphRefOut) });
 const GraphEdgeOut = z.object({ from: GraphRefOut, to: GraphRefOut, kind: z.string() });
 
+/**
+ * A held item, from the caller's point of view (#115).
+ *
+ * It sits alongside `blocked` rather than inside `ready` because that is what it
+ * IS to someone reading the graph: unavailable, for a reason worth naming.
+ * `blocked` already answers "why not" with the blocking issues; this answers it
+ * with the holder — and with the PR, when the lease is bound.
+ *
+ * The bound/referent-less distinction is the point. A bound lease is someone
+ * working, released when their PR closes. A referent-less one is on the short
+ * claim ttl and about to lapse back into the queue. "Wait, or take something
+ * else?" is a different answer in each case, and before this both read as
+ * simply absent.
+ */
+const GraphHeldOut = GraphItemOut.extend({
+  holder: z.string().nullable(),
+  boundTo: z.string().nullable(),
+});
+
 const GraphOutput = z.object({
   source: z.enum(["local", "dolthub", "server"]),
   syncedAt: z.string().nullable(),
   ready: z.array(GraphItemOut),
   blocked: z.array(GraphBlockedOut),
+  /** Ready-but-held, moved out of `ready`. Bounded — see liveExclusion. */
+  held: z.array(GraphHeldOut),
   edges: z.array(GraphEdgeOut),
+  /**
+   * What was actually verified against the adjudicating DO (#135).
+   *
+   * `graph` has no `top`, so the window is a fixed `DEFAULT_HELD_WINDOW` rather
+   * than the caller's: probing every ready item is the whole-board case (#84).
+   * `unobserved > 0` means a held item may still be sitting in `ready`.
+   */
+  liveExclusion: z.object({
+    configured: z.boolean(),
+    checked: z.number(),
+    unobserved: z.number(),
+  }),
 });
 
 export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = defineVerb<
@@ -738,9 +771,33 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
     });
 
     // ready = eligible (open, no open blockers), in WSJF rank order.
-    const ready = ranked
-      .filter((r) => r.eligible)
+    const readyRanked = ranked.filter((r) => r.eligible);
+
+    // Live lease exclusion, bounded exactly as in `next` (#135/#115). Before
+    // this, `graph` read the mirror's `leased` flag — which is always false on
+    // the lease plane, because no `leases` row is ever written there — so a held
+    // item appeared in `ready` with nothing to distinguish it.
+    const live = await verifyHeld(
+      readyRanked.slice(0, DEFAULT_HELD_WINDOW).map((r) => scoped[r.number].id),
+      deps?.probe,
+    );
+
+    const ready = readyRanked
+      .filter((r) => !live.held.has(scoped[r.number].id))
       .map((r) => toItem(scoped[r.number], r.number));
+    // Held items keep their rank and their score — they are correctly ranked
+    // work that is simply not available to this caller right now, the same
+    // argument `otherActors` makes for capability (#86).
+    const held = readyRanked
+      .filter((r) => live.held.has(scoped[r.number].id))
+      .map((r) => {
+        const h = live.held.get(scoped[r.number].id);
+        return {
+          ...toItem(scoped[r.number], r.number),
+          holder: h?.holder ?? null,
+          boundTo: h?.referent ? `${h.referent.kind}:${h.referent.id}` : null,
+        };
+      });
     // blocked = open items with at least one OPEN blocker, carrying the IDs.
     const blocked = scoped
       .map((i, idx) => ({ i, idx }))
@@ -752,18 +809,40 @@ export const graphVerb: VerbSpec<typeof GraphInput, typeof GraphOutput, Deps> = 
       syncedAt: meta?.syncedAt ?? null,
       ready,
       blocked,
+      held,
       edges: graph.edges,
+      liveExclusion: {
+        configured: live.configured,
+        checked: live.checked,
+        unobserved: live.unobserved,
+      },
     };
   },
-  render: (o) =>
-    [
+  render: (o) => {
+    const note = renderExclusion({
+      checked: o.liveExclusion.checked,
+      unobserved: o.liveExclusion.unobserved,
+      configured: o.liveExclusion.configured,
+      heldCount: o.held.length,
+    });
+    return [
       `Front Desk — graph   source=${o.source}${o.syncedAt ? ` (synced ${o.syncedAt})` : ""}`,
-      `ready: ${o.ready.length}   blocked: ${o.blocked.length}   edges: ${o.edges.length}`,
+      `ready: ${o.ready.length}   blocked: ${o.blocked.length}` +
+        (o.held.length ? `   held: ${o.held.length}` : "") +
+        `   edges: ${o.edges.length}`,
       ...o.ready.slice(0, 10).map((r) => `  ready   ${r.repository}#${r.number}  ${r.title}`),
       ...o.blocked.slice(0, 10).map((b) =>
         `  blocked ${b.repository}#${b.number}  ← ${b.blockedBy.map((x) => `#${x.number}`).join(",")}`
       ),
-    ].join("\n"),
+      // Printed in the same shape as `blocked`, because it answers the same
+      // question — why can't I take this? — and the answer is worth as much.
+      ...o.held.map((h) =>
+        `  held    ${h.repository}#${h.number}  ← ${h.holder ?? "unknown holder"}` +
+        (h.boundTo ? `, bound to ${h.boundTo}` : ", NOT bound (short ttl, may lapse)")
+      ),
+      ...(note ? ["", note] : []),
+    ].join("\n");
+  },
 });
 
 // ── list ─────────────────────────────────────────────────────────────────────
