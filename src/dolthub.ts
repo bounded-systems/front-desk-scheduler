@@ -256,7 +256,13 @@ export async function readAllItems(
  * so the walk is a total order with no server-side cursor state — the property
  * that makes each page an independent HTTP request without dropping rows.
  */
-export async function readPaged<T extends Record<string, unknown>>(
+// NOTE the unconstrained T. `T extends Record<string, unknown>` would be the
+// obvious bound, but row types are declared as `readonly` interfaces and an
+// interface without an index signature does not satisfy that constraint — so
+// every caller would have to widen its row type purely to call this. The cursor
+// read below is the only place a dynamic key is needed, so it casts there
+// instead, and call sites keep their precise types.
+export async function readPaged<T>(
   baseSql: string,
   keyColumns: readonly string[],
   ref = "main",
@@ -287,7 +293,7 @@ export async function readPaged<T extends Record<string, unknown>>(
     // A short page is the end of the table. A full page costs one extra request
     // when the row count is an exact multiple — the same trade readAllItems makes.
     if (got.length < PAGE_ROWS) break;
-    const last = got[got.length - 1]!;
+    const last = got[got.length - 1] as Record<string, unknown>;
     cursor = keyColumns.map((c) => String(last[c]));
   }
   return { rows, at: head };
