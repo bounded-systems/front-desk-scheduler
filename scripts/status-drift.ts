@@ -35,7 +35,25 @@
  * work on a card someone forgot to drag (schema-export --check gates PRs, but
  * there the tree CONTAINS the projection; here it contains nothing to fix).
  * The scheduled run is the one that gates — the way org-drift works — and its
- * red names the card to drag, which is the entire remediation.
+ * red names the card to move.
+ *
+ * WHAT THIS DETECTOR BECOMES ONCE STATUS IS DERIVED (#148)
+ * --------------------------------------------------------
+ * This header used to end "which is the entire remediation", true only while
+ * dragging was the sole way to move a card. Status is now a projection
+ * (`deriveStatus` in src/status.ts) rendered onto the board by
+ * `board-writeback.yml`, so both of the disagreements below should be
+ * unrepresentable rather than merely rare.
+ *
+ * That does not retire this script — it repoints it. A row here now means the
+ * projection is NOT being rendered: the window has not been dispatched, or its
+ * broker credential is failing, or the syncer has not caught up. It is the same
+ * check with a different referent, which is why it still gates the daily run.
+ *
+ * Note it remains scoped to the closed_at disagreement specifically, so it is
+ * strictly narrower than the derivation: a card reading Blocked with nothing in
+ * the dependency graph to justify it is a D2 violation the SHACL lane catches,
+ * not drift this query can see.
  *
  * Reads the public DoltHub SQL API via src/dolthub.ts: no credential, no
  * GitHub budget, no npm dependencies — safe in schema-drift.yml's no-install
@@ -65,7 +83,8 @@ for (const r of rows) {
   const ref = `${r.repository}#${r.number}`;
   if (r.closed_at) {
     console.log(`  ${ref}  card="${r.status}" but the issue CLOSED ${r.closed_at}`);
-    console.log(`      → drag the card to Done (the queue already refuses to rank it — see #89)`);
+    console.log(`      → dispatch board-writeback.yml to move it to Done, or drag it by hand`);
+    console.log(`        (derivable — the queue already refuses to rank it, see #89)`);
   } else {
     console.log(`  ${ref}  card="Done" but the issue is still OPEN on GitHub`);
     console.log(`      → close the issue, or move the card back if work remains`);

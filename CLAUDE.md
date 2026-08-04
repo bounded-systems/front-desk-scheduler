@@ -249,6 +249,69 @@ the cost is a difference of `remaining` on a shared counter, so a concurrent
 Unlike a claim, a parity **failure is not an answer**: it fails the run, because
 there is no benign reading of "the cheap query returns a different board".
 
+## Status is derived, not owned (#148)
+
+**The board card is output.** `deriveStatus` in `src/status.ts` computes it from
+state the system already holds, so there is exactly one authority per component
+and no merge rule anywhere:
+
+| value | derived from | already computed in |
+|---|---|---|
+| Done | `closed_at IS NOT NULL` | `SCHEDULABLE`, the #89 Lean invariant |
+| Blocked | `openBlockers > 0` | `assembleScheduling`; D2/D3 in the shapes |
+| In Progress | a held lease | the DO (#135/#115) |
+| Todo | none of the above | — |
+
+The shapes said this already and only lacked a direction: **D2** ("a Blocked item
+must have at least one non-Done dependency") and **D3** ("a Todo item with an open
+dependency should be Blocked") are together the biconditional
+`Blocked ⟺ openBlockers > 0`. The derivation is those rules pointed at the card
+instead of at a validator, which is why disagreement stops being something to
+resolve and becomes unrepresentable.
+
+**Don't reach for a merge rule.** Both obvious ones are wrong, and knowing why
+saves rediscovering it: a join/max over a status lattice is *monotone* and cannot
+express a reopen (`closed_at` going NULL is a decrease), and "most recent
+transition wins" needs a per-field timestamp neither the mirror nor ProjectV2
+carries — ProjectV2 exposes item-level `updatedAt` only.
+
+**`board-writeback.yml` renders it** with the Front Desk App identity
+(`organization_projects:write`, the same token the syncer mints). `apply` defaults
+to **false** and the first dispatch prints the plan, which matters more here than
+for a repair: deriving moves *every* disagreeing card, including ones reading
+Blocked with nothing in the graph to justify them. #5 was exactly that on
+2026-08-04 — `status="Blocked"`, `depends_on` empty, zero `item_deps` rows, a
+standing D2 violation — and it derives to Todo.
+
+**Two things it deliberately refuses to derive.** `deriveStatus` returns `null`
+for both, meaning "leave the card alone":
+
+- **dolt-origin rows.** A hidden/planning row has no GitHub issue, so `closed_at`
+  has nothing to say about it. Its card *is* the record. Same scoping
+  `SQL.statusDrift` uses.
+- **In Progress, when the lease plane was not consulted.** There is no batch route
+  to the DO (#84), so a whole-board pass passes `null` — *not* an empty Set. The
+  two differ and the difference is load-bearing: an empty Set asserts "nothing is
+  held" and would downgrade every held card to Todo. So the pass derives Done and
+  Blocked, preserves In Progress, and never promotes Todo → In Progress until #84
+  lands a batch route. The rule for it is already written and tested; only the
+  input is missing.
+
+**Both of its reads page.** The derivation needs every item and every edge — a
+Done row is what confirms a dependency is satisfied — so it walks `items` and
+`item_deps` through `readPaged` (keyset, pinned with `AS OF`). Measured
+2026-08-04: **1796 items**, well past both the 1000-row cap and the 900-row
+`CAP_GUARD`. `item_deps` is keyed on `(item_id, dep_item_id)`, so its cursor is
+composite — a keyset on `item_id` alone silently drops every edge sharing an
+item_id across a page boundary.
+
+**It is new, so it is not on the broker's allowlist until someone adds it.**
+`verifyOIDC` pins `job_workflow_ref`; until `board-writeback.yml` is in the
+`front-desk` tier's `GH_APPS` entry, every run fails at the mint step. That is
+the #112 shape exactly, so the mint step names that cause instead of failing with
+a bare curl error — and the first dispatch is what proves the entry landed.
+Dispatch it; don't assume it.
+
 ## Working here
 
 - **Install deps with `deno install --frozen`, never `npm install`.** `deno.lock` is

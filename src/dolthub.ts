@@ -234,3 +234,67 @@ export async function readAllItems(
   }
   return { items, at: head };
 }
+
+/**
+ * A keyset walk over any mirror table, pinned with `AS OF` (#88, #148).
+ *
+ * `readAllItems` above is the hand-rolled instance of this for the `list` verb.
+ * This is the same walk generalised, so that a NEW whole-table read — the
+ * derivation pass needs two of them — cannot reintroduce the unpaginated shape
+ * that CAP_GUARD now refuses at 900 rows. The rule from CLAUDE.md is that any
+ * read of a table which grows without bound has to page; this is how.
+ *
+ * COMPOSITE CURSORS ARE NOT OPTIONAL. `items` has a single-column primary key,
+ * but `item_deps` is keyed on (item_id, dep_item_id) — a keyset on `item_id`
+ * alone is NOT a total order, so every edge that shared an item_id with the last
+ * row of a page would be skipped. The predicate below is the lexicographic
+ * comparison over however many columns the key actually has:
+ *
+ *   (a > a0) OR (a = a0 AND b > b0) OR (a = a0 AND b = b0 AND c > c0) …
+ *
+ * `LIMIT` is per page and `ORDER BY` names the same columns in the same order,
+ * so the walk is a total order with no server-side cursor state — the property
+ * that makes each page an independent HTTP request without dropping rows.
+ */
+// NOTE the unconstrained T. `T extends Record<string, unknown>` would be the
+// obvious bound, but row types are declared as `readonly` interfaces and an
+// interface without an index signature does not satisfy that constraint — so
+// every caller would have to widen its row type purely to call this. The cursor
+// read below is the only place a dynamic key is needed, so it casts there
+// instead, and call sites keep their precise types.
+export async function readPaged<T>(
+  baseSql: string,
+  keyColumns: readonly string[],
+  ref = "main",
+  extraWhere: readonly string[] = [],
+): Promise<{ rows: T[]; at: string | null }> {
+  if (keyColumns.length === 0) throw new Error("readPaged needs at least one key column");
+  const head = await resolveHead(ref);
+  const rows: T[] = [];
+  let cursor: string[] | null = null;
+
+  for (;;) {
+    const sql = head ? pinTables(baseSql, head) : baseSql;
+    const where = [...extraWhere];
+    if (cursor) {
+      // Lexicographic "strictly after the last row seen".
+      const clauses: string[] = [];
+      for (let i = 0; i < keyColumns.length; i++) {
+        const eq = keyColumns.slice(0, i).map((c, j) => `${c} = ${sqlQuote(cursor![j]!)}`);
+        clauses.push([...eq, `${keyColumns[i]} > ${sqlQuote(cursor[i]!)}`].join(" AND "));
+      }
+      where.push(`(${clauses.map((c) => `(${c})`).join(" OR ")})`);
+    }
+    const page = `${sql}${where.length ? ` WHERE ${where.join(" AND ")}` : ""}` +
+      ` ORDER BY ${keyColumns.join(", ")} LIMIT ${PAGE_ROWS}`;
+
+    const got = await query<T>(page, ref, { paginated: true });
+    rows.push(...got);
+    // A short page is the end of the table. A full page costs one extra request
+    // when the row count is an exact multiple — the same trade readAllItems makes.
+    if (got.length < PAGE_ROWS) break;
+    const last = got[got.length - 1] as Record<string, unknown>;
+    cursor = keyColumns.map((c) => String(last[c]));
+  }
+  return { rows, at: head };
+}
