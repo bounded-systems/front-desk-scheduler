@@ -393,6 +393,28 @@ Dispatch it; don't assume it.
   webhook-driven, so its inter-run gaps ranged from ~90s to over an hour in one
   evening: for any lane like that, the cron is a *backstop*, and a tolerance
   derived from observed rate would call a quiet weekend an outage.
+- **A board FIELD change does not ride the delta lane at all — it is up to 6h
+  behind** (2026-08-04). Read the previous note carefully: it is about the delta
+  lane's *gaps*, and it invites the inference that any board change lands within
+  the hour. For a Status edit that is false. `mirror-sync-delta.yml` fires on
+  `repository_dispatch: [board-changed]`, which the webhook Worker sends on
+  issue/PR **open/close/reopen**, and its hourly backstop is a Search-API delta
+  keyed off issue state. A ProjectV2 field edit is neither. Status only reaches
+  the mirror through the full `mirror-sync.yml`, `cron: "17 */6 * * *"`.
+
+  Three consequences. **A successful delta run is not evidence your change
+  synced** — dragging a card to `Blocked` and then watching a delta run complete
+  two minutes later carried nothing, and nine minutes of polling a healthy lane
+  produced no change because that lane was never going to deliver it. That is
+  the #112 shape again: nothing broken, nobody had run that path. **The board
+  and the mirror can legitimately disagree about a card for six hours**, so
+  `shacl-mirror.yml` can warn about a card fixed hours earlier — "the lane is
+  warning" and "the board is untidy" are not the same claim at a given moment.
+  And **you can close the gap yourself**: `mirror-sync.yml` has
+  `workflow_dispatch: {}`, so dispatch it rather than waiting for `:17`. It is a
+  production write lane (full pull, DoltHub push, shared API budget, serialises
+  on `mirror-write`), so dispatch it deliberately, not reflexively — but it took
+  the convergence above from ~5h40m to two minutes.
 - **A fresh advisory is unfixable for 24h, and the failure is silent.** Deno's
   minimum dependency age policy (24h by default) refuses any npm version
   published less than a day ago. A plain `deno install` does not say it skipped
