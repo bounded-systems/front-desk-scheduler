@@ -21,10 +21,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { RawTypedEdge, SchedulingItem } from "../src/scheduling.ts";
-import { nextVerb } from "../src/verbs.ts";
+import { graphVerb, nextVerb } from "../src/verbs.ts";
 import type { SchedulerReads } from "../src/reads.ts";
 import { ROLLING_5H_BUDGET } from "../src/policy.ts";
-import { NO_EXCLUSION, renderExclusion, type StatusProbe, verifyHeld } from "../src/held.ts";
+import { DEFAULT_HELD_WINDOW, NO_EXCLUSION, renderExclusion, type StatusProbe, verifyHeld } from "../src/held.ts";
 
 // Same reason as next.test.ts: nothing here may touch the real Worker. Every
 // test below that exercises the exclusion injects its own probe.
@@ -214,6 +214,76 @@ test("with no probe and no endpoint, the verb behaves exactly as before", async 
   assert.equal(out.liveExclusion.configured, false);
   assert.equal(out.liveExclusion.checked, 0);
   assert.deepEqual(out.queue.map((q) => q.number), [1, 2]);
+});
+
+// ── graph (#115) ────────────────────────────────────────────────────────────
+// A held item is a BLOCKED item from the caller's point of view, and `graph` is
+// the surface that already explains why something is unavailable. Before this it
+// answered "ready" for an item someone was holding.
+
+test("graph moves a held item out of `ready` and into `held`", async () => {
+  const out = await graphVerb.run({}, {
+    reads: mockReads([item({ id: "held", number: 127, value: 99 }), item({ id: "free", number: 60 })]),
+    probe: probeOf({ held: heldBy("gha/session-7", null) }),
+  });
+  assert.deepEqual(out.ready.map((r) => r.number), [60]);
+  assert.deepEqual(out.held.map((h) => h.number), [127]);
+});
+
+test("a held item keeps its rank and score — it is correctly ranked, just unavailable", async () => {
+  // Same argument `otherActors` makes for capability (#86): the item is not
+  // mis-ranked, it belongs to someone else right now.
+  const out = await graphVerb.run({}, {
+    reads: mockReads([item({ id: "held", number: 127, effort: 2, value: 99 })]),
+    probe: probeOf({ held: heldBy("gha/session-7", null) }),
+  });
+  assert.equal(out.held.length, 1);
+  assert.ok(out.held[0].score > 0, "the score must survive the move");
+  assert.equal(out.held[0].effort, 2);
+});
+
+test("graph distinguishes bound from referent-less, which is the whole of #115", async () => {
+  const out = await graphVerb.run({}, {
+    reads: mockReads([
+      item({ id: "bound", number: 1, value: 99 }),
+      item({ id: "loose", number: 2, value: 98 }),
+    ]),
+    probe: probeOf({
+      bound: heldBy("gha/s1", { kind: "pr", id: "bounded-systems/front-desk-scheduler#137" }),
+      loose: heldBy("gha/s2", null),
+    }),
+  });
+  const text = graphVerb.render!(out, {});
+  assert.match(text, /held    front-desk-scheduler#1  ← gha\/s1, bound to pr:bounded-systems\/front-desk-scheduler#137/);
+  assert.match(text, /held    front-desk-scheduler#2  ← gha\/s2, NOT bound \(short ttl, may lapse\)/);
+});
+
+test("graph's probe window is a fixed bound, not the whole ready list", async () => {
+  // `graph` has no `top`, and probing every ready item is the whole-board case
+  // (#84) that #43 deliberately did not take.
+  const items = Array.from({ length: 30 }, (_, i) => item({ id: `g${i}`, number: i, value: 100 - i }));
+  const p = probeOf({});
+  await graphVerb.run({}, { reads: mockReads(items), probe: p });
+  assert.equal(p.seen.length, DEFAULT_HELD_WINDOW);
+});
+
+test("graph is unchanged when the lease plane is not configured", async () => {
+  const out = await graphVerb.run({}, {
+    reads: mockReads([item({ id: "a", number: 1 }), item({ id: "b", number: 2 })]),
+  });
+  assert.equal(out.liveExclusion.configured, false);
+  assert.equal(out.held.length, 0);
+  assert.deepEqual(out.ready.map((r) => r.number), [1, 2]);
+});
+
+test("graph fails open too — an outage leaves ready intact and says so", async () => {
+  const out = await graphVerb.run({}, {
+    reads: mockReads([item({ id: "a", number: 1 })]),
+    probe: async () => { throw new Error("unreachable"); },
+  });
+  assert.deepEqual(out.ready.map((r) => r.number), [1]);
+  assert.equal(out.liveExclusion.unobserved, 1);
+  assert.match(graphVerb.render!(out, {}), /could not be checked/);
 });
 
 test("an unreachable lease plane leaves the queue intact and says so", async () => {

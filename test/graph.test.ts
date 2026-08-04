@@ -4,6 +4,14 @@ import { assembleGraph, type RawTypedEdge, type SchedulingItem } from "../src/sc
 import { graphVerb } from "../src/verbs.ts";
 import type { SchedulerReads } from "../src/reads.ts";
 
+// A TEST MUST NOT REACH THE NETWORK. `graph` verifies its ready head against the
+// lease plane since #115, and that path is configured by `FDS_CLAIM_ENDPOINT` —
+// which a cloud session sets. Without this these tests probe the REAL deployed
+// Worker for fixture ids: measured 0.53s with the variable set, 0.31s without.
+// Same guard, same reason, as test/next.test.ts. The exclusion path is covered
+// deliberately, with an injected probe, in test/held.test.ts.
+delete process.env.FDS_CLAIM_ENDPOINT;
+
 function item(over: Partial<SchedulingItem> & { id: string; number: number }): SchedulingItem {
   return {
     id: over.id,
