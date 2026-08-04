@@ -54,16 +54,76 @@ def render_turtle() -> str:
     return "\n".join(lines) + "\n"
 
 
+def validate_ttl(ttl_or_path: str):
+    """Run pyshacl over a Turtle string or file path. Returns (conforms, report)."""
+    from pyshacl import validate
+    conforms, _graph, report = validate(
+        ttl_or_path, shacl_graph=str(SHAPES), data_graph_format="turtle",
+        shacl_graph_format="turtle", inference="none", advanced=True,
+    )
+    return conforms, report
+
+
+# Each entry: (what it guards, a string that MUST appear in the violations report).
+#
+# Asserting the presence of each one — rather than only `conforms is False` — is
+# the point of the negative fixture. A single surviving violation would satisfy
+# "does not conform" while every other shape sat silently disabled, which is
+# exactly the failure mode measured in #139: shacl-engine skips all sh:sparql
+# shapes unless opted in, and a core-only violation would still have gone red.
+EXPECTED_VIOLATIONS = [
+    ("status/kind outside the enum",      "InConstraintComponent"),
+    ("effort/value/number out of range",  "InclusiveConstraintComponent"),
+    ("self-dependency (chk_no_self_dep)", "DisjointConstraintComponent"),
+    ("D1 — dependency cycle",             "Item participates in a dependency cycle"),
+    ("D2 — unjustified block",            "Blocked item has no open dependency recorded"),
+    ("D3 — Todo that should be Blocked",  "Todo item has open dependencies"),
+]
+
+
+def run_fixtures() -> int:
+    """Validate the validator: the clean fixture must pass, the bad one must fail.
+
+    A validator that cannot fail is not a validator. Without the negative case,
+    `conforms: true` on the real mirror is indistinguishable from a validator
+    that silently checked nothing — see the header of the shapes file.
+    """
+    fixtures = ROOT / "specs" / "shacl" / "fixtures"
+    ok = True
+
+    conforms, report = validate_ttl(str(fixtures / "clean.ttl"))
+    if conforms:
+        print("✓ clean.ttl conforms")
+    else:
+        ok = False
+        print("✗ clean.ttl MUST conform but reported violations:")
+        print(report)
+
+    conforms, report = validate_ttl(str(fixtures / "violations.ttl"))
+    if conforms:
+        ok = False
+        print("✗ violations.ttl MUST NOT conform — every shape is silently disabled")
+    else:
+        print("✓ violations.ttl is rejected")
+        for label, needle in EXPECTED_VIOLATIONS:
+            if needle in report:
+                print(f"  ✓ {label}")
+            else:
+                ok = False
+                print(f"  ✗ {label} — expected `{needle}` in the report, absent")
+
+    print("\nSHACL fixtures:", "PASS ✓" if ok else "FAIL ✗")
+    return 0 if ok else 1
+
+
 def main() -> int:
+    if "--fixtures" in sys.argv:
+        return run_fixtures()
     ttl = render_turtle()
     if "--print-graph" in sys.argv:
         print(ttl)
         return 0
-    from pyshacl import validate
-    conforms, _graph, report = validate(
-        ttl, shacl_graph=str(SHAPES), data_graph_format="turtle",
-        shacl_graph_format="turtle", inference="none", advanced=True,
-    )
+    conforms, report = validate_ttl(ttl)
     print(f"SHACL: {'CONFORMS ✓' if conforms else 'VIOLATIONS ✗'}")
     if not conforms:
         print(report)

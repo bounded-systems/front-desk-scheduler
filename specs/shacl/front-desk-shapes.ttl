@@ -6,12 +6,43 @@
 #   scheduler invariants (S1..L2, proven)     → the semantics these shapes guard
 #
 # Validation target: the mirror rendered as RDF (one fd:Item per items row,
-# fd:dependsOn edges from item_deps). Wire to conformance-kit's SHACL runner —
-# see front-desk-scheduler issue tracker.
+# fd:dependsOn edges from item_deps) — `scripts/shacl_validate.py` is the
+# renderer, and `specs/shacl/fixtures/` pins what these shapes accept and reject.
+# Wiring to conformance-kit's shared runner is #3, blocked on conformance-kit#58.
+#
+# TWO REQUIREMENTS ON ANY RENDERER (#139)
+# ---------------------------------------
+# These shapes are not renderer-agnostic. A renderer that does not meet both
+# produces a WRONG verdict rather than an error, so read this before writing a
+# second one (a JSON-LD path for conformance-kit would be the first case):
+#
+#   1. Emit a reflexive `fd:self` edge on every item. Core SHACL cannot compare a
+#      property's values against the focus node, so `sh:disjoint fd:self` below
+#      relies on it being materialised. Omit it and the self-dependency check
+#      SILENTLY passes everything — the constraint is vacuously true, not broken,
+#      so nothing reports it.
+#   2. Type `fd:effort`/`fd:value` as `xsd:double` explicitly. Plain Turtle `2.0`
+#      parses as `xsd:decimal` and fails `sh:datatype`, so a CLEAN item reports
+#      violations that look like bad data rather than a bad rendering.
+#
+# The fixtures are what keep both honest: fixtures/clean.ttl must conform,
+# fixtures/violations.ttl must NOT, and `npm run shacl:fixtures` asserts both.
 
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix fd:   <https://bounded.tools/ns/front-desk#> .
+
+# SHACL-SPARQL requires a SPARQL-based constraint to declare its own prefixes —
+# the @prefix lines above are Turtle syntax and do not reach inside a sh:select
+# string. pyshacl resolves them from the shapes graph anyway, so this changes
+# nothing on the current path; a spec-strict engine refuses without it
+# (shacl-engine 1.1.2: `Error: Unknown prefix: fd`). Declared so the file is
+# portable to whichever runner #3 lands on.
+fd:prefixes
+  sh:declare [
+    sh:prefix "fd" ;
+    sh:namespace "https://bounded.tools/ns/front-desk#"^^xsd:anyURI ;
+  ] .
 
 fd:ItemShape
   a sh:NodeShape ;
@@ -33,6 +64,7 @@ fd:ItemShape
   ] ;
   sh:property [
     sh:path fd:effort ;
+    # xsd:double is a RENDERER REQUIREMENT, not a preference — see the header.
     sh:datatype xsd:double ; sh:minInclusive 0 ; sh:maxInclusive 10 ;
   ] ;
   sh:property [
@@ -42,7 +74,9 @@ fd:ItemShape
   sh:property [
     sh:path fd:dependsOn ;
     sh:class fd:Item ;         # referential integrity (mirror: FK fk_dep_dst)
-    sh:disjoint fd:self ;      # no self-dependency (mirror: chk_no_self_dep)
+    # No self-dependency (mirror: chk_no_self_dep). REQUIRES the renderer to
+    # emit `fd:self` — see the header. Vacuously true without it.
+    sh:disjoint fd:self ;
   ] .
 
 # D2 — a Blocked item must have at least one non-Done dependency (justified block).
@@ -51,6 +85,7 @@ fd:BlockedJustifiedShape
   sh:targetClass fd:Item ;
   sh:severity sh:Warning ;
   sh:sparql [
+    sh:prefixes fd:prefixes ;
     sh:message "Blocked item has no open dependency recorded" ;
     sh:select """
       SELECT $this WHERE {
@@ -68,6 +103,7 @@ fd:ReadyAgreementShape
   sh:targetClass fd:Item ;
   sh:severity sh:Warning ;
   sh:sparql [
+    sh:prefixes fd:prefixes ;
     sh:message "Todo item has open dependencies (should be Blocked)" ;
     sh:select """
       SELECT $this WHERE {
@@ -83,6 +119,7 @@ fd:AcyclicShape
   sh:targetClass fd:Item ;
   sh:severity sh:Violation ;
   sh:sparql [
+    sh:prefixes fd:prefixes ;
     sh:message "Item participates in a dependency cycle — can never become Ready" ;
     sh:select """
       SELECT $this WHERE { $this fd:dependsOn+ $this }""" ;

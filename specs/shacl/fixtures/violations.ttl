@@ -1,0 +1,76 @@
+# A board that violates every shape — the NEGATIVE fixture, and the one that
+# matters.
+#
+# A validator that cannot fail is not a validator. This file exists so that
+# "conforms: true" on the real mirror means the checks RAN, not that they were
+# skipped: `shacl_validate.py --fixtures` requires this graph to be REJECTED and
+# requires each expected constraint below to appear in the report.
+#
+# The concrete risk it guards, measured 2026-08-04 (#139, conformance-kit#58):
+# shacl-engine skips every sh:sparql shape unless explicitly opted in, and
+# reports `conforms: true` on a cyclic graph when it does. Swapping engines
+# without this fixture would silently disable D1/D2/D3 and look like a pass.
+#
+# Every item here is rendered per the renderer contract (fd:self, xsd:double) so
+# that each violation is the one named — not a rendering artifact.
+
+@prefix fd:  <https://bounded.tools/ns/front-desk#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# ── core constraints (sh:in, sh:minInclusive/maxInclusive, sh:minCount) ──────
+
+# status outside the ENUM, kind outside the ENUM, effort above 10, value above 100
+<https://bounded.tools/ns/front-desk#item/bad-enums> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/bad-enums> ;
+  fd:number "1"^^xsd:integer ;
+  fd:status "Whatever" ; fd:kind "sandwich" ;
+  fd:effort "11"^^xsd:double ; fd:value "101"^^xsd:double .
+
+# number below sh:minInclusive 1
+<https://bounded.tools/ns/front-desk#item/bad-number> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/bad-number> ;
+  fd:number "0"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .
+
+# ── the mirror's chk_no_self_dep twin (sh:disjoint fd:self) ──────────────────
+# This is the constraint that goes VACUOUS if a renderer omits fd:self, so it is
+# pinned here explicitly rather than left to be caught by the cycle shape.
+<https://bounded.tools/ns/front-desk#item/self-dep> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/self-dep> ;
+  fd:number "2"^^xsd:integer ;
+  fd:status "Blocked" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/self-dep> .
+
+# ── D1: a dependency cycle (sh:sparql, dependsOn+) ──────────────────────────
+# Two-hop rather than one, so it cannot be caught incidentally by the
+# self-dependency check — this one requires the transitive path to fire.
+<https://bounded.tools/ns/front-desk#item/cycle-a> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/cycle-a> ;
+  fd:number "3"^^xsd:integer ;
+  fd:status "Blocked" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/cycle-b> .
+
+<https://bounded.tools/ns/front-desk#item/cycle-b> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/cycle-b> ;
+  fd:number "4"^^xsd:integer ;
+  fd:status "Blocked" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/cycle-a> .
+
+# ── D2: Blocked with NO open dependency (sh:sparql, Warning) ─────────────────
+<https://bounded.tools/ns/front-desk#item/unjustified-block> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/unjustified-block> ;
+  fd:number "5"^^xsd:integer ;
+  fd:status "Blocked" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double .
+
+# ── D3: Todo with an open dependency — should be Blocked (sh:sparql, Warning) ─
+<https://bounded.tools/ns/front-desk#item/should-be-blocked> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/should-be-blocked> ;
+  fd:number "6"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/unjustified-block> .

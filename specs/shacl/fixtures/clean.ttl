@@ -1,0 +1,52 @@
+# A board that satisfies every shape — the POSITIVE fixture.
+#
+# Rendered exactly as scripts/shacl_validate.py renders the mirror, including the
+# two renderer requirements the shapes depend on (`fd:self`, `xsd:double`). If
+# this file starts reporting violations, either a shape got stricter or the
+# renderer contract changed — both are things worth failing on.
+#
+# Deliberately exercises the boundaries the shapes actually draw:
+#   - effort at 0 and at 10, value at 0 and at 100 (sh:minInclusive/maxInclusive)
+#   - every status in sh:in, every kind in sh:in
+#   - a Blocked item WITH an open dependency (D2 satisfied)
+#   - a Todo item whose only dependency is Done (D3 satisfied — not "no deps",
+#     which would pass D3 trivially and prove nothing)
+
+@prefix fd:  <https://bounded.tools/ns/front-desk#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://bounded.tools/ns/front-desk#item/clean-todo> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-todo> ;
+  fd:number "1"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "0"^^xsd:double ; fd:value "0"^^xsd:double .
+
+<https://bounded.tools/ns/front-desk#item/clean-done> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-done> ;
+  fd:number "2"^^xsd:integer ;
+  fd:status "Done" ; fd:kind "epic" ;
+  fd:effort "10"^^xsd:double ; fd:value "100"^^xsd:double .
+
+# D3: Todo with a dependency that is Done — an open item that is correctly NOT
+# Blocked. The interesting case; an item with no dependencies at all would
+# satisfy D3 without ever reaching its FILTER.
+<https://bounded.tools/ns/front-desk#item/clean-unblocked> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-unblocked> ;
+  fd:number "3"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "room" ;
+  fd:effort "2.5"^^xsd:double ; fd:value "40"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/clean-done> .
+
+# D2: Blocked WITH an open (non-Done) dependency — a justified block.
+<https://bounded.tools/ns/front-desk#item/clean-blocked> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-blocked> ;
+  fd:number "4"^^xsd:integer ;
+  fd:status "Blocked" ; fd:kind "door" ;
+  fd:effort "1"^^xsd:double ; fd:value "60"^^xsd:double ;
+  fd:dependsOn <https://bounded.tools/ns/front-desk#item/clean-todo> .
+
+<https://bounded.tools/ns/front-desk#item/clean-inprogress> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-inprogress> ;
+  fd:number "5"^^xsd:integer ;
+  fd:status "In Progress" ; fd:kind "task" ;
+  fd:effort "3"^^xsd:double ; fd:value "75"^^xsd:double .

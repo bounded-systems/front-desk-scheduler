@@ -1,2 +1,10 @@
-pyshacl>=0.40
-rdflib>=7.0
+# Pinned exactly, not as ranges — same reason deno.lock is tracked and the deno
+# install is --frozen: a range resolves differently in CI, in a cloud session,
+# and on a laptop, with nothing recording the difference. These are the versions
+# the fixtures in specs/shacl/fixtures/ are verified against.
+#
+# Note these are NOT covered by the org's dependency scanning (deps.yml logs the
+# omission every run), so a bump here is a manual decision. Re-run
+# `npm run shacl:fixtures` after changing either.
+pyshacl==0.40.1
+rdflib==7.6.0
