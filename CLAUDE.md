@@ -205,6 +205,41 @@ there is no benign reading of "the cheap query returns a different board".
   The common shape is a gap between what is tested and what is *used*, and it
   does not show up in a diff. When you finish something, dispatch the window,
   read the verdict line, query the mirror — the loop, not the unit.
+
+  2026-08-04 added four more, all from #119/#129/#124 and none visible to a
+  green suite. They are worth reading as a group, because three of them are
+  *verification* failing rather than code failing:
+
+  - **A defect that only exists BETWEEN runs cannot be caught by testing one
+    run.** #119's watermark froze any interval projected mid-life: the row
+    stayed `active` forever because the projector never re-read it. Every
+    single-projection test passed. The regression test now drives
+    project-live → close → project-again → converge, and the production proof
+    was the session's own lease going `active` → `completed` across two runs.
+  - **Forcing a race is a legitimate way to verify a retry path — but check
+    that it exercised the code.** Verifying #129 by dispatching two writers
+    together LOOKED like a pass: both green, genuinely overlapping. The
+    projection had exited at its empty-diff guard and never reached the push.
+    A live interval had to be created first. *A green run that never reached
+    the code under test is the #112 shape wearing a pass.*
+  - **A monitor's failure window must be TIME, not run count.** #124's
+    watchdog counted the last N runs, which put `lease-projection` at exactly
+    5-of-10 — all from the #112 and #129 eras, both already fixed. A
+    run-count window reports a repaired lane as broken for days, which is
+    precisely how `broker-drift` became a monitor nobody read. Found by
+    checking real lane health before pushing, not by a test.
+  - **Zero attempts is not evidence of failure.** On its first real run the
+    #124 watchdog accused *itself*: `NEVER lane-watch.yml (0/0 runs failed)`.
+    #112 was 24 attempts and 24 failures; a lane merged an hour ago has not
+    failed, it has not been tried. Every newly-added lane would have tripped
+    it. Distinguish "no data" from "bad data" in anything that alarms.
+
+  Two smaller notes from the same day. `claim` latches the **top-ranked** ready
+  item and has no item selector, so you cannot claim a named issue — #129 was
+  worked leaseless for that reason (#127 tracks it). And `mirror-sync-delta` is
+  webhook-driven, so its inter-run gaps ranged from ~90s to over an hour in one
+  evening: for any lane like that, the cron is a *backstop*, and a tolerance
+  derived from observed rate would call a quiet weekend an outage.
 - **A fresh advisory is unfixable for 24h, and the failure is silent.** Deno's
   minimum dependency age policy (24h by default) refuses any npm version
   published less than a day ago. A plain `deno install` does not say it skipped
