@@ -158,6 +158,24 @@ should stop working the item, not retry.
 **Reads are unaffected** — `/status` and `/history` are open, and the whole
 `next`/`graph`/`list` path needs no credential.
 
+**`next` now excludes items that are actually held — but only the top N** (#135).
+The mirror's `leases` table is empty on the lease plane by design (the DO is the
+adjudicator), so the `leased` flag excluded nothing and held items ranked as
+ready: #127 sat at rank 1 while a session held it. `next` now asks the DO's open
+`/status` about the window it is about to show you, and reports what it dropped —
+with the holder, and the PR when the lease is bound.
+
+Three things follow. It is **bounded**: there is no batch route (a
+`DurableObjectNamespace` cannot be enumerated), so an item promoted into view
+because a held one was dropped has not itself been checked — that whole-board
+remainder is #84. It **fails open**: an unreachable Worker leaves the queue
+intact rather than emptying it, and says `could not be checked` so a degraded
+exclusion is never silent. And it is **off** when `FDS_CLAIM_ENDPOINT` is unset,
+so the no-credential path is unchanged.
+
+`graph` and `list` do **not** do this yet — they still read the mirror's flag,
+which means they still show held items as ready.
+
 ## Measuring the board — the same window, one door over
 
 `board:parity` (#58) needs ProjectV2 on both paths, so it cannot run in a session

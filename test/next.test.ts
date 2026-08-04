@@ -49,6 +49,16 @@ function item(over: Partial<SchedulingItem> & { id: string; number: number }): S
   };
 }
 
+// A TEST MUST NOT REACH THE NETWORK. `next` now verifies the top N against the
+// lease plane (#135), and that path is configured by `FDS_CLAIM_ENDPOINT` —
+// which is set in a cloud session's environment. Without this line these tests
+// probed the REAL deployed Worker for fixture ids like "a" and "b": 0.70s with
+// the variable set, 0.32s without. Ambient env deciding whether a suite makes
+// live requests is the same class as #101 (a green run that exercised a
+// different path than the one you thought). The exclusion path is covered
+// deliberately, with an injected probe, in test/held.test.ts.
+delete process.env.FDS_CLAIM_ENDPOINT;
+
 function mockReads(items: SchedulingItem[]): SchedulerReads {
   return {
     source: "server",
