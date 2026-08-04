@@ -49,8 +49,14 @@ fd:ItemShape
   sh:targetClass fd:Item ;
   sh:property [
     sh:path fd:number ;
-    sh:datatype xsd:integer ; sh:minInclusive 1 ;
-    sh:minCount 1 ; sh:maxCount 1 ;
+    # NOT minCount 1 — see fd:GithubNumberShape below. A dolt-born row has no
+    # issue number yet, and the mirror's column is nullable to allow exactly that.
+    sh:datatype xsd:integer ; sh:minInclusive 1 ; sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    sh:path fd:origin ;
+    sh:in ( "github" "dolt" ) ;
+    sh:minCount 1 ; sh:maxCount 1 ;   # mirror: `origin` enum(...) NOT NULL
   ] ;
   sh:property [
     sh:path fd:status ;
@@ -78,6 +84,37 @@ fd:ItemShape
     # emit `fd:self` — see the header. Vacuously true without it.
     sh:disjoint fd:self ;
   ] .
+
+# A github-origin item MUST carry its issue number; a dolt-born one has none yet.
+#
+# WHY THIS IS CONDITIONAL AND NOT `sh:minCount 1` ON fd:number (#143)
+# -------------------------------------------------------------------
+# Three layers disagreed about whether `number` may be absent: the Dolt column is
+# nullable, the renderer emits fd:number only `if it["number"] is not None`, and
+# these shapes required it. #143 attributed the gap to ProjectV2 DRAFT items —
+# but a draft cannot reach the mirror at all: `normalize()` in src/board.ts drops
+# any item whose `content.number` is not a number, and the board query has no
+# `... on DraftIssue` fragment. So that trigger is unreachable.
+#
+# Absence is reachable by a different route, and it is DESIGNED: dolt-born hidden
+# work (`item_id LIKE 'dolt:%'`, `origin='dolt'`) is captured in the DoltHub write
+# surface BEFORE any GitHub issue exists — see syncPush() in src/mirror.ts, which
+# creates the issue and deletes the placeholder so the next pull re-absorbs it as
+# a github-origin row with a real number. A NULL number is that transient state.
+#
+# A blanket `sh:minCount 0` would have modelled this correctly and given up the
+# check that matters: a GITHUB-origin row without a number is real corruption
+# (the syncer cannot produce one). Splitting on fd:origin keeps that failure
+# reportable while letting the legal state through.
+fd:GithubNumberShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:severity sh:Violation ;
+  sh:message "A github-origin item must carry its issue number (fd:number)" ;
+  sh:or (
+    [ sh:not [ sh:property [ sh:path fd:origin ; sh:hasValue "github" ] ] ]
+    [ sh:property [ sh:path fd:number ; sh:minCount 1 ] ]
+  ) .
 
 # D2 — a Blocked item must have at least one non-Done dependency (justified block).
 fd:BlockedJustifiedShape
