@@ -33,6 +33,7 @@
  */
 
 import type { BoardItem } from "./board.ts";
+import { BLOCKER_KINDS } from "./scheduling.ts";
 import { deriveStatus, isStatus } from "./status.ts";
 import type { Status } from "./status.ts";
 
@@ -50,10 +51,18 @@ export interface DerivationRow {
   readonly closed_at: string | null;
 }
 
-/** One row of SQL.edges — a dependency arrow from `item_id` to `dep_item_id`. */
+/**
+ * One row of SQL.typedEdges — a dependency arrow, WITH its kind.
+ *
+ * Typed, not `SQL.edges`, because the kind decides whether the edge gates.
+ * `closes` is mined PR→issue provenance and never blocks anything; it is also
+ * the MAJORITY of the graph (68 of 91 edges on 2026-08-05), so treating the
+ * flattened edge list as blockers does not fail quietly at the margin.
+ */
 export interface DepEdge {
   readonly item_id: string;
   readonly dep_item_id: string;
+  readonly edge_type: string;
 }
 
 export interface PlannedWrite {
@@ -98,10 +107,23 @@ function openIdsOf(rows: readonly DerivationRow[]): Set<string> {
 }
 
 /**
- * Count, per item, how many of its dependencies are still open.
+ * Count, per item, how many of its BLOCKING dependencies are still open.
  *
- * Same rule as `assembleScheduling`: a dep pointing OUTSIDE the open set is
- * complete and therefore satisfied, so only deps that ARE in the set count.
+ * Two filters, and both are load-bearing:
+ *
+ *  - the edge must be a blocking KIND. `BLOCKER_KINDS` is exported from
+ *    scheduling.ts precisely so nothing keeps a second list, and `closes` is
+ *    excluded there as "mined PR→issue provenance. Never gates anything" —
+ *    D3 says the same in the shapes ("an open closing-PR means the item is in
+ *    delivery, not mis-statused").
+ *  - the target must still be OPEN. Same rule as `assembleScheduling`: a dep
+ *    pointing outside the open set is complete and therefore satisfied.
+ *
+ * The kind filter was missing until prx#972 was written to "Blocked" off a
+ * single `closes` edge (run 31020918592). `closes` is the majority of this
+ * graph, so omitting the filter is not a marginal error — it manufactures
+ * blockers for anything with an open closing PR, which is precisely the set of
+ * items actively being delivered.
  */
 function openBlockersOf(
   edges: readonly DepEdge[],
@@ -109,6 +131,7 @@ function openBlockersOf(
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of edges) {
+    if (!BLOCKER_KINDS.has(e.edge_type)) continue;
     if (openIds.has(e.dep_item_id)) counts.set(e.item_id, (counts.get(e.item_id) ?? 0) + 1);
   }
   return counts;
