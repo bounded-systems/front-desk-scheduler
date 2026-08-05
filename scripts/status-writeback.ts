@@ -154,7 +154,9 @@ const mode = apply ? "apply" : "dry-run";
 
 // Both reads page. Neither may become a bare whole-table query (#88).
 const { rows, at } = await readPaged<DerivationRow>(SQL.derivationItems, ["item_id"]);
-const { rows: edges } = await readPaged<DepEdge>(SQL.edges, ["item_id", "dep_item_id"]);
+// typedEdges, not edges: the kind decides whether an edge gates, and `closes`
+// never does. Reading the flattened list cost prx#972 a wrong "Blocked".
+const { rows: edges } = await readPaged<DepEdge>(SQL.typedEdges, ["item_id", "dep_item_id"]);
 console.log(`status-writeback: ${rows.length} item(s), ${edges.length} edge(s)${at ? ` @ ${at}` : ""}`);
 
 let board: BoardItem[];

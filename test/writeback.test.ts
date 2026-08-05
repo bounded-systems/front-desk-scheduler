@@ -64,7 +64,7 @@ test("a closed issue is planned to Done, targeting its project-item id", () => {
 test("an item with an open dependency is planned to Blocked (D3)", () => {
   const plan = planWriteback(
     [row(10), row(11)],
-    [{ item_id: `${REPO}#10`, dep_item_id: `${REPO}#11` }],
+    [{ item_id: `${REPO}#10`, dep_item_id: `${REPO}#11`, edge_type: "blocks" }],
     [card(10, "Todo"), card(11, "Todo")],
     NONE_HELD,
   );
@@ -79,7 +79,7 @@ test("a dependency that is complete does not count as a blocker", () => {
   // Same rule assembleScheduling uses: a dep OUTSIDE the open set is satisfied.
   const plan = planWriteback(
     [row(10), row(11, { status: "Done", closed_at: CLOSED })],
-    [{ item_id: `${REPO}#10`, dep_item_id: `${REPO}#11` }],
+    [{ item_id: `${REPO}#10`, dep_item_id: `${REPO}#11`, edge_type: "blocks" }],
     [card(10, "Todo"), card(11, "Done")],
     NONE_HELD,
   );
@@ -87,12 +87,15 @@ test("a dependency that is complete does not count as a blocker", () => {
   assert.equal(plan.writes.filter((w) => w.ref === `${REPO}#10`).length, 0);
 });
 
-test("#5's live shape — Blocked with no recorded dependency is planned to Todo", () => {
-  // Measured on the mirror 2026-08-04: card="Blocked", depends_on empty, zero
-  // item_deps rows — a D2 violation. The derivation CHANGES it, and that change
-  // is the point: either the block is real and belongs in the graph, or the card
-  // was asserting something no other authority knew. This test exists so the
-  // behaviour change is deliberate and visible rather than a surprise in prod.
+test("a Blocked card with no recorded dependency is planned to Todo", () => {
+  // The D2 case: Blocked asserted with nothing in the graph to justify it.
+  //
+  // This test once claimed to be "#5's live shape", citing zero item_deps rows
+  // measured on 2026-08-04. That measurement was wrong — the query keyed
+  // `item_deps.item_id` on a constructed `repo#number` instead of the ProjectV2
+  // node id, so it returned [] for an item that has one `blocks` edge to #1.
+  // #5 derives to Blocked and always did. The RULE below is real; the example
+  // attached to it was not, and CLAUDE.md carries the correction.
   const plan = planWriteback([row(5, { status: "Blocked" })], NO_EDGES, [card(5, "Blocked")], NONE_HELD);
 
   assert.equal(plan.writes.length, 1);
@@ -200,4 +203,59 @@ test("an already-correct board produces an empty plan with no skip noise", () =>
   );
   assert.equal(plan.writes.length, 0);
   assert.equal(plan.skipped.length, 0);
+});
+
+test("a `closes` edge does not block — it is provenance, not a dependency", () => {
+  // The regression. prx#972 was written to "Blocked" off a single `closes`
+  // edge (run 31020918592) because the plan read SQL.edges, which drops
+  // edge_type, and counted every arrow as a blocker.
+  //
+  // BLOCKER_KINDS in scheduling.ts is exported precisely so nothing keeps a
+  // second list, and it excludes `closes`: "mined PR→issue provenance. Never
+  // gates anything." D3 agrees — an open closing-PR means the item is in
+  // DELIVERY, so manufacturing a blocker from it inverts the meaning.
+  const plan = planWriteback(
+    [row(972), row(971)],
+    [{ item_id: `${REPO}#972`, dep_item_id: `${REPO}#971`, edge_type: "closes" }],
+    [card(972, "Todo"), card(971, "Todo")],
+    NONE_HELD,
+  );
+
+  assert.equal(
+    plan.writes.filter((w) => w.to === "Blocked").length,
+    0,
+    "a closes edge must never produce a Blocked derivation",
+  );
+});
+
+test("`parent-child` DOES block, so the fix is a kind filter and not a blanket exclusion", () => {
+  const plan = planWriteback(
+    [row(20), row(21)],
+    [{ item_id: `${REPO}#20`, dep_item_id: `${REPO}#21`, edge_type: "parent-child" }],
+    [card(20, "Todo"), card(21, "Todo")],
+    NONE_HELD,
+  );
+
+  const w = plan.writes.find((x) => x.ref === `${REPO}#20`);
+  assert.ok(w, "an open parent-child dep should still gate");
+  assert.equal(w.to, "Blocked");
+});
+
+test("a card already Blocked by a real edge is left alone, while a closes-only one is corrected", () => {
+  // Both halves in one plan, because the bug was invisible precisely when the
+  // two were not compared: every Blocked card looked justified.
+  const plan = planWriteback(
+    [row(30, { status: "Blocked" }), row(31), row(40, { status: "Blocked" }), row(41)],
+    [
+      { item_id: `${REPO}#30`, dep_item_id: `${REPO}#31`, edge_type: "blocks" },
+      { item_id: `${REPO}#40`, dep_item_id: `${REPO}#41`, edge_type: "closes" },
+    ],
+    [card(30, "Blocked"), card(31, "Todo"), card(40, "Blocked"), card(41, "Todo")],
+    NONE_HELD,
+  );
+
+  assert.equal(plan.writes.filter((w) => w.ref === `${REPO}#30`).length, 0, "#30 is justly Blocked");
+  const w40 = plan.writes.find((w) => w.ref === `${REPO}#40`);
+  assert.ok(w40, "#40's Blocked is unjustified and should be corrected");
+  assert.equal(w40.to, "Todo");
 });
