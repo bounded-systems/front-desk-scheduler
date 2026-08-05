@@ -33,8 +33,18 @@
 #      `sh:minCount 1` on `fd:origin` in `fd:ItemShape`: an omitting renderer
 #      fails loudly there instead. Keep that minCount and this requirement
 #      together — dropping either one re-arms the trap.
+#   4. Split edges by kind: `fd:dependsOn` for GATING kinds (blocks,
+#      parent-child — the scheduler's BLOCKER_KINDS), `fd:closes` for mined
+#      PR→issue provenance. `fd:dependsOn` here MEANS "gates readiness" —
+#      D1/D2/D3 all read it that way, matching `assembleScheduling` and the
+#      #148 writeback derivation. A renderer that flattens `closes` onto
+#      fd:dependsOn makes D3 warn "should be Blocked" about every item with an
+#      open closing PR — i.e. everything in active delivery — which is the #155
+#      inversion re-imported through the validation lane. This one fails WRONG
+#      rather than loud: the board reports warnings that are not there.
 #
-# The fixtures are what keep all three honest: fixtures/clean.ttl must conform,
+# The fixtures are what keep all four honest: fixtures/clean.ttl must conform
+# (including a Todo whose only open edge is fd:closes — the prx#972 shape),
 # fixtures/violations.ttl must NOT, and `npm run shacl:fixtures` asserts both.
 
 @prefix sh:   <http://www.w3.org/ns/shacl#> .
@@ -92,6 +102,15 @@ fd:ItemShape
     # No self-dependency (mirror: chk_no_self_dep). REQUIRES the renderer to
     # emit `fd:self` — see the header. Vacuously true without it.
     sh:disjoint fd:self ;
+  ] ;
+  sh:property [
+    # `closes` edges are provenance, not gates (renderer requirement 4), but
+    # they are still rows in item_deps under the same FK and self-dep CHECK —
+    # so they keep the same structural constraints, just off the D1/D2/D3 path.
+    sh:path fd:closes ;
+    sh:class fd:Item ;
+    sh:disjoint fd:self ;
+    sh:message "closes edge is malformed (self-target, or target is not an item)" ;
   ] .
 
 # A github-origin item MUST carry its issue number; a dolt-born one has none yet.

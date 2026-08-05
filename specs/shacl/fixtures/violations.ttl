@@ -82,6 +82,18 @@
   fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
   fd:dependsOn <https://bounded.tools/ns/front-desk#item/unjustified-block> .
 
+# ── a self-targeted fd:closes edge (renderer requirement 4's twin check) ─────
+# `closes` edges left the D1/D2/D3 path but kept the structural constraints
+# (sh:class, sh:disjoint fd:self). This proves the fd:closes property shape can
+# fire at all — without it, deleting that shape entirely would be invisible.
+<https://bounded.tools/ns/front-desk#item/self-closes> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/self-closes> ;
+  fd:origin "github" ;
+  fd:number "7"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "1"^^xsd:double ;
+  fd:closes <https://bounded.tools/ns/front-desk#item/self-closes> .
+
 # ── github-origin row with no fd:number (#143) ───────────────────────────────
 # The counterpart of clean.ttl's dolt-born item: absence is legal for `dolt`
 # origin and CORRUPTION for `github` origin, because the syncer cannot produce

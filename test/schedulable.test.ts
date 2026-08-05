@@ -18,8 +18,8 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { assembleScheduling, SQL } from "../src/scheduling.ts";
-import type { RawEdge, RawItem } from "../src/scheduling.ts";
+import { asBlockingEdges, assembleScheduling, SQL } from "../src/scheduling.ts";
+import type { RawItem, RawTypedEdge } from "../src/scheduling.ts";
 
 test("every scheduling query excludes card-Done AND GitHub-closed (#89)", () => {
   for (const q of [SQL.items, SQL.itemsLegacy] as const) {
@@ -54,12 +54,62 @@ test("a dep outside the schedulable set is satisfied, not blocking", () => {
     ...over,
   });
   const items = [raw({ item_id: "a", number: 1 }), raw({ item_id: "b", number: 2 })];
-  const edges: RawEdge[] = [
-    { item_id: "a", dep_item_id: "closed-and-absent" }, // satisfied — outside the set
-    { item_id: "a", dep_item_id: "b" }, // open — inside the set
+  const edges: RawTypedEdge[] = [
+    { item_id: "a", dep_item_id: "closed-and-absent", edge_type: "blocks" }, // satisfied — outside the set
+    { item_id: "a", dep_item_id: "b", edge_type: "blocks" }, // open — inside the set
   ];
   const [a] = assembleScheduling(items, edges, []);
   assert.equal(a.openBlockers, 1, "only the in-set dep blocks; the absent (closed) one is satisfied");
+});
+
+const mk = (item_id: string, number: number): RawItem => ({
+  item_id,
+  number,
+  title: "t",
+  repository: "r",
+  status: "Todo",
+  kind: "task",
+  effort: 1,
+  value: 1,
+  depends_on: "",
+  age_days: 0,
+});
+
+// ── edge kinds in the RANKING path (#156 — the #155 fix, applied to next/claim) ─
+//
+// `closes` is mined PR→issue provenance. Counting it as a blocker manufactures
+// blockers for exactly the items with an open closing PR — the ones in active
+// delivery — so prx#972 sat un-rankable while its card (fixed by #155's
+// writeback) said Todo. Both directions are pinned, same as the writeback
+// tests: provenance never gates, and the filter is BY KIND, not a blanket drop.
+
+test("a closes edge neither blocks nor credits unblocks — provenance, not a gate", () => {
+  const items = [mk("pr", 1), mk("issue", 2)];
+  const edges: RawTypedEdge[] = [{ item_id: "issue", dep_item_id: "pr", edge_type: "closes" }];
+  const [pr, issue] = assembleScheduling(items, edges, []);
+  assert.equal(issue.openBlockers, 0, "an open closing PR means in-delivery, not blocked (prx#972)");
+  assert.equal(pr.unblocks, 0, "merging a PR unblocks nothing — crediting it inflates the score");
+});
+
+test("blocks and parent-child still gate — a kind filter, not a blanket exclusion", () => {
+  const items = [mk("dep", 1), mk("blocked", 2), mk("child", 3)];
+  const edges: RawTypedEdge[] = [
+    { item_id: "blocked", dep_item_id: "dep", edge_type: "blocks" },
+    { item_id: "child", dep_item_id: "dep", edge_type: "parent-child" },
+  ];
+  const [dep, blocked, child] = assembleScheduling(items, edges, []);
+  assert.equal(blocked.openBlockers, 1);
+  assert.equal(child.openBlockers, 1, "epic children still gate on the parent");
+  assert.equal(dep.unblocks, 2, "both gating kinds credit the dependency");
+});
+
+test("asBlockingEdges: pre-edge_type historical rows gate, as they did then", () => {
+  // A read pinned before 2026-07-26 has untyped item_deps rows; every edge of
+  // that era was a declared dependency, so the shim must preserve the old
+  // behaviour — not silently drop history's blockers through the kind filter.
+  const items = [mk("a", 1), mk("b", 2)];
+  const [a] = assembleScheduling(items, asBlockingEdges([{ item_id: "a", dep_item_id: "b" }]), []);
+  assert.equal(a.openBlockers, 1, "legacy untyped edge still blocks");
 });
 
 test("the drift query detects both directions, github-origin only", () => {

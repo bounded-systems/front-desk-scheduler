@@ -15,6 +15,7 @@
 
 import { createConnection } from "mysql2/promise";
 import {
+  asBlockingEdges,
   assembleScheduling,
   type RawEdge,
   type RawItem,
@@ -75,7 +76,14 @@ export async function readScheduling(): Promise<ScheduleRead> {
             ? (q(SQL.itemsLegacy) as Promise<RawItem[]>)
             : Promise.reject(e)
         ),
-        q(SQL.edges) as Promise<RawEdge[]>,
+        // Typed, because only BLOCKER_KINDS gate (#155). Fallback: a replica
+        // pinned before the 2026-07-26 migration has no `edge_type` column;
+        // its rows were all declared dependencies, so they read as blocking.
+        (q(SQL.typedEdges) as Promise<RawTypedEdge[]>).catch((e: unknown) =>
+          /column .*edge_type.* not found|unknown column .*edge_type/i.test(String(e))
+            ? (q(SQL.edges) as Promise<RawEdge[]>).then(asBlockingEdges)
+            : Promise.reject(e)
+        ),
         // Same fallback as dolthub.ts: a read replica that has not yet pulled the
         // 2026-07-28 migration has no `leases` table. Read-only.
         (q(SQL.leases) as Promise<{ item_id: string }[]>).catch((e: unknown) =>
