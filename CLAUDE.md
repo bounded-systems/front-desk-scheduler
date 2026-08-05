@@ -193,7 +193,10 @@ excuse died with #127. So this is the #112 shape aimed at the claiming path
 itself: nothing is broken, nobody runs it. **Dispatch `claim-ticket.yml` with
 `item:` before you start, and `bind-ticket.yml` the moment the PR exists** — a
 bound lease is the only thing that would have made either session visible to the
-other, because `next` only excludes what the DO says is held (#135).
+other, because `next` only excludes what the DO says is held (#135). 2026-08-05
+added the backlog-branch variant: prx#931 duplicated already-merged prx#747 and
+ranked top of the queue for a month; the claim taken to close it read
+`fencing: 1`, so no lease had ever existed on the item either.
 
 **`next` now excludes items that are actually held — but only the top N** (#135).
 The mirror's `leases` table is empty on the lease plane by design (the DO is the
