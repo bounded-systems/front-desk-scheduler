@@ -56,6 +56,19 @@
   fd:status "In Progress" ; fd:kind "task" ;
   fd:effort "3"^^xsd:double ; fd:value "75"^^xsd:double .
 
+# The prx#972 shape (#155/#156): a Todo item whose ONLY open edge is fd:closes —
+# an open PR that will close it. `closes` is provenance, not a gate, so this
+# item is correctly Todo and D3 must NOT warn. This is the case that separates
+# renderer requirement 4 from a no-op: flattened onto fd:dependsOn, this exact
+# graph reports "Todo item has open dependencies (should be Blocked)".
+<https://bounded.tools/ns/front-desk#item/clean-in-delivery> a fd:Item ;
+  fd:self <https://bounded.tools/ns/front-desk#item/clean-in-delivery> ;
+  fd:origin "github" ;
+  fd:number "6"^^xsd:integer ;
+  fd:status "Todo" ; fd:kind "task" ;
+  fd:effort "1"^^xsd:double ; fd:value "50"^^xsd:double ;
+  fd:closes <https://bounded.tools/ns/front-desk#item/clean-todo> .
+
 # Dolt-born hidden work: captured in the DoltHub write surface before any GitHub
 # issue exists, so it has NO fd:number — and that is legal (#143). syncPush()
 # creates the issue and drops this placeholder, after which the next pull

@@ -8,6 +8,7 @@
  */
 
 import {
+  asBlockingEdges,
   assembleScheduling,
   type ScheduleRead,
   type RawEdge,
@@ -139,7 +140,15 @@ export async function readScheduling(ref = "main"): Promise<ScheduleRead> {
         ? query<RawItem>(at(SQL.itemsLegacy), ref)
         : Promise.reject(e)
     ),
-    query<RawEdge>(at(SQL.edges), ref),
+    // Typed, because only BLOCKER_KINDS gate (a `closes` edge is provenance —
+    // #155). The fallback is the pre-2026-07-26 window where `item_deps` has
+    // no `edge_type`: those rows were all declared dependencies, so they
+    // rehydrate as blocking. Same permanent historical-read case as `needs`.
+    query<RawTypedEdge>(at(SQL.typedEdges), ref).catch((e: unknown) =>
+      /column .*edge_type.* not found|edge_type.*could not be found/i.test(String(e))
+        ? query<RawEdge>(at(SQL.edges), ref).then(asBlockingEdges)
+        : Promise.reject(e)
+    ),
     // `leases` has existed on main since 2026-07-28, but this is NOT dead code:
     // `ref` can name any historical Dolt commit, and reading the board as it
     // stood before the migration is a permanent capability of a versioned

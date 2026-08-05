@@ -74,14 +74,31 @@ export interface RawEdge {
 }
 
 /**
+ * A read pinned to a commit from the pre-`edge_type` window (2026-07-26,
+ * before `0horcogstrsi…`) has untyped `item_deps` rows. Every edge of that era
+ * was a declared dependency — `closes`/`parent-child` mining arrived WITH the
+ * column — so the historically faithful reading is "blocks". Permanent
+ * historical-read shim, same case as `itemsLegacy`/`leasesLegacy`.
+ */
+export function asBlockingEdges(edges: readonly RawEdge[]): RawTypedEdge[] {
+  return edges.map((e) => ({ ...e, edge_type: "blocks" }));
+}
+
+/**
  * Assemble scheduling items from raw rows. `items` is the SCHEDULABLE set —
  * not card-Done AND not GitHub-closed (see SCHEDULABLE below); a dep pointing
  * OUTSIDE it is complete → satisfied, so openBlockers counts only deps that
  * ARE in the set.
+ *
+ * Edges are TYPED, and only `BLOCKER_KINDS` gate — a `closes` edge is mined
+ * PR→issue provenance and must count toward neither `openBlockers` (it would
+ * manufacture a blocker for exactly the items in active delivery, the #155
+ * inversion) nor `unblocks` (merging a PR "unblocks" nothing; crediting it
+ * inflates the score of anything with an open closing PR).
  */
 export function assembleScheduling(
   items: readonly RawItem[],
-  edges: readonly RawEdge[],
+  edges: readonly RawTypedEdge[],
   leasedIds: readonly string[],
 ): SchedulingItem[] {
   const open = new Set(items.map((i) => i.item_id)); // non-Done ⇒ "open"
@@ -89,6 +106,7 @@ export function assembleScheduling(
   const openBlockers = new Map<string, number>();
   const unblocks = new Map<string, number>();
   for (const e of edges) {
+    if (!BLOCKER_KINDS.has(e.edge_type)) continue; // provenance, not a gate
     if (open.has(e.dep_item_id)) openBlockers.set(e.item_id, (openBlockers.get(e.item_id) ?? 0) + 1);
     if (open.has(e.item_id)) unblocks.set(e.dep_item_id, (unblocks.get(e.dep_item_id) ?? 0) + 1);
   }
@@ -159,11 +177,16 @@ export const SQL = {
     "SELECT repository, number, status, closed_at FROM items " +
     "WHERE origin = 'github' AND ((closed_at IS NOT NULL AND status <> 'Done') " +
     "OR (closed_at IS NULL AND status = 'Done'))",
+  // LEGACY fallback only — a read pinned before the 2026-07-26 `edge_type`
+  // migration has no such column. Live paths read `typedEdges`; untyped rows
+  // are rehydrated through `asBlockingEdges` (every pre-typed edge was a
+  // declared dependency). Don't add new readers of this: an untyped edge read
+  // cannot tell provenance from a gate, which is exactly the #155 bug.
   edges: "SELECT item_id, dep_item_id FROM item_deps",
-  // Typed edges — carries edge_type (blocks / parent-child / closes) that the
-  // flattened `edges` query drops. The GH-canonical dep-graph surface
-  // (`readTypedEdges` → the `graph` verb) needs the kind to distinguish
-  // parent-child (epic children) from blockers.
+  // Typed edges — carries edge_type (blocks / parent-child / closes). Every
+  // live edge consumer needs the kind: `graph` to distinguish parent-child
+  // from blockers, scheduling and the writeback to keep `closes` (provenance)
+  // from gating.
   typedEdges: "SELECT item_id, dep_item_id, edge_type FROM item_deps",
   // ALL items incl Done (the `list` verb).
   // The scheduling/graph queries drop Done (not schedulable); list must include

@@ -113,7 +113,7 @@ def read_live():
     edges, last_i, last_d = [], "", ""
     while True:
         page = dhub(
-            f"SELECT item_id, dep_item_id FROM item_deps AS OF {sql_quote(head)} "
+            f"SELECT item_id, dep_item_id, edge_type FROM item_deps AS OF {sql_quote(head)} "
             f"WHERE (item_id, dep_item_id) > ({sql_quote(last_i)}, {sql_quote(last_d)}) "
             f"ORDER BY item_id, dep_item_id LIMIT {PAGE_ROWS}",
             paginated=True,
@@ -135,7 +135,7 @@ def read_dolt():
     """The whole board from a local dolt clone. Needs the binary and ./mirror."""
     return (
         dsql("SELECT item_id, number, repository, status, kind, effort, value, origin FROM items"),
-        dsql("SELECT item_id, dep_item_id FROM item_deps"),
+        dsql("SELECT item_id, dep_item_id, edge_type FROM item_deps"),
         None,
     )
 
@@ -156,7 +156,16 @@ def render_turtle(items, edges) -> str:
             parts.append(f'fd:number "{it["number"]}"^^xsd:integer')
         lines.append(" ;\n  ".join(parts) + " .")
     for e in edges:
-        lines.append(f'{uri(e["item_id"])} fd:dependsOn {uri(e["dep_item_id"])} .')
+        # RENDERER REQUIREMENT 4 (#156): the predicate is decided by edge kind.
+        # `fd:dependsOn` is a GATING dependency (blocks / parent-child — the
+        # scheduler's BLOCKER_KINDS); `closes` is mined PR→issue provenance and
+        # renders as `fd:closes`. Flattening both onto fd:dependsOn makes D2/D3
+        # disagree with the scheduler and the writeback derivation: a Todo with
+        # an open closing PR would warn "should be Blocked" — the exact
+        # inversion #155 removed from the ranking (an open closing PR means the
+        # item is in DELIVERY, not mis-statused).
+        pred = "fd:closes" if e["edge_type"] == "closes" else "fd:dependsOn"
+        lines.append(f'{uri(e["item_id"])} {pred} {uri(e["dep_item_id"])} .')
     return "\n".join(lines) + "\n"
 
 
@@ -212,6 +221,7 @@ EXPECTED_VIOLATIONS = [
     ("D2 — unjustified block",            "Blocked item has no open dependency recorded"),
     ("D3 — Todo that should be Blocked",  "Todo item has open dependencies"),
     ("github-origin row with no number",  "must carry its issue number"),
+    ("self-targeted closes edge",         "closes edge is malformed"),
 ]
 
 
