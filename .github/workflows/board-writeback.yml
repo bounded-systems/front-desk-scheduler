@@ -146,6 +146,22 @@ jobs:
           GH_TOKEN: ${{ steps.broker-token.outputs.token }}
           APPLY: ${{ inputs.apply }}
           REASON: ${{ inputs.reason }}
+        # `bash {0}`, NOT the default. Actions runs `run:` as `bash -e {0}`, and
+        # `-e` is fatal to this step: every line below the script call exists to
+        # report what the script did, so aborting ON a non-zero exit throws away
+        # exactly the output that explains it.
+        #
+        # That is not hypothetical. Run 31020918592 (the first apply) exited 1
+        # and logged NOTHING — no per-item result, no FDS-WRITEBACK-RESULT, no
+        # summary — because `out="$(...)"` tripped `-e` before `echo "$out"`.
+        # A partial write had happened and the log could not say which cards
+        # moved. Note the no-verdict fallback below was written FOR that case
+        # and was itself unreachable, which is the lesson: a guard downstream of
+        # the failure it guards against does not run.
+        #
+        # `set +e` inside the script would work too; the shell override is
+        # preferred because it cannot be undone by a later edit to the body.
+        shell: bash {0}
         run: |
           set -uo pipefail
 

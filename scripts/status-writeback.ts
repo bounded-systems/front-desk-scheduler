@@ -102,7 +102,9 @@ async function gh(args: string[]): Promise<unknown> {
 async function resolveFieldIds(org: string, project: number): Promise<FieldIds> {
   const data = await gh([
     "api", "graphql", "-f", `query=${FIELD_QUERY}`,
-    "-F", `org=${org}`, "-F", `num=${project}`,
+    // -f for $org:String!, -F only for $num:Int! — see writeOne for why the
+    // distinction is load-bearing rather than stylistic.
+    "-f", `org=${org}`, "-F", `num=${project}`,
   ]) as {
     data?: { organization?: { projectV2?: {
       id?: string;
@@ -127,8 +129,18 @@ async function writeOne(ids: FieldIds, w: PlannedWrite): Promise<void> {
   if (!option) throw new Error(`"${BOARD_FIELDS.status}" has no option named "${w.to}"`);
   await gh([
     "api", "graphql", "-f", `query=${MUTATION}`,
-    "-F", `project=${ids.projectId}`, "-F", `item=${w.itemId}`,
-    "-F", `field=${ids.fieldId}`, "-F", `option=${option}`,
+    // -f, NOT -F. `gh api graphql -F` does TYPED parsing: a value that looks
+    // numeric is sent as a JSON number. Every variable here is ID! or String!,
+    // and ProjectV2 single-select option ids are 8-character hex — so an
+    // all-digits one (e.g. "98236657") is coerced to a number and the String!
+    // variable rejects it, while a hex id containing a letter goes through.
+    //
+    // That is not a hypothetical either. Run 31020918592 wrote prx#972 →
+    // "Blocked" successfully and failed BOTH → "Done" writes in the same pass:
+    // one option id per target status, one of them all-digits. `-f` sends every
+    // value as a string, which is what these variables are declared as.
+    "-f", `project=${ids.projectId}`, "-f", `item=${w.itemId}`,
+    "-f", `field=${ids.fieldId}`, "-f", `option=${option}`,
   ]);
 }
 
