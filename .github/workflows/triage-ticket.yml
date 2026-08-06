@@ -1,0 +1,213 @@
+name: triage-ticket
+# The triage window — retire an item the board still ranks but the work no
+# longer needs, in ONE dispatch instead of four.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Measured 2026-08-05/06: four of the top five executable picks were already
+# done — prx#931 duplicated already-merged #747, #902 duplicated #748, #945
+# duplicated #851, and prx#21 had been fixed by GH-411 weeks earlier. prx#931
+# had ranked FIRST on the board for over a month. Retiring each cost ~15 tool
+# calls: dispatch claim, poll the run, list jobs, grep the log for one
+# FDS-CLAIM-RESULT line, comment, close, then the same poll-and-grep dance again
+# for the release. The judgment in each case was one sentence. Everything else
+# was ceremony, and this file is that ceremony collapsed into a single dispatch.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+# --------------------------------
+# It does not decide that an item is a corpse. The caller supplies `evidence`
+# and this workflow never reads a diff, compares a branch, or infers that work
+# is already merged. A window that could reach that conclusion itself would be
+# an auto-closer that trusts whoever dispatched it — the judgment stays with the
+# agent, and the evidence field is what a reviewer checks afterwards.
+#
+# THE CLAIM IS THE GUARD
+# ----------------------
+# Triage runs only on an item the lease plane GRANTS, which means it inherits
+# `isEligible` for free (#59, one definition). An item that is already Done,
+# closed or blocked comes back `not-eligible` and NOTHING is written. That is
+# the same refusal claim-ticket.yml already produces, doing a second job here.
+#
+# It also means a triage cannot race a session that holds the item: the claim
+# loses, the run reports `not-granted`, and no write happens. The apparatus that
+# went unused on 2026-08-04 (#145/#146, two sessions, seventeen seconds apart)
+# is load-bearing here rather than optional.
+on:
+  workflow_dispatch:
+    inputs:
+      agent_label:
+        description: >-
+          Who is triaging, e.g. "session-7". Recorded as an alias only — the
+          Worker namespaces it under the verified identity, landing as
+          `gha/<label>`. It cannot be used to impersonate anyone.
+        required: true
+        type: string
+      item:
+        description: >-
+          The item to retire — "repo#number" (e.g. "prx#931"). REQUIRED, and
+          there is deliberately no ask-the-board mode: you triage a specific
+          thing you investigated, and latching the top pick instead would retire
+          a different item than the one you looked at (#127).
+        required: true
+        type: string
+      reason:
+        description: >-
+          superseded = the change landed elsewhere; resolved = later work fixed
+          it; not-planned = it will not be done.
+        required: true
+        default: superseded
+        type: choice
+        options: [superseded, resolved, not-planned]
+      evidence:
+        description: >-
+          The proof, in Markdown — what you verified and where. This is the
+          safety gate: it is the only part a reviewer can check after the fact.
+        required: true
+        type: string
+      superseded_by:
+        description: 'Cross-reference for the headline, e.g. "#747". Optional.'
+        required: false
+        type: string
+      target_kind:
+        description: >-
+          issue or pr. Pull requests reject `state_reason`, so the close call
+          differs; get this wrong on a PR and the close fails (and the lease is
+          then handed back as `released`, not `completed`).
+        required: false
+        default: issue
+        type: choice
+        options: [issue, pr]
+      dry_run:
+        description: "Print the plan and write nothing. The claim still runs."
+        required: false
+        default: false
+        type: boolean
+      ttl:
+        description: >-
+          Lease seconds. Short by design — triage completes inside one job, so
+          this is a crash window, not a task estimate. Nothing binds here: there
+          is no PR to bind to, and the release at the end is the normal exit.
+        required: false
+        default: "600"
+        type: string
+
+permissions:
+  id-token: write # OIDC → cf-token-broker, for the Front Desk App token
+  contents: read
+
+concurrency:
+  # Serialize per label so one caller cannot race itself into two leases by
+  # double-dispatching. Different labels still contend normally — that is the
+  # mechanism working (specs/lean S1), not something to suppress.
+  #
+  # Note this does NOT join `mirror-write`: triage writes GitHub issues, not the
+  # mirror or the board's project fields. The change reaches the mirror the same
+  # way any close does — the webhook's `board-changed` dispatch, then the delta
+  # lane.
+  group: triage-ticket-${{ inputs.agent_label }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      # Same pin the org's repo-standard.yml uses, so there is one SHA to bump.
+      - uses: denoland/setup-deno@11b63cf76cfcafb4e43f97b6cad24d8e8438f62d # v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies (frozen)
+        run: deno install --frozen
+
+      - name: Mint Front Desk App token via the OIDC broker
+        id: broker-token
+        env:
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${BROKER_URL:-}" ] || { echo "::error::org var CF_BROKER_URL not visible to this repo"; exit 1; }
+          jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github-app-broker" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+          tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+            "${BROKER_URL%/}/github/front-desk" | jq -r '.token // empty')" || {
+            echo "::error::broker refused this workflow. verifyOIDC pins job_workflow_ref — if this is the FIRST run of triage-ticket.yml, add it to the front-desk tier GH_APPS entry in the broker wrangler.jsonc. See #112 for what a missing allowlist entry looks like when it goes unnoticed: 24 runs, 24 failures, nothing wrong with the code."
+            exit 1
+          }
+          [ -n "$tok" ] || {
+            echo "::error::broker returned no token for app 'front-desk' — same allowlist cause as above (job_workflow_ref not recognised for triage-ticket.yml)."
+            exit 1
+          }
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
+      - name: Triage
+        id: triage
+        env:
+          # The claim's identity: an installation token covering THIS repo, which
+          # is what the lease Worker accepts. It cannot write to prx or hooksmith,
+          # which is why the App token below exists and is kept separate.
+          GH_TOKEN: ${{ github.token }}
+          # The writes' identity, scoped to the one subprocess that needs it.
+          # The App must hold `issues: write` on the TARGET repo — a failure here
+          # is reported as `closed: false` and the lease is handed back
+          # `released`, so the item returns to the queue rather than being
+          # recorded as retired.
+          TRIAGE_GH_TOKEN: ${{ steps.broker-token.outputs.token }}
+          FDS_CLAIM_ENDPOINT: ${{ vars.FDS_CLAIM_ENDPOINT }}
+          # Pinned rather than auto-detected, matching claim-ticket.yml: the
+          # runner has no local mirror, so detection would land here anyway.
+          FDS_READS: dolthub
+          FDS_JSON: "1"
+          AGENT_LABEL: ${{ inputs.agent_label }}
+          TRIAGE_ITEM: ${{ inputs.item }}
+          TRIAGE_REASON: ${{ inputs.reason }}
+          TRIAGE_EVIDENCE: ${{ inputs.evidence }}
+          TRIAGE_SUPERSEDED_BY: ${{ inputs.superseded_by }}
+          TRIAGE_TARGET_KIND: ${{ inputs.target_kind }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TTL: ${{ inputs.ttl }}
+        # `bash {0}`, NOT the default `bash -e {0}`. Every line after the script
+        # call exists to report what it did, and `-e` would abort on the exit
+        # code that says a half-run happened — throwing away the output that
+        # explains which half. board-writeback.yml learned this the expensive
+        # way (run 31020918592: exit 1, zero log lines, a partial write nobody
+        # could enumerate).
+        shell: bash {0}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${FDS_CLAIM_ENDPOINT:-}" ]; then
+            echo "::error::FDS_CLAIM_ENDPOINT is unset — there is no lease plane to claim against."
+            echo "::error::It is published by lease-deploy.yml as a repo/org Actions variable."
+            exit 1
+          fi
+
+          out="$(node scripts/triage-ticket.ts 2>&1)"
+          rc=$?
+          echo "$out"
+
+          # The script prints FDS-TRIAGE-RESULT itself. Re-emit only if it did
+          # not: a crash before the verdict must not read as a silent success,
+          # and a caller greps for exactly this line.
+          if ! printf '%s\n' "$out" | grep -q '^FDS-TRIAGE-RESULT '; then
+            echo "FDS-TRIAGE-RESULT {\"ok\":false,\"error\":\"no verdict\",\"exit\":$rc}"
+          fi
+
+          {
+            echo "## triage-ticket — ${TRIAGE_ITEM}"
+            echo
+            echo "reason: \`${TRIAGE_REASON}\`  ·  dry-run: \`${DRY_RUN}\`  ·  label: \`gha/${AGENT_LABEL}\`"
+            echo
+            echo '```'
+            printf '%s\n' "$out" | grep '^FDS-TRIAGE-RESULT ' || echo "(no verdict line)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $rc

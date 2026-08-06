@@ -304,6 +304,61 @@ The ERROR row is the mirror of the claim's: do not read it as "already released"
 and move on, or you leave a lease held with nobody watching it. Read `/status` for
 the item before re-dispatching.
 
+## Retiring an already-done item: one dispatch, not four
+
+Some items do not need work — they need retiring. The board ranks what it can
+see, and it cannot see that a PR's whole diff is already on `main`, so a corpse
+keeps its score. On 2026-08-05/06 four of the top five executable picks were
+exactly that (prx#931→#747, #902→#748, #945→#851, and prx#21 fixed weeks
+earlier by GH-411); prx#931 had ranked **first on the board for over a month**.
+
+Retiring one through the general windows costs the full loop twice — claim,
+poll, grep the log, comment, close, then poll and grep again for the release —
+about fifteen tool calls for a judgment that fits in one sentence.
+`triage-ticket.yml` is that loop as a single dispatch:
+
+```
+mcp__github__actions_run_trigger
+  owner: bounded-systems   repo: front-desk-scheduler
+  workflow: triage-ticket.yml   ref: main
+  inputs:
+    agent_label:    "session-7"
+    item:           "prx#931"
+    reason:         "superseded"        # or resolved | not-planned
+    superseded_by:  "#747"
+    target_kind:    "pr"                # issue (default) | pr
+    evidence:       "All three changes are on main at df5ab25: …"
+```
+
+Read the one `FDS-TRIAGE-RESULT` line. It claims, comments, closes, and
+releases in one job.
+
+**It does not decide anything.** You supply `evidence`; the workflow never reads
+a diff or infers that work is already merged. A window that could reach that
+conclusion itself would be an auto-closer that trusts whoever dispatched it. The
+evidence field is what a reviewer checks afterwards, which is why it is required
+and non-empty.
+
+**The claim is the guard**, and it is the same claim as everywhere else — so
+triage inherits `isEligible` rather than restating it (#59). An item that is
+already Done, closed or blocked returns `not-eligible` and **nothing is
+written**. A held item returns `not-granted`, so a triage cannot bulldoze a
+session that is working the item.
+
+**A half-run hands the item back.** The release status is derived from what
+happened: the lease is released `completed` only when the close landed, and
+`released` otherwise — so a failed close returns the item to the queue instead
+of recording a retirement that did not occur. The usual cause of that failure is
+the Front Desk App lacking `issues: write` on the *target* repo, since the close
+runs under the App identity (`github.token` covers only this repo, which is why
+it stays with the claim and never touches the target).
+
+> Like every new workflow that mints from the broker, its first dispatch is what
+> proves the `job_workflow_ref` allowlist entry landed — `verifyOIDC` pins it,
+> and until `triage-ticket.yml` is in the `front-desk` tier's `GH_APPS` entry
+> every run fails at the mint step. The step names that cause rather than
+> failing with a bare curl error (#112). Dispatch it; don't assume it.
+
 ## What is not covered
 
 There is no `renew` window, and — decided in #105, not left to omission — there
