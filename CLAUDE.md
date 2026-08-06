@@ -68,6 +68,20 @@ itself (`board:parity`, `sync`) therefore wants `needs: [github-api]`; declaring
 `needs: [gh]` would wrongly mark it executable anywhere a binary happens to be
 installed.
 
+That four-line snapshot generalised on 2026-08-06: the whole raw-API surface
+was probed — see `docs/api-reachability.md` for the matrix and the five refusal
+classes, and re-derive it with `scripts/audit-api-reachability.sh`, which
+asserts the posture **both ways** (routes the strategy relies on stay open,
+routes it assumes closed stay closed) and exits nonzero on drift. The facts
+that decide `needs:` and window design: repo-scoped reads AND issue/PR writes
+are open over raw curl; content writes are proxy-blocked (`git push` is the
+write path); **workflow dispatch is refused by the token, not the proxy**, so
+windows are driven via the MCP `actions_run_trigger` tool only; job-log
+*bodies* redirect to Azure blob, off the egress allowlist, so verdict lines are
+read via MCP `get_job_logs`; and the MCP server holds its own credential —
+search and collaborators answer over MCP while the same paths 403 raw, so
+neither surface's reachability predicts the other's.
+
 Note what that sentence is about, though: **the script, not the issue.** `needs:`
 is what an actor must *hold to discharge the item*, and the two part company the
 moment a window exists. #58 was the case in point — the board-reading item, and
