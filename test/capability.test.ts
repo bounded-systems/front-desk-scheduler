@@ -12,6 +12,9 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   CAPABILITIES,
@@ -22,7 +25,8 @@ import {
   probeActor,
   PROXY_TOKEN_SENTINEL,
   SENTINEL_REASON,
-  binaryOnPath,
+  resolveBinary,
+  PROVISIONED_BIN_DIRS,
 } from "../src/capability.ts";
 import { parseFrontMatter } from "../src/frontmatter.ts";
 import type { RawTypedEdge, SchedulingItem } from "../src/scheduling.ts";
@@ -33,7 +37,10 @@ import { ROLLING_5H_BUDGET } from "../src/policy.ts";
 // ── actors ───────────────────────────────────────────────────────────────────
 
 const actorWith = (bins: string[], env: Record<string, string | undefined> = {}) =>
-  probeActor({ env, hasBinary: (n) => bins.includes(n) });
+  probeActor({
+    env,
+    resolveBinary: (n) => (bins.includes(n) ? { path: `/usr/bin/${n}`, onPath: true } : null),
+  });
 
 /** A Claude Code cloud session, as measured on 2026-07-31. */
 const CLOUD_SESSION = actorWith(["deno"], { GH_TOKEN: PROXY_TOKEN_SENTINEL });
@@ -93,11 +100,98 @@ test("only the capabilities actually absent are reported missing", () => {
   assert.deepEqual(missingFor(["gh", "github-api"], LAPTOP), []);
 });
 
-test("binaryOnPath finds a real binary and refuses an invented one", () => {
+test("resolveBinary finds a real binary and refuses an invented one", () => {
   // node is running this test, so it is on PATH by construction.
-  assert.equal(binaryOnPath("node"), true);
-  assert.equal(binaryOnPath("definitely-not-a-real-binary-8f3a"), false);
-  assert.equal(binaryOnPath("node", { PATH: "" }), false, "empty PATH finds nothing");
+  const node = resolveBinary("node");
+  assert.ok(node, "node resolves");
+  assert.equal(node.onPath, true);
+  assert.equal(resolveBinary("definitely-not-a-real-binary-8f3a"), null);
+  assert.equal(resolveBinary("node", { PATH: "" }), null, "an empty environment finds nothing");
+});
+
+// ── #160: the probe process's PATH is not the actor's ────────────────────────
+//
+// Observed 2026-08-06: the MCP server reported `missing: [deno]` / "no `deno`
+// binary on PATH" while the same session's shell had deno 2.9.4 at
+// $HOME/.deno/bin/deno. session-start.sh puts it there and prepends it to the
+// SHELL's PATH via $CLAUDE_ENV_FILE; a harness-spawned process never sees that.
+//
+// The fixture is a fake $HOME rather than the real one, so the test asserts the
+// SEARCH RULE and not whatever happens to be installed on the runner.
+
+/** A $HOME with an executable at one of the provisioned locations. */
+function homeWithProvisioned(name: string): { home: string; path: string } {
+  const home = mkdtempSync(join(tmpdir(), "fds-cap-"));
+  const dir = join(home, PROVISIONED_BIN_DIRS[0]);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  writeFileSync(path, "#!/bin/sh\nexit 0\n");
+  chmodSync(path, 0o755);
+  return { home, path };
+}
+
+test("a hook-provisioned binary is found even when it is not on PATH (#160)", () => {
+  const { home, path } = homeWithProvisioned("deno");
+  try {
+    const found = resolveBinary("deno", { PATH: "", HOME: home });
+    assert.ok(found, "deno resolves out of ~/.deno/bin with an empty PATH");
+    assert.equal(found.path, path);
+    assert.equal(found.onPath, false, "found, but this process could not spawn it bare");
+
+    // The whole point: the actor HOLDS it. Before #160 this asserted `false`.
+    const actor = probeActor({
+      env: { PATH: "", HOME: home },
+      resolveBinary: (n) => resolveBinary(n, { PATH: "", HOME: home }),
+    });
+    assert.equal(actor.held.has("deno"), true);
+    assert.equal(isExecutableBy(["deno"], actor), true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the reason names where a provisioned binary was found, and that it is not on PATH", () => {
+  const { home, path } = homeWithProvisioned("deno");
+  try {
+    const env = { PATH: "", HOME: home };
+    const actor = probeActor({ env, resolveBinary: (n) => resolveBinary(n, env) });
+
+    // A caller that shells out from THIS process still needs the distinction,
+    // so "held" must not read the same as "on PATH".
+    const why = actor.because.get("deno") ?? "";
+    assert.ok(why.includes(path), `reason should name the path, got: ${why}`);
+    assert.ok(why.includes("not on this process's PATH"), `reason should flag the gap, got: ${why}`);
+
+    // And an absent one says where it looked, so the next reader does not have
+    // to guess whether the provisioned dirs were searched at all.
+    const missing = actor.because.get("gh") ?? "";
+    assert.ok(missing.includes("~/.deno/bin"), `absence should name the search, got: ${missing}`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("PATH wins: a binary genuinely on PATH is never reported as merely provisioned", () => {
+  const { home, path } = homeWithProvisioned("deno");
+  try {
+    const found = resolveBinary("deno", { PATH: join(home, PROVISIONED_BIN_DIRS[0]), HOME: home });
+    assert.ok(found);
+    assert.equal(found.path, path);
+    assert.equal(found.onPath, true, "same file, but this shell DID inherit the hook's export");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("without $HOME the provisioned dirs are not searched", () => {
+  // Keeps the probe injectable — a test that passes no HOME must not fall
+  // through to the runner's real one and pick up whatever is installed there.
+  const { home } = homeWithProvisioned("deno");
+  try {
+    assert.equal(resolveBinary("deno", { PATH: "" }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("the vocabulary is closed", () => {

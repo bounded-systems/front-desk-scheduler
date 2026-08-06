@@ -46,6 +46,30 @@
  * ignore the field. A missing declaration means "unknown", and unknown must not
  * masquerade as "blocked" — the same distinction `claim-ticket-summary.ts` keeps
  * between a refusal and an error.
+ *
+ * ── The actor is the SESSION, not this process (#160) ────────────────────────
+ * The subject of every sentence above is the actor who would discharge the item.
+ * That actor is the session — a human or an agent with a shell — and it is NOT
+ * the process running this code. On 2026-08-06 those two came apart: the MCP
+ * server reported `missing: [deno]`, `why: no \`deno\` binary on PATH`, while the
+ * same session's shell had `deno 2.9.4` at `$HOME/.deno/bin/deno`.
+ *
+ * Nothing was wrong with the probe's logic; it was reading the wrong PATH.
+ * `session-start.sh` provisions deno and elan under `$HOME` and puts them on the
+ * SHELL's PATH by appending `export PATH=…` to `$CLAUDE_ENV_FILE`. That reaches
+ * an interactive shell. It does not reach a process the harness spawned itself,
+ * so the MCP server — the probe a session actually consults — inherits a PATH
+ * without them. `dolt` was held in the same reading because its installer writes
+ * to /usr/local/bin, which is on every PATH; the split between the two is the
+ * whole diagnosis.
+ *
+ * So the search is PATH plus the directories that hook provisions into, and the
+ * resolution is REPORTED rather than flattened to a boolean: "found at
+ * ~/.deno/bin, not on this process's PATH" is a different fact from "on PATH",
+ * and a caller that shells out from THIS process needs to know which it got.
+ *
+ * Deliberately not fixed by executing the binary (`deno --version` via a login
+ * shell). See `resolveBinary` for why.
  */
 
 import { accessSync, constants } from "node:fs";
@@ -97,10 +121,36 @@ export interface ActorCapabilities {
   readonly because: ReadonlyMap<Capability, string>;
 }
 
+/**
+ * Where a binary was found, and whether this process could just spawn it.
+ *
+ * The second field is the one #160 turns on. A binary found only under a
+ * provisioned directory IS held by the actor — the session's shell has it on
+ * PATH — but a bare `spawn("deno")` from THIS process would still ENOENT. Both
+ * facts are true at once, so both are carried rather than collapsed.
+ */
+export interface ResolvedBinary {
+  /** Absolute path to the executable. */
+  readonly path: string;
+  /** True when it was found via PATH, false when only via a provisioned dir. */
+  readonly onPath: boolean;
+}
+
+/**
+ * Directories `session-start.sh` installs into, relative to `$HOME`.
+ *
+ * This list is the checked-in twin of the two `export PATH="$HOME/…/bin:$PATH"`
+ * lines that hook appends to `$CLAUDE_ENV_FILE`; adding a toolchain there means
+ * adding it here. `dolt` is absent on purpose — its installer targets
+ * /usr/local/bin, which every PATH already has, and that asymmetry is exactly
+ * why the #160 reading held `dolt` and missed `deno`.
+ */
+export const PROVISIONED_BIN_DIRS = [".deno/bin", ".elan/bin"] as const;
+
 /** Injected so the probe is testable without a filesystem or a real environment. */
 export interface ProbeEnv {
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly hasBinary: (name: string) => boolean;
+  readonly resolveBinary: (name: string) => ResolvedBinary | null;
 }
 
 /**
@@ -122,11 +172,18 @@ export function probeActor(probe: ProbeEnv): ActorCapabilities {
   const because = new Map<Capability, string>();
 
   for (const bin of ["gh", "dolt", "deno"] as const) {
-    if (probe.hasBinary(bin)) {
+    const found = probe.resolveBinary(bin);
+    if (found) {
       held.add(bin);
-      because.set(bin, `\`${bin}\` is on PATH`);
+      because.set(
+        bin,
+        found.onPath
+          ? `\`${bin}\` is on PATH`
+          // Held by the actor, not spawnable from here — say both (#160).
+          : `\`${bin}\` is at ${found.path} — provisioned, but not on this process's PATH`,
+      );
     } else {
-      because.set(bin, `no \`${bin}\` binary on PATH`);
+      because.set(bin, `no \`${bin}\` binary on PATH or in ${PROVISIONED_BIN_DIRS.map((d) => `~/${d}`).join(", ")}`);
     }
   }
 
@@ -158,31 +215,68 @@ export function explainMissing(missing: readonly Capability[], actor: ActorCapab
 }
 
 /**
- * Is `name` an executable on PATH?
+ * The directories to search, PATH first, each tagged with which one it came from.
  *
- * Resolved by inspecting PATH rather than spawning the binary. Spawning to ask
- * "does this exist" is how the claim path used to die on `spawn dolt ENOENT` in
- * a cloud session — and a probe that runs on every `next` must not pay a process
- * per capability, nor fail differently depending on whether the binary happens
- * to accept `--version`.
+ * Order is load-bearing in one direction only: PATH entries come first, so a
+ * binary that is genuinely spawnable from here is never reported as merely
+ * provisioned. The provisioned dirs are appended, not prepended, and are dropped
+ * entirely when `$HOME` is unset — which keeps "an empty environment finds
+ * nothing" true, and keeps the probe injectable in tests without reaching a real
+ * home directory.
  */
-export function binaryOnPath(name: string, env: ProbeEnv["env"] = process.env): boolean {
-  const dirs = (env.PATH ?? "").split(":").filter(Boolean);
+function searchDirs(env: ProbeEnv["env"]): { dir: string; onPath: boolean }[] {
+  const dirs = (env.PATH ?? "")
+    .split(":")
+    .filter(Boolean)
+    .map((dir) => ({ dir, onPath: true }));
+
+  const home = env.HOME ?? env.USERPROFILE;
+  if (!home) return dirs;
+
+  const onPath = new Set(dirs.map((d) => d.dir));
+  for (const rel of PROVISIONED_BIN_DIRS) {
+    const dir = join(home, rel);
+    // Already on PATH ⇒ it is a PATH hit, not a provisioned-only one. Skipping
+    // keeps `onPath` honest for a shell that DID inherit the hook's exports.
+    if (!onPath.has(dir)) dirs.push({ dir, onPath: false });
+  }
+  return dirs;
+}
+
+/**
+ * Where is `name`, if anywhere? `null` ⇒ the actor does not have it.
+ *
+ * Resolved by inspecting directories rather than spawning the binary. Spawning
+ * to ask "does this exist" is how the claim path used to die on `spawn dolt
+ * ENOENT` in a cloud session — and a probe that runs on every `next` must not
+ * pay a process per capability, nor fail differently depending on whether the
+ * binary happens to accept `--version`. #160 floated `$SHELL -lc 'deno
+ * --version'` as a fix; it would work, and it reintroduces exactly that cost
+ * and that failure mode to solve a problem a wider search solves for free.
+ */
+export function resolveBinary(name: string, env: ProbeEnv["env"] = process.env): ResolvedBinary | null {
   const exts = process.platform === "win32" ? (env.PATHEXT ?? ".EXE").split(";") : [""];
-  for (const dir of dirs) {
+  for (const { dir, onPath } of searchDirs(env)) {
     for (const ext of exts) {
+      const path = join(dir, name + ext);
       try {
-        accessSync(join(dir, name + ext), constants.X_OK);
-        return true;
+        accessSync(path, constants.X_OK);
+        return { path, onPath };
       } catch {
         // not here, or not executable — keep looking
       }
     }
   }
-  return false;
+  return null;
 }
 
-/** The real actor: this process's environment and PATH. */
+/**
+ * The real actor: the session this process serves.
+ *
+ * Note whose environment this is. `process.env` is the harness-spawned MCP
+ * server's, and #160 is the record of it disagreeing with the shell's; the
+ * provisioned-dir search inside `resolveBinary` is what closes that gap.
+ */
 export function currentActor(env: ProbeEnv["env"] = process.env): ActorCapabilities {
-  return probeActor({ env, hasBinary: (n) => binaryOnPath(n, env) });
+  return probeActor({ env, resolveBinary: (n) => resolveBinary(n, env) });
 }
