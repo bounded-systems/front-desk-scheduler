@@ -100,6 +100,43 @@ broker's own App token holds `actions: write`; the session never sees it).
 - **The nonce endpoint is a DoS surface.** Rate-limit; a nonce costs the
   attacker nothing but grants nothing without the signed push.
 
+## Local sessions: the inverted profile
+
+A local Claude Code session (the operator's machine) inverts the cloud profile
+almost row for row, and the inversion is what makes the tier table below
+complete rather than cloud-specific:
+
+- **Ambient authority instead of a sentinel.** The agent runs as the user —
+  real credentials on disk and in agent sockets, presentable to this broker
+  today with no ceremony. But nothing distinguishes the agent from the human,
+  or from anything else running as that user.
+- **The signer sits inside the boundary.** Commits are signed with the user's
+  key, which the agent can read or use unless it is hardware-bound. Agent
+  attribution (`Co-Authored-By`) is convention, not cryptography.
+- **A hardware root of trust IS available** — Secure Enclave, FIDO2 `sk-`
+  keys, TPM: non-exportable, optionally user-presence-gated. A touch-gated
+  signature proves **human co-presence at signing time**, the one statement a
+  cloud session can never make.
+- **What a local signature cannot prove is the agent path.** The cloud proxy
+  signature proves exactly that — the key lives at Anthropic's door and the
+  human has no route to it. The local user key proves the owner, agent-or-not.
+  Closing that gap locally is `keeperd`'s job: a signer room whose key the
+  agent room can invoke but never read is the local reconstruction of what the
+  cloud proxy provides by construction.
+
+The two contexts attest complementary halves — cloud attests *role* (agent,
+through the door), local attests *owner and presence* (this human's hardware).
+
+**The tier table** — one native signer per caller context, each living outside
+the caller's readable memory; the design rule is "use the native one", never a
+shared secret:
+
+| caller | native signer | trust statement |
+|---|---|---|
+| CI workflow | Actions OIDC JWT (`verifyOIDC`, today) | this named workflow file, on main |
+| cloud session | proxy-signed commit nonce (this proposal) | an authorized Claude session of this owner, via the agent path |
+| local session | hardware-backed user key, or a keeperd door signature | this owner's device — with user presence, this human, now |
+
 ## Rejected alternatives
 
 - **A stored session credential** (`FDS_CLAIM_TOKEN`-shaped): rejected already
