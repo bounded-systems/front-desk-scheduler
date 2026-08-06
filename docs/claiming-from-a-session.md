@@ -93,6 +93,42 @@ broken endpoint and reading it as a busy queue.
 `test/claim-ticket-summary.test.ts` pins the property that a refusal and an error
 never render as each other.
 
+## A granted lease is not the ability to act (#159)
+
+`claim-ticket.yml` will happily grant you an item in a repo this session cannot
+write to, because the two questions are decided in different places. Eligibility
+is decided against the **board**; the ability to act is decided by the
+**session's repo scope**, which the lease plane knows nothing about.
+
+That gap is not the same one `fits` covers. `fits` reports **capabilities** — do
+you hold `gh`, `dolt`, a real `github-api` token — and it is silent about repo
+scope, so an item can read `fits: true`, rank top, be granted on request, and
+still be unworkable.
+
+Repos are scoped at session creation. Attaching one mid-session means the
+approval-gated `add_repo` MCP call, and on 2026-08-06 that gate returned
+
+```
+MCP error -32003: MCP tool call requires approval
+```
+
+**instantly on every retry**, while the operator was actively clicking approve —
+each call errored before its prompt could be answered, so every click landed on
+an already-dead prompt. An earlier `add_repo` in the same session had succeeded,
+so this is not a static permission but something that regressed mid-session
+(possibly per-client: the successes were desktop, the failures mobile).
+
+The measured cost was two live dependabot bumps (hooksmith#90, #88 — verified
+outstanding against `main`'s `Cargo.lock`) sitting at the top of the executable
+queue, unclaimable.
+
+So, before you dispatch: **check that the item's repo is one this session can
+write to.** If it is not, the honest move is to leave it for a session that can,
+rather than take a lease you cannot discharge. One asymmetry is worth knowing —
+a public repo stays **read-clonable through the git proxy with no attach at
+all**, so you can still gather evidence and report a finding; only acting is
+blocked.
+
 ## When someone hands you an issue (#127)
 
 Everything above is the *ask-the-board* flow: you do not know what to work on, so
