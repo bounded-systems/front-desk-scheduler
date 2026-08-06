@@ -54,7 +54,24 @@ handed a specific issue rather than asking the board, pass `item` instead — se
 [When someone hands you an issue](#when-someone-hands-you-an-issue-127).
 
 From a session, the GitHub MCP tools are the path — there is no `gh` binary in a
-cloud session:
+cloud session, **and the shell cannot dispatch even if there were**. Measured
+2026-08-06, same session, minutes apart:
+
+```
+curl -X POST …/workflows/claim-ticket.yml/dispatches   → 403  Resource not accessible by integration
+                (Bearer $GH_TOKEN, i.e. `proxy-injected`)
+mcp__github__actions_run_trigger  claim-ticket.yml     → 204  run queued; verdict read back via get_job_logs
+```
+
+State this plainly because the 403 invites the wrong conclusion, and one is
+already in the tree: `proposals/broker-session-tier/` cites `workflow_dispatch
+→ 403` as evidence that the ticket window is expensive to reach. That reading is
+right about the *verb* and wrong about the *window*. A session-side verb genuinely
+cannot absorb the dispatch — a Node script has no `gh`, gets a 403 from `curl`,
+and cannot invoke the agent's MCP tools — but the window itself is open, and the
+FDS-CLAIM-RESULT verdict came back within the same minute. Same sentinel fact as
+everywhere else on this page: the session holds no credential, so it borrows an
+identity that does, and the MCP server is one where the shell is not.
 
 ```
 mcp__github__actions_run_trigger
@@ -128,6 +145,33 @@ rather than take a lease you cannot discharge. One asymmetry is worth knowing �
 a public repo stays **read-clonable through the git proxy with no attach at
 all**, so you can still gather evidence and report a finding; only acting is
 blocked.
+
+### Scoping at creation does not buy you the whole gate
+
+The paragraph above was written as though the creation dialog "bypasses the
+runtime approval path entirely". It does not — it bypasses the *need to call
+`add_repo`*, which is one caller of that path, and the distinction cost nothing
+to state and would have cost a session to rediscover.
+
+Measured 2026-08-06 in a session that **was** correctly scoped at creation
+(hooksmith, repo-health and four others in the dialog, `add_repo` never called):
+`send_later` returned the same `-32003` **three and a half hours after the same
+call had succeeded in that same session**. Nothing about repo scope was
+involved. So the gate degrades for approval-gated MCP calls *as a class*, and
+pre-scoping only removes your dependence on one of them.
+
+Two consequences for a long-running session. **A workaround verified at session
+start is not verified for the session** — this is the #119 shape (a defect that
+only exists *between* runs cannot be caught by testing one run), pointed at the
+harness instead of at a projector. And **anything you schedule for later should
+not be scheduled through that gate.** `CronCreate` is harness-native rather than
+an approval-gated MCP call and worked when `send_later` would not; the tradeoff
+is real and worth knowing before you rely on it — a `CronCreate` job is
+session-only and in-memory, so it dies with the session, where `send_later`
+survives a container restart.
+
+Do not retry a `-32003`. Every retry mints a fresh prompt whose call has already
+errored, so the operator cannot answer it however fast they click.
 
 ## When someone hands you an issue (#127)
 
