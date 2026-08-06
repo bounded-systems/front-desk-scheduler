@@ -145,6 +145,18 @@ means the reaper is down. A lease that never binds lapses on the short claim
 ttl, which is the right outcome for a session that died before pushing. There
 is deliberately no `renew` window — binding once replaces every heartbeat.
 
+**An item that needs retiring, not working, has its own window.** The board
+ranks what it can see and cannot see that a PR's diff is already on `main`, so
+a corpse keeps its score — on 2026-08-05/06 four of the top five executable
+picks were already-done work, and prx#931 had ranked *first for over a month*.
+`triage-ticket.yml` does claim → comment → close → release in one dispatch;
+read `FDS-TRIAGE-RESULT`. It **never decides** an item is a corpse — you supply
+`evidence` and it writes what you supply — and the claim is the guard, so
+`not-eligible` (already Done/closed/blocked) and `not-granted` (someone holds
+it) both write nothing. A failed close releases **`released`, not
+`completed`**, so a half-run returns the item to the queue rather than
+recording a retirement that did not happen.
+
 **Give it back the same way.** `release-ticket.yml` is the same window one verb
 over (#104) — dispatch it with the `item_id` and the **`fencing` token from your
 claim verdict**, and read `FDS-RELEASE-RESULT`. The reaper will free a bound
