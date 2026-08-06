@@ -72,12 +72,26 @@ through REST or a window.
 
 ## What the audit does not establish
 
-The MCP half of I3 — that `actions_run_trigger` actually dispatches — is only
-proven by driving a real window loop (claim → verdict), which is a production
-action the audit deliberately never takes. Last proven in anger: the
-`triage-ticket.yml` dispatches of 2026-08-05/06. If that date is old and you
-are about to depend on it, dispatch a harmless window (`board-parity.yml`)
-and read its verdict line — the loop, not the unit.
+The MCP half of I3 — that `actions_run_trigger` actually *dispatches* — is a
+production action the audit deliberately never takes, so the `token` row above
+is not evidence for it either way. It is established instead by driving a
+real window loop, and it was, on 2026-08-06 in one session minutes apart:
+`curl …/claim-ticket.yml/dispatches` → 403, `actions_run_trigger` on the same
+workflow → 204 with `FDS-CLAIM-RESULT` read back inside the minute. That
+measurement lives in `docs/claiming-from-a-session.md` and the matching
+`.claude/cloud-environment.json` caveat; this file defers to it rather than
+keeping a second copy that can rot. If the date is old and you are about to
+depend on it, re-prove with a harmless window (`board-parity.yml`) — the loop,
+not the unit.
+
+**Do not read the raw 403 as the window being shut.** That inference is
+already in the tree once — `proposals/broker-session-tier/` cites
+`workflow_dispatch → 403` as evidence the ticket window is expensive to reach,
+which is right about the *verb* and wrong about the *window*. The `token` row
+says a session-side **script** cannot dispatch (no `gh`, 403 from curl,
+no route to the agent's MCP tools). It says nothing about the window, which is
+open. Every "closed" row in this matrix is a statement about the raw plane
+only; check the MCP column before concluding a capability is unreachable.
 
 The probes are non-mutating **by construction**, not by expectation: every
 write-shaped probe aims at a nonexistent id, the all-zeros sha, or an invalid
