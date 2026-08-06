@@ -82,6 +82,18 @@ read via MCP `get_job_logs`; and the MCP server holds its own credential —
 search and collaborators answer over MCP while the same paths 403 raw, so
 neither surface's reachability predicts the other's.
 
+**That doc covers two identities now, and neither dominates the other.** A
+session reads repository files and cannot touch ProjectV2; the Front Desk App
+writes the board and cannot read a file — `contents` is deliberately absent from
+the unpinned `front-desk` tier, so the App is *less* capable than a session on
+exactly the axis you would assume it was more. "Can this be done?" therefore has
+no answer until you say by whom, and the failure mode is assuming the App is a
+superset and declaring `needs:` on that basis. Note the asymmetry in how well
+the two are known: the session plane is asserted on demand by the audit script,
+while the App plane **cannot be probed from a session at all** (`verifyOIDC`
+pins `job_workflow_ref`, so only a runner mints those tokens) — so its table
+can rot silently where the session's cannot.
+
 Note what that sentence is about, though: **the script, not the issue.** `needs:`
 is what an actor must *hold to discharge the item*, and the two part company the
 moment a window exists. #58 was the case in point — the board-reading item, and
