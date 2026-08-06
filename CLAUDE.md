@@ -460,6 +460,26 @@ Dispatch it; don't assume it.
   webhook-driven, so its inter-run gaps ranged from ~90s to over an hour in one
   evening: for any lane like that, the cron is a *backstop*, and a tolerance
   derived from observed rate would call a quiet weekend an outage.
+
+  2026-08-06 added the version where **the two paths are two PROCESSES**, not two
+  call sites. #160: `mcp__front-desk__next` reported `missing: [deno]`, `why: no
+  \`deno\` binary on PATH`, while the same session's shell had deno 2.9.4 at
+  `$HOME/.deno/bin/deno`. Nothing was wrong with the probe's logic — it read the
+  wrong PATH. `session-start.sh` provisions deno and elan under `$HOME` and puts
+  them on the **shell's** PATH by appending to `$CLAUDE_ENV_FILE`; a process the
+  harness spawned itself never sees that. `dolt` was held in the same reading
+  only because its installer targets `/usr/local/bin`, and that split is the
+  whole diagnosis.
+
+  Two things generalise. **The actor a capability describes is the SESSION, not
+  the process asking** — so `resolveBinary` now searches PATH plus the dirs the
+  hook provisions into, and *reports which*, because "held by the actor" and
+  "spawnable from here" are different facts and a caller that shells out needs
+  the second one. And **an all-empty predicate hides its own breakage**: every
+  queued item has empty `needs:`, so the probe failed open and nothing was
+  filtered — the bug was invisible until the first `needs: [deno]` would have
+  routed every cloud session to `otherActors`. A predicate nobody exercises is
+  not verified, it is unobserved.
 - **A board FIELD change does not ride the delta lane at all — it is up to 6h
   behind** (2026-08-04). Read the previous note carefully: it is about the delta
   lane's *gaps*, and it invites the inference that any board change lands within
