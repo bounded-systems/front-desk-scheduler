@@ -42,4 +42,4 @@ jobs:
   drift:
     # SHA-pinned per org policy. `# main` records what the SHA was at the time, so a
     # reviewer can tell an intentional bump from a drifted one.
-    uses: bounded-systems/ci-workflows/.github/workflows/env-check-drift.yml@162accbbcfdfd12c146c44f23770e6a6bb9abb1c # main
+    uses: bounded-systems/ci-workflows/.github/workflows/env-check-drift.yml@fabeb107b84055dc0599ce4de7d6c788eafa971f # main

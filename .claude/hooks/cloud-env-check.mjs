@@ -41,13 +41,24 @@
 //      session, so flagging it UNRECORDED would be a permanent false positive in
 //      any repo that doesn't also list it (this bug shipped once, masked here
 //      because front-desk happened to list it).
-//   3. --verify-domains — probe every allowlisted domain through the proxy.
-//      The digest attests to what the operator typed, not what the dialog
-//      actually contains; an allowlist edit the operator didn't record (or a
-//      drop they didn't notice) is invisible to it. The proxy is its own
-//      oracle: a blocked host yields curl code 000, an allowlisted one yields
-//      any real HTTP status. Wildcard entries can't be probed literally — give
-//      them a "probe" field naming a representative concrete host.
+//   3. --verify-domains — probe every allowlisted domain through the proxy and
+//      reconcile what answers against what the record expects ("expect" per
+//      entry: "reachable" | "blocked", default "reachable"). The digest attests
+//      to what the operator typed, not what the dialog actually contains; an
+//      allowlist edit the operator didn't record (or a drop they didn't notice)
+//      is invisible to it. The proxy is its own oracle: a blocked host yields
+//      curl code 000, an allowlisted one yields any real HTTP status. Red means
+//      the record and the proxy DISAGREE, in either direction: an entry that is
+//      recorded-but-absent on purpose ("expect": "blocked") stays green while
+//      the dialog withholds it — no more tolerating a red gate as the cost of
+//      honest record-keeping — and goes red the moment the dialog grants it,
+//      so the record gets corrected instead of rotting in prose
+//      (.github-private#316: two entries kept probing green after a dialog
+//      update while their reasons still said blocked, and neither check could
+//      say so). Wildcard entries can't be probed literally — give them a
+//      "probe" field naming a representative concrete host. Like "reason" and
+//      "probe", "expect" is repo-side annotation: excluded from the digest, so
+//      adopting it moves no handshake value and needs no dialog edit.
 //
 // Self-contained node stdlib only: this runs at SessionStart, BEFORE
 // dependencies are installed, so it must never import a package. Probes go
@@ -60,8 +71,8 @@
 //   --config <path>    config file (default: ../cloud-environment.json
 //                      relative to this script)
 //
-// Exit code: 0 unless --verify-domains found blocked domains (then 1). The
-// handshake mismatch alone is a warning, not a failure — SessionStart must
+// Exit code: 0 unless --verify-domains found expectation mismatches (then 1).
+// The handshake mismatch alone is a warning, not a failure — SessionStart must
 // start a degraded session, never refuse to start one.
 
 import { createHash } from 'node:crypto';
@@ -114,6 +125,15 @@ for (const [i, d] of domains.entries()) {
   if (typeof d?.domain !== 'string' || d.domain.trim() === '') {
     console.log(
       `${TAG} ⚠ ${configPath}: allowedDomains[${i}] has no usable "domain" string — got ${JSON.stringify(d)}.`,
+    );
+    process.exit(1);
+  }
+  // "expect" gates whether a probe result is a failure, so a typo here would
+  // silently fall back to the default and un-fail the check — refuse it loudly
+  // instead, same posture as the typo'd-container-key refusal above.
+  if (d.expect !== undefined && d.expect !== 'reachable' && d.expect !== 'blocked') {
+    console.log(
+      `${TAG} ⚠ ${configPath}: allowedDomains[${i}] ("${d.domain}") has expect=${JSON.stringify(d.expect)} — must be "reachable" or "blocked" (or absent, meaning "reachable").`,
     );
     process.exit(1);
   }
@@ -204,7 +224,12 @@ for (const key of Object.keys(recordedVars)) {
 // Probes what the digest can't see: the allowlist as it actually is, not as it
 // was last recorded. Blocked ⇒ curl reports code 000; allowlisted ⇒ any HTTP
 // status (the probe asks "did we get through the proxy", not "is the service
-// healthy").
+// healthy"). Each observation is reconciled against the entry's "expect"
+// (default "reachable"); only a DISAGREEMENT is a failure. Note the probe
+// tests OUR OWN proxy's egress policy, never the far service's — a mismatch is
+// fixed by editing the dialog or the record, and the probe itself is the
+// lightest conformant touch on the endpoint: one GET per domain per explicit
+// invocation, no retries.
 if (flag('--verify-domains')) {
   const probeHost = (entry) => {
     if (entry.probe) return entry.probe;
@@ -233,24 +258,44 @@ if (flag('--verify-domains')) {
     }),
   );
 
-  const blocked = results.filter((r) => r.status === '000');
-  const skipped = results.filter((r) => r.status === 'skip');
-  const ok = results.length - blocked.length - skipped.length;
+  const expectation = (entry) => entry.expect ?? 'reachable';
+  const observed = (r) => (r.status === '000' ? 'blocked' : 'reachable');
 
-  // Every probe failing is a dead network, not N revoked grants. Printing
-  // "re-add it in the dialog" for the whole allowlist would be wrong the vast
-  // majority of the time, and would train people to ignore this check.
-  const probed = results.length - skipped.length;
-  if (probed > 1 && blocked.length === probed) {
+  const skipped = results.filter((r) => r.status === 'skip');
+  const probed = results.filter((r) => r.status !== 'skip');
+  const mismatched = probed.filter((r) => observed(r) !== expectation(r.entry));
+  const blockedUnexpected = mismatched.filter((r) => observed(r) === 'blocked');
+  const reachableUnexpected = mismatched.filter((r) => observed(r) === 'reachable');
+  const blockedAsRecorded = probed.filter(
+    (r) => observed(r) === 'blocked' && expectation(r.entry) === 'blocked',
+  );
+  const ok = probed.length - mismatched.length;
+
+  // Every expected-reachable probe failing is a dead network, not N revoked
+  // grants. Printing "re-add it in the dialog" for the whole allowlist would
+  // be wrong the vast majority of the time, and would train people to ignore
+  // this check. Only expected-reachable probes carry the signal: a 000 that
+  // matches "expect": "blocked" cannot distinguish the proxy refusing from the
+  // network being gone, so it neither triggers nor vetoes this guard.
+  const expectedReachable = probed.filter((r) => expectation(r.entry) === 'reachable');
+  if (
+    expectedReachable.length > 1 &&
+    expectedReachable.every((r) => r.status === '000')
+  ) {
     console.log(
-      `${TAG} allowlist check INCONCLUSIVE — all ${probed} probes returned 000 (no network?). Not reporting individual domains.`,
+      `${TAG} allowlist check INCONCLUSIVE — all ${expectedReachable.length} expected-reachable probes returned 000 (no network?). Not reporting individual domains.`,
     );
     process.exit(0);
   }
 
-  for (const r of blocked) {
+  for (const r of blockedUnexpected) {
     console.log(
-      `${TAG} ✗ ${r.entry.domain} BLOCKED (probe ${r.host} → 000) — re-add it in the environment dialog. Reason on record: ${r.entry.reason ?? 'none'}`,
+      `${TAG} ✗ ${r.entry.domain} BLOCKED (probe ${r.host} → 000) — re-add it in the environment dialog, or record "expect": "blocked" if the absence is deliberate. Reason on record: ${r.entry.reason ?? 'none'}`,
+    );
+  }
+  for (const r of reachableUnexpected) {
+    console.log(
+      `${TAG} ✗ ${r.entry.domain} REACHABLE (probe ${r.host} → ${r.status}) but recorded "expect": "blocked" — the dialog now carries it. Update the record (expect + reason) or remove the grant from the dialog. Reason on record: ${r.entry.reason ?? 'none'}`,
     );
   }
   for (const r of skipped) {
@@ -258,12 +303,14 @@ if (flag('--verify-domains')) {
       `${TAG} ? ${r.entry.domain} is a wildcard with no "probe" host — add one so it can be verified.`,
     );
   }
-  if (blocked.length === 0 && skipped.length === 0) {
-    console.log(`${TAG} allowlist ✓ ${ok}/${results.length}`);
+  if (mismatched.length === 0 && skipped.length === 0) {
+    const blockedNote =
+      blockedAsRecorded.length > 0 ? ` (${blockedAsRecorded.length} blocked as recorded)` : '';
+    console.log(`${TAG} allowlist ✓ ${ok}/${results.length}${blockedNote}`);
   } else {
     console.log(
-      `${TAG} allowlist ${ok}/${results.length} reachable, ${blocked.length} blocked, ${skipped.length} unverifiable`,
+      `${TAG} allowlist ${ok}/${results.length} as recorded, ${mismatched.length} mismatched, ${skipped.length} unverifiable`,
     );
   }
-  process.exit(blocked.length > 0 ? 1 : 0);
+  process.exit(mismatched.length > 0 ? 1 : 0);
 }
