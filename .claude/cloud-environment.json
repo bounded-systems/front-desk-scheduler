@@ -49,21 +49,13 @@
       {
         "domain": "nodejs.org",
         "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)"
-      },
-      {
-        "domain": "front-desk-lease.titular-0-kicks.workers.dev",
-        "reason": "the claim plane. FDS_CLAIM_ENDPOINT now points at lease.bounded.tools (the custom domain, infra#... / front-desk-scheduler#174), so this workers.dev host is TRANSITION-ONLY: kept allowlisted while any consumer still resolves it — the deploy still exposes both names and vars.FDS_CLAIM_ENDPOINT (the GitHub Actions repo variable, a separate value from this dialog one) may still name it until re-set. Drop this entry only once nothing resolves the workers.dev host — src/lease-client.ts is dead without whichever name is live, and this host was silently dropped once when the broker was added, which is why --verify-domains covers it. lease.bounded.tools itself needs no entry: it is under *.bounded.tools."
-      },
-      {
-        "domain": "cf-token-broker.titular-0-kicks.workers.dev",
-        "reason": "OIDC token broker for credentialed mirror writes (docs/write-surfaces.md)"
       }
     ]
   },
   "environmentVariables": {
     "FDS_READS": "dolthub",
     "FDS_CLAIM_ENDPOINT": "https://lease.bounded.tools",
-    "FDS_ENV_CONFIG": "e702af3a1f79"
+    "FDS_ENV_CONFIG": "f71a43911248"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
