@@ -21,7 +21,27 @@
   "name": "front-desk-lease",
   "main": "src/index.mjs",
   "compatibility_date": "2026-06-21",
+  // STAYS ON during the custom-domain migration below: FDS_CLAIM_ENDPOINT (repo
+  // variable AND the shared dialog's env var) still names
+  // front-desk-lease.titular-0-kicks.workers.dev, and turning this off first
+  // would break every claimant at once. Retire it only after the last consumer
+  // points at lease.bounded.tools.
   "workers_dev": true,
+  // lease.bounded.tools — added 2026-08-10. The custom domain is part of the
+  // deploy, deliberately: `wrangler deploy` reconciles the hostname binding on
+  // every run, so the endpoint's identity is version-controlled and moves
+  // through the same approval-gated lane as the code (full rationale in infra →
+  // cloudflare/status/wrangler.jsonc; boot and status prove the lane's minted
+  // token can attach domains). Sessions then reach the claim endpoint under
+  // *.bounded.tools, which the shared dialog already allowlists — so the
+  // workers.dev entry can eventually leave the dialog and the org's trust
+  // surface stops naming a generated Cloudflare account slug.
+  "routes": [
+    {
+      "pattern": "lease.bounded.tools",
+      "custom_domain": true
+    }
+  ],
   // Don't leave old versions of the exclusion mechanism publicly reachable: a
   // stale preview backed by its own DO namespace is a SECOND serialization
   // point, which is precisely the failure this Worker exists to remove.
