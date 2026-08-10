@@ -33,20 +33,14 @@
         "reason": "deno install — `deno check` is this repo's type gate"
       },
       {
-        "domain": "dl.deno.land",
-        "reason": "deno release binaries"
+        "domain": "*.lean-lang.org",
+        "probe": "release.lean-lang.org",
+        "reason": "Lean toolchain hosts, consolidated 2026-08-10 into one wildcard. What it replaces: elan.lean-lang.org (the elan installer) and release.lean-lang.org (the release artifacts elan resolves to), plus releases.lean-lang.org (PLURAL) which front-desk-scheduler recorded and nothing else did. Not used by infra itself; part of the shared dialog's union. THE WILDCARD IS THE POINT HERE, not just the entry count: singular and plural are different live hosts (release 200, releases 302 → lean-lang.org) and the plural was the dialog's ONLY single-owner grant, one dropped line away from being unowned while reading like a typo of the singular (found during the 2026-08-10 reconciliation, .github-private caveat 4). One wildcard dissolves the distinction instead of asking every future reader to re-derive it. The probe is release.lean-lang.org because it answers a clean 200; elan.lean-lang.org 404s at / (reachable — probe a path the service implements, not /)."
       },
       {
-        "domain": "elan.lean-lang.org",
-        "reason": "Lean toolchain manager (specs/lean re-verification)"
-      },
-      {
-        "domain": "release.lean-lang.org",
-        "reason": "Lean toolchain downloads, historical origin. An earlier note here asserted singular-is-correct 'verified via strings on the binary' — but on 2026-07-31 a live `lake build` watched elan request https://releases.lean-lang.org/lean4/v4.32.2/lean-4.32.2-linux.tar.zst (PLURAL) and take a proxy 403, so current elan resolves the plural host and this entry alone no longer provisions a toolchain. Keep both entries until confirmed which the shipping elan uses; the empirical check below is the tiebreaker, and it disagreed with the strings-based one"
-      },
-      {
-        "domain": "releases.lean-lang.org",
-        "reason": "Lean toolchain downloads, the origin current elan actually requests (observed 2026-07-31, see previous entry). NOT YET ALLOWLISTED in the environment UI as of that date — adding it there is the action; this entry records the requirement"
+        "domain": "*.deno.land",
+        "probe": "dl.deno.land",
+        "reason": "Deno subdomains, consolidated 2026-08-10 from cdn.deno.land + dl.deno.land. NOTE the apex deno.land is a SEPARATE entry below and is NOT implied by this wildcard — same convention as the bounded.tools and dolthub pairs. What the two did, preserved: cdn.deno.land is the deno.land/x registry API, whose /<module>/meta/versions.json is the only authoritative list of a module's published versions — worth the grant because guessing versions against deno.land instead silently missed lume v3.2.2/v3.2.4/v3.2.5 and produced a wrong 'newest available' claim in a commit message. dl.deno.land serves the release binaries needed to install a toolchain in a session that lacks one. The probe is dl.deno.land (200 on 2026-08-10) and NOT cdn.deno.land, which answers 403 at / — verified 2026-08-10 to be S3's own AccessDenied body and not the egress filter's 'Host not in allowlist' text, so it is reachable, but a 200 makes the better witness."
       },
       {
         "domain": "api.osv.dev",
@@ -69,7 +63,7 @@
   "environmentVariables": {
     "FDS_READS": "dolthub",
     "FDS_CLAIM_ENDPOINT": "https://front-desk-lease.titular-0-kicks.workers.dev",
-    "FDS_ENV_CONFIG": "df2203d92766"
+    "FDS_ENV_CONFIG": "2535238ec022"
   },
   "setupScript": null,
   "setupScriptNote": "Deliberately empty: .claude/hooks/session-start.sh (repo-versioned, reviewed) is the single source of provisioning truth. Optionally pre-warm the repo-independent toolchains (dolt/deno/elan) here for faster first boot; the hook no-ops over anything already present.",
