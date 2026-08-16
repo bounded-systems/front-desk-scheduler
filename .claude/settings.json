@@ -14,7 +14,9 @@
   "env": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "haiku"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "haiku",
+    "FDS_READS": "dolthub",
+    "FDS_CLAIM_ENDPOINT": "https://lease.bounded.tools"
   },
   "permissions": {
     "allow": [

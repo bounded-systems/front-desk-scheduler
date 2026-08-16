@@ -5,7 +5,8 @@
       "command": "node",
       "args": ["scripts/mcp.ts"],
       "env": {
-        "FDS_READS": "dolthub"
+        "FDS_READS": "dolthub",
+        "FDS_CLAIM_ENDPOINT": "https://lease.bounded.tools"
       }
     }
   }

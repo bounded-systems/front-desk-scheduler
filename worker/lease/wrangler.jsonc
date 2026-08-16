@@ -21,11 +21,14 @@
   "name": "front-desk-lease",
   "main": "src/index.mjs",
   "compatibility_date": "2026-06-21",
-  // STAYS ON during the custom-domain migration below: FDS_CLAIM_ENDPOINT (repo
-  // variable AND the shared dialog's env var) still names
+  // STAYS ON during the custom-domain migration below: the FDS_CLAIM_ENDPOINT
+  // repo variable (lease-deploy's output) may still name
   // front-desk-lease.titular-0-kicks.workers.dev, and turning this off first
   // would break every claimant at once. Retire it only after the last consumer
-  // points at lease.bounded.tools.
+  // points at lease.bounded.tools. The dialog's copy of FDS_CLAIM_ENDPOINT is
+  // no longer a consumer to wait for: it was retired 2026-08-16
+  // (.github-private#494 item 4) — session delivery moved to .mcp.json and
+  // .claude/settings.json, both already pointing at lease.bounded.tools.
   "workers_dev": true,
   // lease.bounded.tools — added 2026-08-10. The custom domain is part of the
   // deploy, deliberately: `wrangler deploy` reconciles the hostname binding on
