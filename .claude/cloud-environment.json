@@ -48,7 +48,8 @@
       },
       {
         "domain": "nodejs.org",
-        "reason": "nvm downloads, if a newer Node than the image's 22.x is ever wanted (engines floor is 22.18)"
+        "expect": "blocked",
+        "reason": "RETIRED 2026-08-16 (.github-private#534, dialog-shrink-domains.md): a speculative grant — 'if a newer Node than the image's 22.x is ever wanted' — for a want nobody has had; the #309 posture is fail-loudly-when-needed, and a standing speculative grant is that posture inverted. Recorded-but-absent with expect: blocked for one release rather than deleted, per the handoff's rule 5: --verify-domains goes red if the grant silently returns to the dialog, and the line (with its digest contribution) drops once the next reconciliation confirms the deletion stuck. Deleting the line later MOVES FDS_ENV_CONFIG (the digest hashes domain names; expect/reason do not contribute, so THIS edit moves nothing). Re-grant with a dated reason on first real need — the engines floor is 22.18 and the image ships 22.x, so the need is a future image regression, which will announce itself as a loud engines failure."
       }
     ]
   },
