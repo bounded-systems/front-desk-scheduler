@@ -27,7 +27,16 @@
 //   3. invoke it from a SessionStart hook
 //   4. set the handshake variable in the cloud environment dialog
 //
-//   "handshake": { "variable": "FDS_ENV_CONFIG", "prefix": "FDS_" }
+//   "handshake": { "variable": "BS_ROUTES_CONFIG", "prefix": "BS_" }
+//
+// SHARED-DIALOG ADOPTERS: when several repos share one environment dialog,
+// exactly ONE record — the union owner — carries a handshake block and lists
+// the full dialog (all domains, all variables); every sibling record omits
+// "handshake" entirely and keeps only its own domain subset as the reasons +
+// probe layer (steps 1-3 only; there is no step 4 for it). A digest-less
+// record still validates its domains and still probes with --verify-domains;
+// it has no digest, so --print-digest refuses and the env-record lane is
+// dropped for that repo (.github-private#539).
 //
 // Three checks:
 //   1. handshake — the config content is hashed into a short digest; the dialog
@@ -101,12 +110,30 @@ try {
   process.exit(0); // non-fatal: no record means nothing to check against
 }
 
-const handshake = config.handshake;
-if (!handshake?.variable || !handshake?.prefix) {
+// The handshake block is OPTIONAL since the dialog collapse
+// (.github-private#539): in a SHARED dialog, exactly one record — the union
+// owner — declares a handshake and hashes the whole dialog; sibling records
+// keep their domain subsets (the reasons + probe layer) with no handshake
+// block and no dialog variable of their own. Absent therefore means
+// "digest checks are owned elsewhere; probe-only here" — and domain
+// validation and --verify-domains MUST still run, which is why this is no
+// longer an early exit (the old exit-0 here silently took check 3 down with
+// checks 1-2, so a digest-less record could never probe its allowlist).
+// PRESENT-BUT-INCOMPLETE is a different thing — a typo, not a choice — and
+// quietly skipping on it would disable checks 1-2 with nobody deciding that,
+// so it refuses loudly instead (same posture as the typo'd-container-key
+// refusal below).
+const handshake = config.handshake ?? null;
+if (handshake !== null && (!handshake.variable || !handshake.prefix)) {
   console.log(
-    `${TAG} no "handshake" block ({variable, prefix}) in ${configPath} — nothing to check.`,
+    `${TAG} ⚠ ${configPath}: "handshake" block is present but missing "variable" or "prefix" — fix it, or delete the block entirely to declare this record digest-less (probe-only).`,
   );
-  process.exit(0);
+  process.exit(1);
+}
+if (handshake === null) {
+  console.log(
+    `${TAG} no handshake block in ${configPath} — digest checks skipped by design (this dialog's digest is owned by another record; .github-private#539). Domains still validate; --verify-domains still probes.`,
+  );
 }
 
 // The record's shape is validated, not coerced. `?? []` here was a silent hole:
@@ -138,6 +165,23 @@ for (const [i, d] of domains.entries()) {
     process.exit(1);
   }
 }
+// A digest-less record has no digest to print: refuse rather than emit
+// something a caller might paste into a dialog or compare in a lane. The
+// env-record lane does not apply to such a record — its own error text
+// already says "add a handshake block, or drop this lane".
+if (handshake === null && flag('--print-digest')) {
+  console.log(
+    `${TAG} no handshake block in ${configPath} — no digest exists for this record. If a lane ran this, drop env-record for this repo; the shared dialog's digest lives with the union-owner record.`,
+  );
+  process.exit(1);
+}
+
+// Checks 1 and 2 exist only where a handshake is declared. The block below is
+// guarded rather than re-indented so the diff against the pre-#539 script
+// stays reviewable; nothing after the guard reads these bindings (check 3
+// uses only `domains`).
+if (handshake !== null) {
+
 const recordedVars = config.environmentVariables ?? {};
 
 // --- digest ------------------------------------------------------------------
@@ -219,6 +263,8 @@ for (const key of Object.keys(recordedVars)) {
     );
   }
 }
+
+} // end handshake-guarded checks 1-2
 
 // --- check 3: --verify-domains -----------------------------------------------
 // Probes what the digest can't see: the allowlist as it actually is, not as it
