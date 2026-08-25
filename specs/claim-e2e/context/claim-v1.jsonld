@@ -1,0 +1,21 @@
+{
+  "@context": {
+    "@version": 1.1,
+
+    "fd":   "https://bounded.tools/ns/front-desk#",
+    "verb": "https://bounded.tools/ns/verb#",
+    "xsd":  "http://www.w3.org/2001/XMLSchema#",
+
+    "ClaimGrant": "verb:ClaimGrant",
+    "Item":       "fd:Item",
+
+    "agent":     { "@id": "verb:agent", "@type": "@id" },
+    "item":      { "@id": "fd:item",    "@type": "@id" },
+
+    "fencing":   { "@id": "fd:fencing",   "@type": "xsd:integer" },
+    "ttlSec":    { "@id": "fd:ttlSec",    "@type": "xsd:integer" },
+    "claimedAt": { "@id": "fd:claimedAt", "@type": "xsd:dateTime" },
+    "expiresAt": { "@id": "fd:expiresAt", "@type": "xsd:dateTime" },
+    "plane":     { "@id": "fd:plane" }
+  }
+}

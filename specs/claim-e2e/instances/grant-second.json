@@ -1,0 +1,12 @@
+{
+  "@context": "https://bounded.tools/ns/claim/v1",
+  "@id": "https://bounded.tools/id/grant/9c1d44",
+  "@type": "ClaimGrant",
+  "agent": "https://bounded.tools/id/agent/bob",
+  "item": { "@id": "https://bounded.tools/id/item/dolt-4f2a", "@type": "Item" },
+  "fencing": 8,
+  "ttlSec": 3600,
+  "claimedAt": "2026-08-24T16:30:00Z",
+  "expiresAt": "2026-08-24T17:30:00Z",
+  "plane": "lease"
+}

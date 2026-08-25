@@ -1,0 +1,28 @@
+# The same contract as claim.ttl, in ShExC — the grammar-flavored view.
+# fold-engine runs a hand-rolled ShEx validator over vault nodes; front-desk and
+# conformance-kit run SHACL. This example EXECUTES the SHACL twin (org boundary
+# precedent) and keeps this file as the parse-view: "does this node's
+# neighborhood parse as a ClaimGrant?"
+#
+# Note the one thing ShEx says more naturally than SHACL: S1 is an inverse
+# triple constraint with cardinality, right on the item's own shape.
+
+PREFIX fd:   <https://bounded.tools/ns/front-desk#>
+PREFIX verb: <https://bounded.tools/ns/verb#>
+PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+
+verb:ClaimGrantShape CLOSED {
+  a [ verb:ClaimGrant ] ;
+  verb:agent    IRI ;
+  fd:item       @fd:ClaimedItemShape ;
+  fd:fencing    xsd:integer MININCLUSIVE 0 ;
+  fd:ttlSec     xsd:integer MININCLUSIVE 1 ;   # chk_ttl
+  fd:claimedAt  xsd:dateTime ;
+  fd:expiresAt  xsd:dateTime ;
+  fd:plane      [ "lease" "dolt" ]
+}
+
+fd:ClaimedItemShape {
+  a [ fd:Item ] ;
+  ^fd:item @verb:ClaimGrantShape {0,1}         # S1: at most one grant holds me
+}

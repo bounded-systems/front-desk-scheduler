@@ -1,0 +1,13 @@
+{
+  "@context": "https://bounded.tools/ns/claim/v1",
+  "@id": "https://bounded.tools/id/grant/bad001",
+  "@type": "ClaimGrant",
+  "agent": "https://bounded.tools/id/agent/mallory",
+  "item": { "@id": "https://bounded.tools/id/item/dolt-4f2a", "@type": "Item" },
+  "fencing": "seven",
+  "ttlSec": 0,
+  "claimedAt": "2026-08-24T16:00:00Z",
+  "expiresAt": "not-a-date",
+  "plane": "lease",
+  "notes": "unrecognized key — the closed world should refuse me"
+}

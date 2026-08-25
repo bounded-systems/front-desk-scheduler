@@ -1,0 +1,79 @@
+# SHACL shapes for a ClaimGrant instance graph — the declarative twin of the
+# lease plane's enforcement stack, one layer per mechanism (same discipline as
+# ../shacl/front-desk-shapes.ttl in this repo):
+#
+#   Dolt column constraints (chk_ttl, fencing int)   → sh:minInclusive / sh:datatype
+#   leases PRIMARY KEY (item_id) — the S1 invariant  → fd:LeaseExclusivityShape below
+#   Durable-Object grant semantics (fencing ordinal) → minCount 1 on fd:fencing
+#
+# RENDERER REQUIREMENTS (after front-desk's header — the JSON-LD path here is
+# the "second renderer" that header warns about):
+#   1. Numeric fields MUST be typed via the @context (@type xsd:integer). A
+#      renderer that emits plain literals fails sh:datatype on CLEAN grants.
+#   2. The item node MUST carry rdf:type fd:Item — fd:LeaseExclusivityShape
+#      targets the class; an untyped item node makes S1 checking VACUOUS
+#      (the same silent-pass trap as fd:self in the front-desk header).
+#      What stops it being silent: sh:class fd:Item on the fd:item property
+#      in ClaimGrantShape — an untyped item fails loudly there instead.
+#      Keep both or the trap re-arms.
+#
+# WHAT THESE SHAPES DO NOT CHECK, on purpose:
+#   - expiry vs. now      → the reaper's job (reap-leases: supervisor, not verb)
+#   - fencing monotonicity → the Dolt UNIQUE KEY (item_id, fencing)'s job
+#   - authorization        → the interpreter's job; shapes check well-formedness
+#      of the claim, never whether the agent may make it.
+
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix fd:   <https://bounded.tools/ns/front-desk#> .
+@prefix verb: <https://bounded.tools/ns/verb#> .
+
+verb:prefixes
+  sh:declare [ sh:prefix "fd" ;   sh:namespace "https://bounded.tools/ns/front-desk#"^^xsd:anyURI ] ,
+             [ sh:prefix "verb" ; sh:namespace "https://bounded.tools/ns/verb#"^^xsd:anyURI ] .
+
+verb:ClaimGrantShape
+  a sh:NodeShape ;
+  sh:targetClass verb:ClaimGrant ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+
+  sh:property [ sh:path verb:agent ;
+    sh:nodeKind sh:IRI ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:message "a grant names exactly one agent, by IRI" ] ;
+
+  sh:property [ sh:path fd:item ;
+    sh:nodeKind sh:IRI ; sh:class fd:Item ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:message "a grant holds exactly one item, and the item node must be typed fd:Item (renderer requirement 2)" ] ;
+
+  sh:property [ sh:path fd:fencing ;
+    sh:datatype xsd:integer ; sh:minInclusive 0 ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:message "the fencing ordinal is the release credential — a grant without one cannot be safely released (see releaseClaim: a release without it is how a zombie frees the NEW holder's lease)" ] ;
+
+  sh:property [ sh:path fd:ttlSec ;
+    sh:datatype xsd:integer ; sh:minInclusive 1 ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:message "mirror: chk_ttl CHECK (ttl_sec > 0)" ] ;
+
+  sh:property [ sh:path fd:claimedAt ;
+    sh:datatype xsd:dateTime ; sh:minCount 1 ; sh:maxCount 1 ] ;
+
+  sh:property [ sh:path fd:expiresAt ;
+    sh:datatype xsd:dateTime ; sh:minCount 1 ; sh:maxCount 1 ] ;
+
+  sh:property [ sh:path fd:plane ;
+    sh:in ( "lease" "dolt" ) ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+# S1, as a graph constraint: at most one grant holds an item. This is the check
+# no per-document validator can make — each grant document is individually
+# well-formed; the violation only exists in the MERGED graph. The mirror
+# enforces it as PRIMARY KEY (item_id) on `leases`; here it is the inverse
+# cardinality of fd:item.
+fd:LeaseExclusivityShape
+  a sh:NodeShape ;
+  sh:targetClass fd:Item ;
+  sh:property [
+    sh:path [ sh:inversePath fd:item ] ;
+    sh:maxCount 1 ;
+    sh:message "S1 violated: more than one live grant holds this item (mirror: PRIMARY KEY (item_id) on leases)" ;
+  ] .

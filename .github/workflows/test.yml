@@ -69,6 +69,14 @@ jobs:
       - name: Unit suite
         run: npm test
 
+      # Same discipline as the SHACL fixtures below, for the claim-verb worked
+      # example (specs/claim-e2e): the run asserts its own expectations (clean
+      # conforms, violations reject, the merged graph trips S1), so it can
+      # fail — a fixture check nobody runs drifts exactly like the shapes
+      # would. Node + the deno-installed node_modules above are all it needs.
+      - name: Claim-verb fixtures (specs/claim-e2e)
+        run: npm run claim:fixtures
+
       # The SHACL shapes are a CLAIM about what the mirror is checked for, and
       # until now nothing executed them — `npm run shacl` needs a .venv that no
       # fresh checkout has, and no workflow referenced it. A spec file nobody
