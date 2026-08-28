@@ -11,7 +11,7 @@
     "npm:@types/node@^26.1.1": "26.1.2",
     "npm:@zazuko/env-node@^2.1.0": "2.1.5_@types+rdfjs__fetch-lite@3.0.11_@types+rdfjs__formats@4.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5",
     "npm:hono@^4.12.34": "4.12.34",
-    "npm:jsonld@^8.3.2": "8.3.3",
+    "npm:jsonld@9": "9.0.0",
     "npm:mysql2@^3.11.0": "3.23.2_@types+node@26.1.2",
     "npm:n3@^1.17.2": "1.26.0",
     "npm:shacl-engine@^1.1.2": "1.1.2",
@@ -2661,23 +2661,12 @@
         "kuler"
       ]
     },
-    "@digitalbazaar/http-client@3.4.1": {
-      "integrity": "sha512-Ahk1N+s7urkgj7WvvUND5f8GiWEPfUw0D41hdElaqLgu8wZScI8gdI0q+qWw5N1d35x7GCRH2uk9mi+Uzo9M3g==",
-      "dependencies": [
-        "ky@0.33.3",
-        "ky-universal",
-        "undici@5.29.0"
-      ]
-    },
     "@digitalbazaar/http-client@4.4.0": {
       "integrity": "sha512-ODhCGmElUPmR3IR+KZmBNkRAFyjJ01rxvk2E+/qQ2h2EGPJH5k6bz3N24ympGc5+i4YCGk/ipIpmkwc0+iSmRg==",
       "dependencies": [
-        "ky@1.14.3",
-        "undici@6.28.0"
+        "ky",
+        "undici"
       ]
-    },
-    "@fastify/busboy@2.1.1": {
-      "integrity": "sha512-vBZP4NlzfOlerQTnba4aqZoMhE/a9HY7HRqoOPaETQcSQuWEIyZMHGfVu6w9wGtGK5fED5qRs2DteVCjOH60sA=="
     },
     "@hono/node-server@2.0.12_hono@4.12.34": {
       "integrity": "sha512-eWpQYr67tqJLeaSUl0Q+TquuYfUdTibpOJlUMV2FfUP7+KqCC5TufnwnlXL6mobZBJbGAYRd7ZvEBDCbLInjhg==",
@@ -2807,7 +2796,7 @@
       "integrity": "sha512-l/A6gQgKWYYGOPbcVZWnaamqWPtShL4FDrEqh5F85Fw0PdSca7q0YOBpB8ihxKmiGmfXa+SB4M8l9iyEegcp7Q==",
       "dependencies": [
         "@rdfjs/sink",
-        "jsonld@9.0.0",
+        "jsonld",
         "readable-stream@4.7.0",
         "stream-chunks"
       ]
@@ -3855,19 +3844,10 @@
         "readable-stream@4.7.0"
       ]
     },
-    "jsonld@8.3.3": {
-      "integrity": "sha512-9YcilrF+dLfg9NTEof/mJLMtbdX1RJ8dbWtJgE00cMOIohb1lIyJl710vFiTaiHTl6ZYODJuBd32xFvUhmv3kg==",
-      "dependencies": [
-        "@digitalbazaar/http-client@3.4.1",
-        "canonicalize@1.0.8",
-        "lru-cache@6.0.0",
-        "rdf-canonize@3.4.0"
-      ]
-    },
     "jsonld@9.0.0": {
       "integrity": "sha512-pjMIdkXfC1T2wrX9B9i2uXhGdyCmgec3qgMht+TDj+S0qX3bjWMQUfL7NeqEhuRTi8G5ESzmL9uGlST7nzSEWg==",
       "dependencies": [
-        "@digitalbazaar/http-client@4.4.0",
+        "@digitalbazaar/http-client",
         "canonicalize@2.1.0",
         "lru-cache@6.0.0",
         "rdf-canonize@5.0.0"
@@ -3875,17 +3855,6 @@
     },
     "kuler@2.0.0": {
       "integrity": "sha512-Xq9nH7KlWZmXAtodXDDRE7vs6DU1gTU8zYDHDiWLSip45Egwq3plLHzPn27NgvzL2r1LMPC1vdqh98sQxtqj4A=="
-    },
-    "ky-universal@0.11.0_ky@0.33.3": {
-      "integrity": "sha512-65KyweaWvk+uKKkCrfAf+xqN2/epw1IJDtlyCPxYffFCMR8u1sp2U65NtWpnozYfZxQ6IUzIlvUcw+hQ82U2Xw==",
-      "dependencies": [
-        "abort-controller",
-        "ky@0.33.3",
-        "node-fetch@3.3.2"
-      ]
-    },
-    "ky@0.33.3": {
-      "integrity": "sha512-CasD9OCEQSFIam2U8efFK81Yeg8vNMTBUqtMOHlrcWQHqUX3HeCl9Dr31u4toV7emlH8Mymk5+9p0lL6mKb/Xw=="
     },
     "ky@1.14.3": {
       "integrity": "sha512-9zy9lkjac+TR1c2tG+mkNSVlyOpInnWdSMiue4F+kq8TwJSgv6o8jhLRg8Ho6SnZ9wOYUq/yozts9qQCfk7bIw=="
@@ -4506,12 +4475,6 @@
     "undici-types@8.3.0": {
       "integrity": "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="
     },
-    "undici@5.29.0": {
-      "integrity": "sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==",
-      "dependencies": [
-        "@fastify/busboy"
-      ]
-    },
     "undici@6.28.0": {
       "integrity": "sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA=="
     },
@@ -4634,7 +4597,7 @@
         "npm:@jsr/bounded-systems__verbspec@0.4",
         "npm:@types/node@^26.1.1",
         "npm:@zazuko/env-node@^2.1.0",
-        "npm:jsonld@^8.3.2",
+        "npm:jsonld@9",
         "npm:mysql2@^3.11.0",
         "npm:n3@^1.17.2",
         "npm:shacl-engine@^1.1.2",
