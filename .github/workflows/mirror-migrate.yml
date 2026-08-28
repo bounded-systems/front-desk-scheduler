@@ -132,8 +132,8 @@ jobs:
     env:
       DOLTHUB_DB: bounded-systems/front-desk-mirror
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
 
@@ -367,7 +367,7 @@ jobs:
         id: publish
         if: ${{ inputs.dry_run == false }}
         continue-on-error: true
-        uses: bounded-systems/.github/.github/actions/signed-commit@bf15e558da0cb27364fc15090d80fc705e052e43
+        uses: bounded-systems/.github/.github/actions/signed-commit@f0abde23ce4a8dc5042f80ee6a0919585b97d5e9
         with:
           path: schema/mirror.live.sql
           branch: schema/live-after-${{ inputs.migration }}
