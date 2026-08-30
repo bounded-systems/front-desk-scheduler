@@ -45,11 +45,14 @@ name: lease-deploy
 #        422 Failed to create the environment protection rule. Please ensure
 #            the billing plan supports the required reviewers protection rule.
 #      (org-owned private repo on GitHub Free; infra#69 has the full record.)
-#      So the gate lives IN the workflow instead: a manual-approval step below
-#      pauses the run on an issue until an approver signs off, BEFORE the
-#      Cloudflare mint — the same pattern as infra's repo-admin-apply and
-#      broker-deploy lanes. Replacing the SHA-pinned third-party action with an
-#      in-house step is infra#62.
+#      So the gate lives IN the workflow instead. It was an issue-comment
+#      approval (`await-approval`, in-house since infra#62) until infra#538
+#      carried infra#480's FACE ID CEREMONY here: the run opens a ceremony
+#      pinning THIS run on THIS commit, notifies the approver, and redeems the
+#      authorization — fail closed — BEFORE the Cloudflare mint. infra#235
+#      established why the comment could not be the gate: it cannot tell the
+#      dispatcher from the approver, so "dispatch alone must not be able to" was
+#      exactly what it failed to prevent. No break-glass, per infra#18.
 #
 # WHY THIS ALSO SETS THE REPO VARIABLE
 # ------------------------------------
@@ -73,7 +76,7 @@ concurrency:
 permissions:
   id-token: write # OIDC → broker
   contents: read
-  issues: write # manual-approval opens/updates the approval issue
+  issues: write # the ceremony opens a notification issue carrying the approve URL
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -90,29 +93,107 @@ jobs:
         with:
           node-version: "24"
 
-      # The human gate. The predecessor of this step ASSERTED the environment had a
-      # required_reviewers rule and refused to run otherwise — an assertion that can never
-      # pass on this plan (the rule 422s; see the header). Same spirit, working mechanism:
-      # pause HERE, before any credential exists, until an approver signs off on an issue.
-      # A denied or ignored (60-min timeout) approval fails the run without minting anything.
+      # Human authorization BEFORE the mint — no credential exists until a Face ID has
+      # signed THIS run's request (infra#480; the same shape as desk's deploy.yml and
+      # keeper-deploy in bounded-systems/infra). The keeper URL is a literal on purpose:
+      # a variable here would let configuration move the ceremony somewhere else.
       #
-      # The IN-HOUSE composite (infra#62/#79), referenced from its canonical public home
-      # bounded-systems/await-approval, SHA-pinned (immutable content) — no third-party
-      # code in the gate; only allowlisted logins can release OR cancel it. It cannot live
-      # in infra: infra is PRIVATE and this repo is PUBLIC, and GitHub never resolves a
-      # private repo's actions from a public caller (proven live 2026-07-30, run 30562621239:
-      # "Unable to resolve action bounded-systems/infra, not found" with access_level=
-      # organization correctly set — a public workflow log must not leak private-repo code).
-      - name: Await approval (before any mint)
-        uses: bounded-systems/await-approval@3eda4124e16463741037ebe8e546419eaaa4824b # main
-        with:
-          approvers: bdelanghe
-          issue-title: "Approve lease-deploy (deploys the scheduler's serialization point)"
-          issue-body: >
-            A lease-deploy run wants to mint a short-lived Workers:Edit token (broker
-            /deploy/lease), deploy the front-desk-lease Worker, and publish
-            FDS_CLAIM_ENDPOINT. This replaces the mechanism that enforces mutual exclusion
-            for the whole scheduler — approve only if that is intended.
+      # THIS REPLACED A COMMENT GATE (infra#538). infra#235 established that
+      # `await-approval` cannot tell the dispatcher from the approver — whoever dispatches
+      # a run can approve their own — so what it gated was a formality. infra#480 retired
+      # it; this lane kept it only because the migration was rolled out to a LIST of lanes
+      # rather than to everything matching the predicate, and nothing measured the
+      # remainder. infra#538's `gate-strength` check now does, for infra; this repo is
+      # outside that check's reach, which is why the migration had to be carried here by
+      # hand.
+      #
+      # There is NO break-glass, following infra#18: a single-boolean bypass to a
+      # mechanism known not to work is not a fallback. The test is whether the lane is
+      # upstream of the keeper's own fix path — keeper-deploy keeps one because a broken
+      # keeper cannot serve the ceremony that repairs it. This lane authorizes nothing the
+      # keeper depends on, so while keeper.bounded.tools is down it simply does not run.
+      - name: Open the Face ID ceremony
+        id: ceremony
+        env:
+          KEEPER_URL: https://keeper.bounded.tools
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          req="$(jq -nc --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" \
+            '{v:"bounded.deploy-request.v1",repo:"front-desk-scheduler",workflow:"lease-deploy.yml",run_id:$run,head_sha:$sha}')"
+          start="$(curl -sfS --max-time 20 -X POST -H 'content-type: application/json' \
+            -d "{\"requestType\":\"bounded.deploy-request.v1\",\"request\":$req}" \
+            "$KEEPER_URL/authorize/start")" || {
+            echo "::error::the keeper refused to open a ceremony. There is no break-glass (infra#18): this lane does not run until keeper.bounded.tools is back."
+            exit 1
+          }
+          ceremony="$(jq -r '.ceremonyId // empty' <<<"$start")"
+          approve_url="$(jq -r '.approveUrl // empty' <<<"$start")"
+          [ -n "$ceremony" ] && [ -n "$approve_url" ] || { echo "::error::keeper returned no ceremony"; exit 1; }
+          echo "ceremony=$ceremony" >> "$GITHUB_OUTPUT"
+          echo "request=$req" >> "$GITHUB_OUTPUT"
+          # The issue is a NOTIFICATION, not a credential: commenting on it does nothing.
+          # The approval is the Face ID at the URL.
+          issue_url="$(gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Face ID: approve lease-deploy (run ${GITHUB_RUN_ID})" \
+            --body "$(printf 'A lease-deploy run wants to mint a short-lived Workers:Edit token (broker /deploy/lease), deploy the front-desk-lease Worker, and publish FDS_CLAIM_ENDPOINT. This replaces the mechanism that enforces mutual exclusion for the whole scheduler — approve only if that is intended.\n\nApprove with your passkey (15-minute window):\n\n%s\n\nThis issue is a notification only — comments here authorize nothing (infra#480 retired the comment gate). Run: https://github.com/%s/actions/runs/%s' "$approve_url" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")")"
+          echo "issue_url=$issue_url" >> "$GITHUB_OUTPUT"
+          echo "ceremony open — approve at $approve_url"
+
+      - name: Wait for the Face ID, then redeem — fail closed
+        env:
+          KEEPER_URL: https://keeper.bounded.tools
+          CEREMONY: ${{ steps.ceremony.outputs.ceremony }}
+          REQ: ${{ steps.ceremony.outputs.request }}
+        run: |
+          set -euo pipefail
+          # Poll until the human approves, the ceremony expires (15 min), or the keeper
+          # says GONE. pending/gone being distinct answers is what makes this loop's
+          # failure mean "never approved", not "lost a race".
+          deadline="$(( $(date +%s) + 900 ))"
+          auth=""
+          while :; do
+            code="$(curl -s --max-time 20 -o /tmp/result.json -w '%{http_code}' "$KEEPER_URL/result?id=${CEREMONY}")" || code=000
+            if [ "$code" = "200" ]; then
+              if jq -e '.pending' /tmp/result.json >/dev/null 2>&1; then :; else
+                auth="$(jq -r '.authorizationId // empty' /tmp/result.json)"
+                [ -n "$auth" ] && break
+              fi
+            elif [ "$code" = "410" ]; then
+              echo "::error::the ceremony ended without an authorization: $(jq -r '.error // "gone"' /tmp/result.json 2>/dev/null). Nobody Face ID'd this run."
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::no Face ID within the 15-minute window — this run was not authorized."
+              exit 1
+            fi
+            sleep 10
+          done
+          redeem="$(curl -sS --max-time 20 -X POST -H 'content-type: application/json' \
+            -d "{\"authorizationId\":\"$auth\",\"requestType\":\"bounded.deploy-request.v1\",\"request\":$REQ}" \
+            "$KEEPER_URL/redeem")"
+          person="$(jq -r '.redeemed.person // empty' <<<"$redeem")"
+          if [ -z "$person" ]; then
+            echo "::error::redemption refused: $(jq -r '.error // "unknown"' <<<"$redeem"). The grant did not match this run's request — failing closed."
+            exit 1
+          fi
+          cred="$(jq -r '.redeemed.credentialId' <<<"$redeem")"
+          be="$(jq -r '.redeemed.backupEligible' <<<"$redeem")"
+          {
+            echo "## Authorized by Face ID"
+            echo "- person: \`$person\`"
+            echo "- credential: \`$cred\`"
+            echo "- backupEligible: \`$be\` (synced passkey ⇒ aal2 — recorded, not assumed away)"
+            echo "- request bound to run ${GITHUB_RUN_ID} @ ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "✓ authorized by $person (credential $cred)"
+
+      - name: Close the ceremony notification
+        if: ${{ steps.ceremony.outputs.issue_url != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ steps.ceremony.outputs.issue_url }}
+        run: gh issue close "$ISSUE_URL" --comment "Authorized by Face ID; ceremony complete." || true
 
       - name: Cloudflare credential (via OIDC broker)
         id: cfcred
