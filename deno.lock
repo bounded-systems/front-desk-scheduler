@@ -9,11 +9,11 @@
     "npm:@jsr/bounded-systems__verbspec@0.4": "0.4.0",
     "npm:@modelcontextprotocol/sdk@^1.29.0": "1.30.0_zod@4.4.3",
     "npm:@types/node@^26.1.1": "26.1.2",
-    "npm:@zazuko/env-node@^2.1.0": "2.1.5_@types+rdfjs__fetch-lite@3.0.11_@types+rdfjs__formats@4.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5",
+    "npm:@zazuko/env-node@^3.1.0": "3.1.0_@types+rdfjs__fetch-lite@3.0.11_@types+rdfjs__formats@4.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5",
     "npm:hono@^4.12.34": "4.12.34",
     "npm:jsonld@9": "9.0.0",
     "npm:mysql2@^3.11.0": "3.23.2_@types+node@26.1.2",
-    "npm:n3@^1.17.2": "1.26.0",
+    "npm:n3@^2.6.4": "2.7.0",
     "npm:shacl-engine@^1.1.2": "1.1.2",
     "npm:zod@4": "4.4.3",
     "npm:zod@^4.4.3": "4.4.3"
@@ -2739,14 +2739,6 @@
     "@rdfjs/environment@1.0.0": {
       "integrity": "sha512-+S5YjSvfoQR5r7YQCRCCVHvIEyrWia7FJv2gqM3s5EDfotoAQmFeBagApa9c/eQFi5EiNhmBECE5nB8LIxTaHg=="
     },
-    "@rdfjs/fetch-lite@3.3.0": {
-      "integrity": "sha512-K3hZC4+Ch0UmYA1w0Xv/8cCVPD5ulKwRa6A/iTn3BFbZpVAb5KoBfOfnOhe6VJEa50raUvTHR1gp1YdvUnYt9g==",
-      "dependencies": [
-        "is-stream@4.0.1",
-        "nodeify-fetch",
-        "readable-stream@4.7.0"
-      ]
-    },
     "@rdfjs/formats@4.0.1": {
       "integrity": "sha512-Rg53vP+x1bnGAqJNKgEzJEUPDhj+tCpzb6wdmfLoVFq4XoZ589+cg2ScFDUMMyAVsgKXvSWjDhQ9f9ab254ZxA==",
       "dependencies": [
@@ -2782,7 +2774,7 @@
         "@rdfjs/data-model",
         "@rdfjs/sink",
         "duplex-to",
-        "n3@2.3.0",
+        "n3@2.7.0",
         "readable-stream@4.7.0"
       ]
     },
@@ -2894,8 +2886,8 @@
         "text-hex"
       ]
     },
-    "@tpluscode/rdf-ns-builders@4.3.0": {
-      "integrity": "sha512-x3uh9mYwAU+PrALaDKhVjml1TCCWWduo6J8rybd9SMEEAoooXq1MYb13MRputjRT/kYaFyCND7LMobzhxZ/+bg==",
+    "@tpluscode/rdf-ns-builders@5.0.0": {
+      "integrity": "sha512-rtMFbArdief+s0z2A3TOb/gNe5O5xn9LDiEpilCf6lGYCUIfyqoOvZY80fS/eILwcF2Mj6cUQN1WBQ+1neJmaw==",
       "dependencies": [
         "@rdfjs/data-model",
         "@rdfjs/namespace",
@@ -3187,19 +3179,19 @@
         "@types/rdfjs__environment"
       ]
     },
-    "@zazuko/env-node@2.1.5_@types+rdfjs__fetch-lite@3.0.11_@types+rdfjs__formats@4.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5": {
-      "integrity": "sha512-qYrePSWiz9XOB5R0NfvuaogmPP8gLcMsl18G7sYW1h6RB4l3aiofAr4YAKTK+bpJgGjeivDDi64lsQjF2F6p0g==",
+    "@zazuko/env-node@3.1.0_@types+rdfjs__fetch-lite@3.0.11_@types+rdfjs__formats@4.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5": {
+      "integrity": "sha512-6hN+SWcU4m4soS8Bmxx4L3Fql0dnmDPpb2NOnQ8k3nDsu8EpFgyYEmlkzMlZhcJp8PuZY9lDpVFGw0SnIlM1Cw==",
       "dependencies": [
-        "@rdfjs/fetch-lite",
         "@rdfjs/formats",
         "@types/rdfjs__fetch-lite",
         "@types/rdfjs__formats",
         "@zazuko/env",
+        "@zazuko/rdf-fetch",
         "@zazuko/rdf-utils-fs"
       ]
     },
-    "@zazuko/env@2.5.3_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__formats@4.0.1_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5": {
-      "integrity": "sha512-kivvYoXGFjva1CuXeK/jaaWMy9eXhhFmuSfSJGVW2wH7XbcZehJObjPXEVlZ3kKLCFhuv96j8Ot3SkbYaOtuLA==",
+    "@zazuko/env@3.0.1_@rdfjs+types@2.0.1_@types+clownface@2.0.10_@types+rdf-dataset-ext@1.0.8_@types+rdfjs__data-model@2.0.9_@types+rdfjs__dataset@2.0.7_@types+rdfjs__environment@1.0.0_@types+rdfjs__formats@4.0.1_@types+rdfjs__namespace@2.0.10_@types+rdfjs__term-map@2.0.10_@types+rdfjs__term-set@2.0.9_@types+rdfjs__traverser@0.1.5": {
+      "integrity": "sha512-EMRTgMXXbBIw9Zh6s6JPB16/6hNd0IZ4tcQZbr88K3RwtX3Eza3JfRCTPwtY/iNKOMWzG2e/dkPswWwxU+Ic6g==",
       "dependencies": [
         "@rdfjs/data-model",
         "@rdfjs/dataset",
@@ -3229,6 +3221,15 @@
     },
     "@zazuko/prefixes@2.6.1": {
       "integrity": "sha512-fbOadP7twxt0ZYT9mgIC+xQMk6f3pYYLI5a/2UJ/mc/ygqb/NoVv2ryK3lTtoi74xwkdpUeDwIuFQSosowzUgg=="
+    },
+    "@zazuko/rdf-fetch@1.0.2": {
+      "integrity": "sha512-y2W6Lo/o6sE4cnjc/KZg4u3fFMW4IB1mysm2QZBcbyC7qTTAAISZibc2j5FabCjdLMSOkvmp0Z0TAXHdhioX7A==",
+      "dependencies": [
+        "@types/rdfjs__fetch-lite",
+        "is-stream@4.0.1",
+        "readable-stream@4.7.0",
+        "readable-web-to-node-stream"
+      ]
     },
     "@zazuko/rdf-utils-fs@3.3.1_@rdfjs+types@2.0.1_@types+rdfjs__environment@1.0.0_@types+rdfjs__formats@4.0.1": {
       "integrity": "sha512-4HjTbJUwiCFanMMcaaZkLIkWUdVjXSQstAyxnfzsUOmh8Q43iVBL+mYAl17zoi47III0POL6hitRsN1JJ5tUFg==",
@@ -3440,7 +3441,7 @@
     "cross-fetch@3.2.0": {
       "integrity": "sha512-Q+xVJLoGOeIMXZmbUK4HYk+69cQH6LudR0Vu/pRm2YlU/hDV9CiS0gKUMaWY5f2NeUH9C1nV3bsTlCo0FsTV1Q==",
       "dependencies": [
-        "node-fetch@2.7.0"
+        "node-fetch"
       ]
     },
     "cross-spawn@7.0.6": {
@@ -3450,9 +3451,6 @@
         "shebang-command",
         "which"
       ]
-    },
-    "data-uri-to-buffer@4.0.1": {
-      "integrity": "sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A=="
     },
     "debug@4.4.3": {
       "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
@@ -3609,13 +3607,6 @@
     "fecha@4.2.3": {
       "integrity": "sha512-OP2IUU6HeYKJi3i0z4A19kHMQoLVs4Hc+DPqqxI2h/DPZHTm/vjsfC6P0b4jCMy14XizLBqvndQ+UilD7707Jw=="
     },
-    "fetch-blob@3.2.0": {
-      "integrity": "sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==",
-      "dependencies": [
-        "node-domexception",
-        "web-streams-polyfill"
-      ]
-    },
     "finalhandler@2.1.1": {
       "integrity": "sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==",
       "dependencies": [
@@ -3629,12 +3620,6 @@
     },
     "fn.name@1.1.0": {
       "integrity": "sha512-GRnmB5gPyJpAhTQdSZTSp9uaPSvl09KoYcMQtsB9rQoOmzs9dH6ffeccH+Z+cv6P68Hu5bC6JjRh4Ah/mHSNRw=="
-    },
-    "formdata-polyfill@4.0.10": {
-      "integrity": "sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g==",
-      "dependencies": [
-        "fetch-blob"
-      ]
     },
     "forwarded@0.2.0": {
       "integrity": "sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow=="
@@ -3949,8 +3934,8 @@
         "readable-stream@4.7.0"
       ]
     },
-    "n3@2.3.0": {
-      "integrity": "sha512-KMgMMSxbCh32EUPPrrpfQrpcOoqruva/hBZ+Rh4oKGrba4EYZpthLbZ/chLZdJF7JBugJPZiQsav6S/Bxl39yA==",
+    "n3@2.7.0": {
+      "integrity": "sha512-lq51RWnvGFW6+Yp9+NBx4r8EkWZEo55ilXsDQoJ1TJgiCzOQ0pQ5UbMU5tgp57yj0JTDvQssBwdaJOEOB39TqA==",
       "dependencies": [
         "buffer",
         "readable-stream@4.7.0"
@@ -3968,31 +3953,10 @@
     "negotiator@1.0.0": {
       "integrity": "sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg=="
     },
-    "node-domexception@1.0.0": {
-      "integrity": "sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==",
-      "deprecated": true
-    },
     "node-fetch@2.7.0": {
       "integrity": "sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A==",
       "dependencies": [
         "whatwg-url"
-      ]
-    },
-    "node-fetch@3.3.2": {
-      "integrity": "sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==",
-      "dependencies": [
-        "data-uri-to-buffer",
-        "fetch-blob",
-        "formdata-polyfill"
-      ]
-    },
-    "nodeify-fetch@3.1.0": {
-      "integrity": "sha512-ZV81vM//sEgTgXwVZlOONzcOCdTGQ53mV65FVSNXgPQHa8oCwRLtLbnGxL/1S/Yw90bcXUDKMz00jEnaeazo+A==",
-      "dependencies": [
-        "lodash",
-        "node-fetch@3.3.2",
-        "readable-stream@4.7.0",
-        "stream-chunks"
       ]
     },
     "object-assign@4.1.1": {
@@ -4240,6 +4204,12 @@
         "events",
         "process",
         "string_decoder"
+      ]
+    },
+    "readable-web-to-node-stream@5.0.0": {
+      "integrity": "sha512-BYDNE3p8516xCm5yCkwXt4lTLSjYAFzPtMot7dwpNz3tb5nwcLUfq9N1yiaAYFOA+9BVKi13aOIUPdv96t/Xzg==",
+      "dependencies": [
+        "readable-stream@4.7.0"
       ]
     },
     "relative-to-absolute-iri@1.0.8": {
@@ -4494,9 +4464,6 @@
     "vary@1.1.2": {
       "integrity": "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg=="
     },
-    "web-streams-polyfill@3.3.3": {
-      "integrity": "sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw=="
-    },
     "webidl-conversions@3.0.1": {
       "integrity": "sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ=="
     },
@@ -4596,10 +4563,10 @@
         "npm:@jsr/bounded-systems__verbspec-mcp@0.1",
         "npm:@jsr/bounded-systems__verbspec@0.4",
         "npm:@types/node@^26.1.1",
-        "npm:@zazuko/env-node@^2.1.0",
+        "npm:@zazuko/env-node@^3.1.0",
         "npm:jsonld@9",
         "npm:mysql2@^3.11.0",
-        "npm:n3@^1.17.2",
+        "npm:n3@^2.6.4",
         "npm:shacl-engine@^1.1.2",
         "npm:zod@4"
       ]

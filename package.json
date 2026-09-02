@@ -40,10 +40,10 @@
     "@bounded-systems/guest-room": "npm:@jsr/bounded-systems__guest-room@^0.5.0",
     "@bounded-systems/verbspec": "npm:@jsr/bounded-systems__verbspec@^0.4.0",
     "@bounded-systems/verbspec-mcp": "npm:@jsr/bounded-systems__verbspec-mcp@^0.1.0",
-    "@zazuko/env-node": "^2.1.0",
+    "@zazuko/env-node": "^3.1.0",
     "jsonld": "^9.0.0",
     "mysql2": "^3.11.0",
-    "n3": "^1.17.2",
+    "n3": "^2.6.4",
     "shacl-engine": "^1.1.2",
     "zod": "^4.0.0"
   }
